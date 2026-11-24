@@ -47,14 +47,14 @@ export default function SiteLayout() {
               <p className="muted small" style={{ maxWidth: 320 }}>
                 AI evaluation, paper setting and student analytics for schools and coaching institutes - so teachers can get back to teaching.
               </p>
-              <a href="mailto:hello@markwise.example">hello@markwise.example</a>
+              <a href="mailto:hello@vedavidya.co">hello@vedavidya.co</a>
             </div>
             <div><h5>PRODUCT</h5><a href="/#product">Evaluation</a><a href="/#product">Paper generator</a><a href="/#product">Analytics</a><a href="/#formats">Online tests</a></div>
             <div><h5>RESOURCES</h5><Link to="/login">Sign in</Link><Link to="/login?mode=register">Create institute</Link><Link to="/contact">Book a demo</Link></div>
             <div><h5>COMPANY</h5><Link to="/about">About</Link><Link to="/contact">Contact</Link></div>
           </div>
           <div className="row between small muted" style={{ marginTop: 40, flexWrap: "wrap" }}>
-            <span>© {new Date().getFullYear()} Markwise. All rights reserved.</span>
+            <span>© {new Date().getFullYear()} Veda Vidya. All rights reserved.</span>
             <span>Made for teachers in India</span>
           </div>
         </div>

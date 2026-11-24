@@ -1,12 +1,12 @@
 # Reverse-engineering notes: acadine.ai
 
 This document records what was learned by examining the public website **https://www.acadine.ai/** on 24 Nov 2026,
-and how each finding maps onto the Markwise rebuild in this repository.
+and how each finding maps onto the Veda Vidya rebuild in this repository.
 
 Method: only public, unauthenticated material was examined - the rendered public pages (`/`, `/about`, `/contact`,
 `/login`) and the JavaScript/CSS bundles the site serves to every visitor. No accounts were created, no login was
 attempted and no API endpoints were called. No code, images, copy or branding from the original were copied into
-this repository; Markwise is an independent implementation of the same *kind* of product.
+this repository; Veda Vidya is an independent implementation of the same *kind* of product.
 
 ## 1. What the product is
 
@@ -75,9 +75,9 @@ App: `/home`, `/overview`, `/analytics`, `/centres`, `/centres/:centre_id/batche
 
 Roles referenced: `SUPER_ADMIN`, `ORG_ADMIN`, `ADMIN`, `TEACHER`, `STUDENT`, `PARENT`.
 
-## 4. How Markwise maps to it
+## 4. How Veda Vidya maps to it
 
-| Original capability | Markwise | Notes |
+| Original capability | Veda Vidya | Notes |
 |---|---|---|
 | Marketing site (hero, problem, outcomes, formats, pillars, CTA, footer) | ✅ `web/src/pages/site/*` | Same information architecture; new copy, new hand-drawn sheet visuals, own brand |
 | About / Contact (lead form) / Login | ✅ | Leads stored in `leads` table |

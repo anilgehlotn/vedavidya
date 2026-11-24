@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { demoApi } from "./demo";
 
-const TOKEN_KEY = "markwise_token";
+const TOKEN_KEY = "vedavidya_token";
 
 export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
 export const setToken = (t: string | null) => {

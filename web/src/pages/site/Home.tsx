@@ -35,7 +35,7 @@ const PILLARS = [
   {
     key: "evaluate", tab: "Evaluate answer sheets", chip: "AI EVALUATION",
     title: "Handwritten answers, graded like your best teacher would.",
-    body: "Upload phone scans or PDFs. Markwise reads the handwriting, follows your rubric step by step, awards partial credit and writes feedback each student can act on.",
+    body: "Upload phone scans or PDFs. Veda Vidya reads the handwriting, follows your rubric step by step, awards partial credit and writes feedback each student can act on.",
     points: ["Step-wise partial marks, not just right/wrong", "Reads English, Hindi and other Indian scripts", "Accepts alternative methods that reach the answer", "Teachers review and override any mark in one click"],
   },
   {
@@ -112,7 +112,7 @@ export default function Home() {
           <div>
             <div className="eyebrow">Evaluation · Paper setting · Analytics</div>
             <h1>Grade every sheet <span className="serif">faster</span>, teach every student better.</h1>
-            <p className="hero-sub">Markwise checks handwritten answer sheets step by step, writes question papers on demand, and shows you exactly where each student needs help.</p>
+            <p className="hero-sub">Veda Vidya checks handwritten answer sheets step by step, writes question papers on demand, and shows you exactly where each student needs help.</p>
             <div className="hero-cta">
               <Link to="/contact" className="btn btn-primary">Book a demo →</Link>
               <Link to="/login?demo=1" className="btn-link">Try the live demo</Link>
@@ -160,7 +160,7 @@ export default function Home() {
               <div key={b} className="card pain-card">
                 <div className="row between"><span className="before">Before</span><span className="num">0{i + 1}</span></div>
                 <h4>{b}</h4><p>{bt}</p>
-                <div className="after">With Markwise</div>
+                <div className="after">With Veda Vidya</div>
                 <h4>{a}</h4><p>{at}</p>
               </div>
             ))}
@@ -243,7 +243,7 @@ export default function Home() {
         <div className="cta-band">
           <span className="chip" style={{ background: "rgba(255,255,255,.15)", color: "#fff", borderColor: "rgba(255,255,255,.3)" }}>Get started</span>
           <h2>Give your teachers their evenings back.</h2>
-          <p>See Markwise evaluate your own answer sheets in a 20-minute walkthrough, or set up your institute today.</p>
+          <p>See Veda Vidya evaluate your own answer sheets in a 20-minute walkthrough, or set up your institute today.</p>
           <div className="row" style={{ justifyContent: "center", marginTop: 28, flexWrap: "wrap" }}>
             <Link to="/contact" className="btn btn-primary">Book a demo</Link>
             <Link to="/login?mode=register" className="btn btn-ghost">Create your institute</Link>

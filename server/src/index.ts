@@ -34,4 +34,4 @@ if (fs.existsSync(webDist)) {
 }
 
 const port = Number(process.env.PORT ?? 4000);
-app.listen(port, () => console.log(`Markwise API on http://localhost:${port}`));
+app.listen(port, () => console.log(`Veda Vidya API on http://localhost:${port}`));

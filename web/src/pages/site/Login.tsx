@@ -70,7 +70,7 @@ export default function Login() {
             <button className="btn btn-primary" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create institute"}</button>
           </form>
           <p className="small muted" style={{ marginTop: 16, textAlign: "center" }}>
-            {mode === "login" ? "New to Markwise? " : "Already have an account? "}
+            {mode === "login" ? "New to Veda Vidya? " : "Already have an account? "}
             <button className="btn-link" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(null); }}>{mode === "login" ? "Create an institute" : "Sign in"}</button>
           </p>
           {mode === "login" && (

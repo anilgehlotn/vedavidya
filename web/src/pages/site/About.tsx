@@ -9,8 +9,8 @@ export default function About() {
       </section>
       <section className="prose">
         <p>In most Indian schools and coaching institutes, a single test creates days of work: setting the paper, checking hundreds of handwritten copies, totalling marks, entering them into a spreadsheet and sending them to parents. The people doing that work are the same teachers students rely on in class.</p>
-        <p>Large chains can afford in-house technology teams to automate this. Most institutes can't. Markwise brings the same capabilities - AI evaluation of handwritten answers, on-demand question papers and real student analytics - to every institute, whatever its size.</p>
-        <p>We believe AI should do the repetitive work and teachers should keep the judgement. That's why every mark Markwise gives comes with its reasoning, and every mark can be reviewed and changed before results go out.</p>
+        <p>Large chains can afford in-house technology teams to automate this. Most institutes can't. Veda Vidya brings the same capabilities - AI evaluation of handwritten answers, on-demand question papers and real student analytics - to every institute, whatever its size.</p>
+        <p>We believe AI should do the repetitive work and teachers should keep the judgement. That's why every mark Veda Vidya gives comes with its reasoning, and every mark can be reviewed and changed before results go out.</p>
       </section>
       <section className="section">
         <div className="grid g2">

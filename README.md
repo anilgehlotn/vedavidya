@@ -1,8 +1,8 @@
-# Markwise
+# Veda Vidya
 
 AI evaluation, question-paper generation and student analytics for schools and coaching institutes.
 
-Markwise is an independent rebuild of the kind of product offered by acadine.ai (see
+Veda Vidya is an independent rebuild of the kind of product offered by acadine.ai (see
 [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md) for what was learned and how it maps here).
 
 ## What it does
@@ -78,3 +78,14 @@ web/src/
 | `EVAL_CONCURRENCY` | `3` | Answer sheets evaluated in parallel |
 | `PORT` | `4000` | API port |
 | `DATA_DIR` | `server/data` | Database and uploaded sheets |
+
+## Deploy (app.vedavidya.co)
+
+The app is one Docker container that serves the website, the app and the API. It needs a **persistent disk**
+mounted at `/data` (database and uploaded answer sheets), so use Render, Railway or Fly.io rather than Vercel.
+
+On Render, choose **New → Blueprint**, pick this repo, and set `ANTHROPIC_API_KEY`. `render.yaml` sets up the service,
+a 5 GB disk, a generated `JWT_SECRET` and the demo institute. Then go to **Settings → Custom Domains**, add `app.vedavidya.co`,
+and create the CNAME record Render shows you at your DNS provider (GoDaddy).
+
+Set `SEED_DEMO=false` once you onboard real institutes if you don't want the demo accounts.
