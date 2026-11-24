@@ -1,0 +1,193 @@
+// Institute structure: centres, batches, people, notices, and the overview dashboard.
+import { Router } from "express";
+import bcrypt from "bcryptjs";
+import { z } from "zod";
+import { all, one, run, uid } from "../db.js";
+import { adminOnly, staff } from "../auth.js";
+
+export const orgRoutes = Router();
+
+orgRoutes.get("/overview", staff, (req, res) => {
+  const org = req.user!.org_id;
+  const count = (sql: string) => (one<{ n: number }>(sql, org)?.n ?? 0);
+  const stats = {
+    students: count("SELECT count(*) n FROM users WHERE org_id = ? AND role = 'student'"),
+    teachers: count("SELECT count(*) n FROM users WHERE org_id = ? AND role = 'teacher'"),
+    batches: count("SELECT count(*) n FROM batches WHERE org_id = ?"),
+    centres: count("SELECT count(*) n FROM centres WHERE org_id = ?"),
+    papers: count("SELECT count(*) n FROM question_papers WHERE org_id = ?"),
+    tests: count("SELECT count(*) n FROM tests WHERE org_id = ?"),
+    sheets_evaluated: count("SELECT count(*) n FROM attempts a JOIN tests t ON t.id = a.test_id WHERE t.org_id = ? AND a.status = 'evaluated'"),
+  };
+  const recentTests = all(`
+    SELECT t.id, t.title, t.mode, t.scheduled_at, t.results_published,
+      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id) AS candidates,
+      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.status = 'evaluated') AS evaluated,
+      (SELECT avg(a.score * 100.0 / a.max_score) FROM attempts a WHERE a.test_id = t.id AND a.score IS NOT NULL AND a.max_score > 0) AS avg_pct
+    FROM tests t WHERE t.org_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC LIMIT 8`, org);
+  const batchPerf = all(`
+    SELECT b.id, b.name, count(a.id) AS attempts, avg(a.score * 100.0 / a.max_score) AS avg_pct
+    FROM batches b JOIN enrollments e ON e.batch_id = b.id
+    LEFT JOIN attempts a ON a.student_id = e.student_id AND a.score IS NOT NULL AND a.max_score > 0
+    WHERE b.org_id = ? GROUP BY b.id ORDER BY b.name`, org);
+  res.json({ stats, recentTests, batchPerf });
+});
+
+// ---- Centres
+orgRoutes.get("/centres", staff, (req, res) => {
+  res.json(all(`SELECT c.*, (SELECT count(*) FROM batches b WHERE b.centre_id = c.id) AS batch_count
+    FROM centres c WHERE org_id = ? ORDER BY name`, req.user!.org_id));
+});
+orgRoutes.post("/centres", adminOnly, (req, res) => {
+  const b = z.object({ name: z.string().min(1), city: z.string().optional() }).parse(req.body);
+  const id = uid("ctr");
+  run("INSERT INTO centres (id, org_id, name, city) VALUES (?, ?, ?, ?)", id, req.user!.org_id, b.name, b.city ?? null);
+  res.json({ id });
+});
+orgRoutes.delete("/centres/:id", adminOnly, (req, res) => {
+  run("DELETE FROM centres WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  res.json({ ok: true });
+});
+
+// ---- Batches
+orgRoutes.get("/batches", staff, (req, res) => {
+  res.json(all(`SELECT b.*, c.name AS centre_name, u.name AS teacher_name,
+      (SELECT count(*) FROM enrollments e WHERE e.batch_id = b.id) AS student_count
+    FROM batches b LEFT JOIN centres c ON c.id = b.centre_id LEFT JOIN users u ON u.id = b.teacher_id
+    WHERE b.org_id = ? ORDER BY c.name, b.name`, req.user!.org_id));
+});
+const BatchBody = z.object({ name: z.string().min(1), course: z.string().optional(), centre_id: z.string().nullable().optional(), teacher_id: z.string().nullable().optional() });
+orgRoutes.post("/batches", adminOnly, (req, res) => {
+  const b = BatchBody.parse(req.body);
+  const id = uid("bat");
+  run("INSERT INTO batches (id, org_id, centre_id, name, course, teacher_id) VALUES (?,?,?,?,?,?)",
+    id, req.user!.org_id, b.centre_id || null, b.name, b.course ?? null, b.teacher_id || null);
+  res.json({ id });
+});
+orgRoutes.put("/batches/:id", adminOnly, (req, res) => {
+  const b = BatchBody.parse(req.body);
+  run("UPDATE batches SET name = ?, course = ?, centre_id = ?, teacher_id = ? WHERE id = ? AND org_id = ?",
+    b.name, b.course ?? null, b.centre_id || null, b.teacher_id || null, req.params.id, req.user!.org_id);
+  res.json({ ok: true });
+});
+orgRoutes.delete("/batches/:id", adminOnly, (req, res) => {
+  run("DELETE FROM batches WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  res.json({ ok: true });
+});
+
+// ---- People
+const makeUsername = (name: string) =>
+  name.toLowerCase().replace(/[^a-z]/g, "").slice(0, 10) + Math.floor(1000 + Math.random() * 9000);
+const makePassword = () => Math.random().toString(36).slice(2, 10);
+
+orgRoutes.get("/students", staff, (req, res) => {
+  const batch = req.query.batch_id as string | undefined;
+  res.json(all(`SELECT u.id, u.name, u.email, u.phone, u.username, e.batch_id, e.roll_no, e.parent_name, e.parent_phone, e.parent_email,
+      b.name AS batch_name
+    FROM users u LEFT JOIN enrollments e ON e.student_id = u.id LEFT JOIN batches b ON b.id = e.batch_id
+    WHERE u.org_id = ? AND u.role = 'student' ${batch ? "AND e.batch_id = ?" : ""} ORDER BY b.name, CAST(e.roll_no AS INTEGER), u.name`,
+    ...(batch ? [req.user!.org_id, batch] : [req.user!.org_id])));
+});
+
+const StudentBody = z.object({
+  name: z.string().min(1), email: z.string().email().optional().or(z.literal("")), phone: z.string().optional(),
+  batch_id: z.string().min(1), roll_no: z.string().optional(),
+  parent_name: z.string().optional(), parent_phone: z.string().optional(), parent_email: z.string().optional(),
+});
+
+function createStudent(orgId: string, s: z.infer<typeof StudentBody>) {
+  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", s.batch_id, orgId)) throw new Error("Unknown batch");
+  const id = uid("usr");
+  const username = makeUsername(s.name);
+  const password = makePassword();
+  run("INSERT INTO users (id, org_id, role, name, email, phone, username, password_hash) VALUES (?,?, 'student', ?,?,?,?,?)",
+    id, orgId, s.name, s.email ? s.email.toLowerCase() : null, s.phone || null, username, bcrypt.hashSync(password, 10));
+  run("INSERT INTO enrollments (student_id, batch_id, roll_no, parent_name, parent_phone, parent_email) VALUES (?,?,?,?,?,?)",
+    id, s.batch_id, s.roll_no || null, s.parent_name || null, s.parent_phone || null, s.parent_email || null);
+  return { id, name: s.name, username, password };
+}
+
+orgRoutes.post("/students", staff, (req, res) => {
+  res.json(createStudent(req.user!.org_id, StudentBody.parse(req.body)));
+});
+
+// Bulk onboarding from pasted CSV rows: name,roll_no,phone,email,parent_phone
+orgRoutes.post("/students/bulk", staff, (req, res) => {
+  const { batch_id, csv } = z.object({ batch_id: z.string(), csv: z.string() }).parse(req.body);
+  const created = [];
+  for (const line of csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+    const [name, roll_no, phone, email, parent_phone] = line.split(",").map((c) => c?.trim());
+    if (!name || /^name$/i.test(name)) continue;
+    created.push(createStudent(req.user!.org_id, { name, roll_no, phone, email: email && email.includes("@") ? email : "", parent_phone, batch_id }));
+  }
+  res.json({ created });
+});
+
+orgRoutes.put("/students/:id", staff, (req, res) => {
+  const s = StudentBody.parse(req.body);
+  const org = req.user!.org_id;
+  if (!one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, org)) return res.status(404).json({ error: "Not found" });
+  run("UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?", s.name, s.email || null, s.phone || null, req.params.id);
+  run("DELETE FROM enrollments WHERE student_id = ?", req.params.id);
+  run("INSERT INTO enrollments (student_id, batch_id, roll_no, parent_name, parent_phone, parent_email) VALUES (?,?,?,?,?,?)",
+    req.params.id, s.batch_id, s.roll_no || null, s.parent_name || null, s.parent_phone || null, s.parent_email || null);
+  res.json({ ok: true });
+});
+
+orgRoutes.post("/students/:id/reset-password", staff, (req, res) => {
+  const u = one<{ username: string }>("SELECT username FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id);
+  if (!u) return res.status(404).json({ error: "Not found" });
+  const password = makePassword();
+  run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(password, 10), req.params.id);
+  res.json({ username: u.username, password });
+});
+
+orgRoutes.delete("/students/:id", staff, (req, res) => {
+  run("DELETE FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id);
+  res.json({ ok: true });
+});
+
+orgRoutes.get("/teachers", staff, (req, res) => {
+  res.json(all(`SELECT id, name, email, phone, subject, role FROM users WHERE org_id = ? AND role IN ('admin','teacher') ORDER BY role, name`, req.user!.org_id));
+});
+orgRoutes.post("/teachers", adminOnly, (req, res) => {
+  const b = z.object({ name: z.string().min(1), email: z.string().email(), phone: z.string().optional(), subject: z.string().optional(), role: z.enum(["teacher", "admin"]).default("teacher") }).parse(req.body);
+  if (one("SELECT 1 FROM users WHERE lower(email) = ?", b.email.toLowerCase())) return res.status(409).json({ error: "Email already in use" });
+  const password = makePassword();
+  const id = uid("usr");
+  run("INSERT INTO users (id, org_id, role, name, email, phone, subject, password_hash) VALUES (?,?,?,?,?,?,?,?)",
+    id, req.user!.org_id, b.role, b.name, b.email.toLowerCase(), b.phone || null, b.subject || null, bcrypt.hashSync(password, 10));
+  res.json({ id, email: b.email.toLowerCase(), password });
+});
+orgRoutes.delete("/teachers/:id", adminOnly, (req, res) => {
+  if (req.params.id === req.user!.id) return res.status(400).json({ error: "You can't remove yourself" });
+  run("DELETE FROM users WHERE id = ? AND org_id = ? AND role IN ('teacher','admin')", req.params.id, req.user!.org_id);
+  res.json({ ok: true });
+});
+
+// ---- Notices (students see notices for their batch + org-wide ones)
+orgRoutes.get("/notices", (req, res) => {
+  const u = req.user!;
+  const rows = u.role === "student"
+    ? all(`SELECT n.*, b.name AS batch_name FROM notices n LEFT JOIN batches b ON b.id = n.batch_id
+        WHERE n.org_id = ? AND (n.batch_id IS NULL OR n.batch_id IN (SELECT batch_id FROM enrollments WHERE student_id = ?))
+        ORDER BY n.created_at DESC`, u.org_id, u.id)
+    : all(`SELECT n.*, b.name AS batch_name FROM notices n LEFT JOIN batches b ON b.id = n.batch_id WHERE n.org_id = ? ORDER BY n.created_at DESC`, u.org_id);
+  res.json(rows);
+});
+orgRoutes.post("/notices", staff, (req, res) => {
+  const b = z.object({ title: z.string().min(1), body: z.string().min(1), batch_id: z.string().nullable().optional() }).parse(req.body);
+  run("INSERT INTO notices (id, org_id, title, body, batch_id, created_by) VALUES (?,?,?,?,?,?)",
+    uid("ntc"), req.user!.org_id, b.title, b.body, b.batch_id || null, req.user!.id);
+  res.json({ ok: true });
+});
+orgRoutes.delete("/notices/:id", staff, (req, res) => {
+  run("DELETE FROM notices WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  res.json({ ok: true });
+});
+
+orgRoutes.put("/organisation", adminOnly, (req, res) => {
+  const b = z.object({ name: z.string().min(1), city: z.string().optional() }).parse(req.body);
+  run("UPDATE orgs SET name = ?, city = ? WHERE id = ?", b.name, b.city ?? null, req.user!.org_id);
+  res.json({ ok: true });
+});

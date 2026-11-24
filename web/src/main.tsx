@@ -1,0 +1,56 @@
+import React from "react";
+import ReactDOM from "react-dom/client";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import "./styles.css";
+import { AuthProvider } from "./lib/auth";
+import SiteLayout from "./pages/site/SiteLayout";
+import Home from "./pages/site/Home";
+import About from "./pages/site/About";
+import Contact from "./pages/site/Contact";
+import Login from "./pages/site/Login";
+import PublicReport from "./pages/site/PublicReport";
+import AppLayout from "./pages/app/AppLayout";
+import Overview from "./pages/app/Overview";
+import { Batches, Notices, Settings, StaffPage, Students } from "./pages/app/Institute";
+import { PaperDetail, PaperGenerate, PaperList } from "./pages/app/Papers";
+import { AttemptReview, TestDetail, TestList } from "./pages/app/Tests";
+import { Analytics, StudentReport } from "./pages/app/Analytics";
+import { CbtExam, MyTests } from "./pages/app/Student";
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route element={<SiteLayout />}>
+            <Route path="/" element={<Home />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/contact" element={<Contact />} />
+          </Route>
+          <Route path="/login" element={<Login />} />
+          <Route path="/report/:token" element={<PublicReport />} />
+          <Route path="/exam/:testId" element={<CbtExam />} />
+          <Route path="/app" element={<AppLayout />}>
+            <Route index element={<Overview />} />
+            <Route path="batches" element={<Batches />} />
+            <Route path="students" element={<Students />} />
+            <Route path="students/:id" element={<StudentReport />} />
+            <Route path="teachers" element={<StaffPage />} />
+            <Route path="notices" element={<Notices />} />
+            <Route path="settings" element={<Settings />} />
+            <Route path="papers" element={<PaperList />} />
+            <Route path="papers/new" element={<PaperGenerate />} />
+            <Route path="papers/:id" element={<PaperDetail />} />
+            <Route path="tests" element={<TestList />} />
+            <Route path="tests/:id" element={<TestDetail />} />
+            <Route path="attempts/:id" element={<AttemptReview />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="my" element={<MyTests />} />
+            <Route path="my/report" element={<StudentReport self />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
+  </React.StrictMode>,
+);

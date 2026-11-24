@@ -1,0 +1,13 @@
+{
+  "name": "markwise",
+  "private": true,
+  "workspaces": ["server", "web"],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm -w server run dev\" \"npm -w web run dev\"",
+    "build": "npm -w web run build",
+    "start": "npm -w server run start",
+    "seed": "npm -w server run seed",
+    "typecheck": "npm -w server run typecheck && npm -w web run typecheck"
+  },
+  "devDependencies": { "concurrently": "^9.1.2" }
+}
