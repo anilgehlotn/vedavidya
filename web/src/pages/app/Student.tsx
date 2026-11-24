@@ -23,7 +23,7 @@ export function MyTests() {
           {live.map((t) => {
             const notYet = t.scheduled_at && Date.parse(t.scheduled_at) > Date.now();
             return (
-              <div key={t.id} className="card card-pad stack" style={{ gap: 8, borderColor: "#f0d77a" }}>
+              <div key={t.id} className="card card-pad stack" style={{ gap: 8, borderColor: "#bfe8da" }}>
                 <div className="row between"><span className="badge blue">{t.status === "in_progress" ? "In progress" : notYet ? "Upcoming" : "Live now"}</span><span className="small muted">{fmtDateTime(t.scheduled_at)}</span></div>
                 <b style={{ fontSize: 18 }}>{t.title}</b>
                 <div className="small muted">{t.subject} · {t.total_marks} marks · {t.duration_min} minutes</div>

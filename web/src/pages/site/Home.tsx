@@ -1,262 +1,319 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useScrollProgress } from "../../lib/motion";
+import { CountUp, Typewriter, useScrollProgress } from "../../lib/motion";
 
 const v = (vars: Record<string, string | number>) => vars as CSSProperties;
 
-/* Red-pen marks drawn as strokes, so they can "write themselves". */
-const Tick = ({ d = 0, size = 26 }: { d?: number; size?: number }) => (
-  <svg className="pen tick" width={size} height={size * 0.85} viewBox="0 0 26 22" aria-hidden style={v({ "--d": `${d}s` })}>
-    <path d="M2 12.5 L9.5 19.5 L24 2.5" pathLength={1} />
-  </svg>
+const Check = () => (
+  <svg viewBox="0 0 20 20" className="ico-check" aria-hidden><circle cx="10" cy="10" r="10" /><path d="M5.5 10.5 L8.5 13.5 L14.5 7" /></svg>
 );
-const Ring = ({ d = 0, children, w = 64 }: { d?: number; children: ReactNode; w?: number }) => (
-  <span className="ring" style={v({ "--d": `${d}s`, width: `${w}px` })}>
-    <svg viewBox="0 0 64 48" aria-hidden className="pen"><path d="M50 6 C30 -2 4 6 4 24 C4 42 34 48 52 40 C64 34 64 12 44 5" pathLength={1} /></svg>
-    <b>{children}</b>
-  </span>
+const Squiggle = () => (
+  <svg className="squiggle" viewBox="0 0 300 20" preserveAspectRatio="none" aria-hidden><path d="M3 14 C 50 4, 90 4, 130 11 S 220 18, 297 6" pathLength={1} /></svg>
 );
-const Strike = ({ d = 0, children }: { d?: number; children: ReactNode }) => (
-  <span className="strike" style={v({ "--d": `${d}s` })}>{children}<svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden className="pen"><path d="M1 7 C30 3 60 8 99 3" pathLength={1} /></svg></span>
-);
-
-function Line({ i, children }: { i: number; children: ReactNode }) {
-  return <span className="mline"><span style={v({ "--i": i })}>{children}</span></span>;
-}
 
 /* ---------- Hero ---------- */
-function AnswerSheet() {
+const STUDENTS = [
+  { n: "Aarav Sharma", i: "AS", c: "var(--sky)", s: 92 },
+  { n: "Isha Patel", i: "IP", c: "var(--coral)", s: 88 },
+  { n: "Kabir Singh", i: "KS", c: "var(--lilac)", s: 74 },
+  { n: "Diya Mehta", i: "DM", c: "var(--gold)", s: 81 },
+];
+
+function HeroScene() {
+  const [ref, p] = useScrollProgress<HTMLDivElement>();
   return (
-    <figure className="sheet is-in" aria-label="A handwritten maths answer sheet being marked">
-      <div className="sheet-head mono">
-        <span>Roll No. <u>07</u></span><span>Subject <u>Mathematics</u></span><span>Date <u>18/11</u></span>
+    <div className="scene" ref={ref} style={v({ "--p": p.toFixed(3) })} aria-label="Veda Vidya marking a class's answer sheets">
+      <span className="blob b1" aria-hidden />
+      <span className="blob b2" aria-hidden />
+      <span className="blob b3" aria-hidden />
+
+      <div className="s-card main pop" style={v({ "--i": 0 })}>
+        <div className="mc-head">
+          <div><b>Unit Test 2</b><span>Class 10 · Mathematics</span></div>
+          <span className="tag">Marking…</span>
+        </div>
+        <div className="mc-progress"><i /></div>
+        <p className="mc-sub"><CountUp to={18} duration={2600} /> of 24 copies marked</p>
+        <ul className="mc-list">
+          {STUDENTS.map((s, k) => (
+            <li key={s.n} style={v({ "--d": `${0.7 + k * 0.18}s` })}>
+              <span className="av" style={{ background: s.c }}>{s.i}</span>
+              <span className="nm">{s.n}</span>
+              <span className="meter"><i style={v({ "--w": `${s.s}%` })} /></span>
+              <b>{s.s}%</b>
+            </li>
+          ))}
+        </ul>
       </div>
-      <div className="sheet-total"><Ring d={3.1} w={92}>16<small>/18</small></Ring></div>
-      <div className="sheet-body hand">
-        <p><span className="qn">1.</span> 2x² − 7x + 3 = 0</p>
-        <p>(2x − 1)(x − 3) = 0 <Tick d={1.1} /></p>
-        <p>x = ½ , 3 <Tick d={1.35} /></p>
-        <p><span className="qn">2.</span> a₁₅ = 7 + 14 × 4 = 63 <Tick d={1.6} /><Tick d={1.75} /></p>
-        <p><span className="qn">3.</span> मान लो √2 = p/q, जहाँ p, q सहअभाज्य</p>
-        <p>p² = 2q² ⇒ p सम है <Tick d={1.95} /></p>
-        <p>q² = 2k² ⇒ q भी <Strike d={2.3}>विषम</Strike> सम <Tick d={2.6} /></p>
-        <p className="pen-note">conclusion? −½ <Ring d={2.8} w={58}>4½</Ring></p>
+
+      <div className="float f-paper pop" style={v({ "--i": 2, "--depth": -60 })}>
+        <div className="hand">
+          <p>tan θ = 3/4 <span className="tick">✓</span></p>
+          <p>a₁₅ = 63 <span className="tick">✓✓</span></p>
+          <p>p² = 2q² ⇒ p सम <span className="tick">✓</span></p>
+        </div>
       </div>
-    </figure>
+      <div className="float f-sticker pop" style={v({ "--i": 3, "--depth": 50 })}>
+        <span>Q4 · Proof</span><b>4.5<small>/5</small></b><em>step-wise</em>
+      </div>
+      <div className="float f-toast pop" style={v({ "--i": 4, "--depth": 90 })}>
+        <span className="dot-ok"><Check /></span>
+        <div><b>Report sent</b><span>to Isha's parents · 7:42 am</span></div>
+      </div>
+    </div>
   );
 }
 
 function Hero() {
   return (
-    <section className="hero3">
-      <div className="wrap hero3-grid">
-        <div className="hero3-copy">
-          <h1 className="h-xl">
-            <Line i={0}>Your teachers</Line>
-            <Line i={1}>check copies</Line>
-            <Line i={2}>till midnight.</Line>
-            <Line i={3}><span className="hl">They don't have to.</span></Line>
+    <section className="hero4">
+      <div className="wrap hero4-grid">
+        <div className="hero4-copy">
+          <span className="pill-badge glide" style={v({ "--i": 0 })}><span className="spark" />New: marking in हिंदी and English</span>
+          <h1 className="h-hero glide" style={v({ "--i": 1 })}>
+            Marking made <span className="u">easy<Squiggle /></span>, so teachers can teach.
           </h1>
-          <p className="lead fade" style={v({ "--i": 5 })}>
-            Veda Vidya reads handwritten answer sheets in English, Hindi and Sanskrit, marks every step against your marking scheme, and tells each student what to fix. Your teachers review and sign off.
+          <p className="lead glide" style={v({ "--i": 2 })}>
+            Snap photos of your students' answer sheets. Veda Vidya marks every step, writes helpful feedback, and shares results the same day.
           </p>
-          <div className="actions fade" style={v({ "--i": 6 })}>
-            <Link to="/contact" className="btn btn-primary btn-lg">Book a demo</Link>
-            <Link to="/login" className="link-arrow">Open the live demo</Link>
+          <div className="actions glide" style={v({ "--i": 3 })}>
+            <Link to="/contact" className="btn btn-primary btn-lg">Book a free demo</Link>
+            <Link to="/login" className="btn btn-soft btn-lg">Try it now</Link>
           </div>
+          <ul className="trust glide" style={v({ "--i": 4 })}>
+            <li><Check />CBSE, ICSE, State boards, JEE, NEET</li>
+            <li><Check />Teachers approve every mark</li>
+          </ul>
         </div>
-        <AnswerSheet />
+        <HeroScene />
       </div>
     </section>
   );
 }
 
-/* ---------- A normal week, as arithmetic ---------- */
-function Week() {
-  return (
-    <section className="week">
-      <div className="wrap">
-        <p className="label mono" data-reveal>A normal week at a coaching centre</p>
-        <div className="sum" data-reveal>
-          <div><b>40</b><span>students in a batch</span></div>
-          <i>×</i>
-          <div><b>5</b><span>subjects</span></div>
-          <i>×</i>
-          <div><b>1</b><span>weekly test each</span></div>
-          <i>=</i>
-          <div className="res"><b>200</b><span>copies on one desk</span></div>
-        </div>
-        <p className="week-note" data-reveal>Each copy takes a careful teacher four to six minutes. That's most of a weekend, every weekend, before anyone has looked at what students got wrong.</p>
-      </div>
-    </section>
-  );
-}
-
-/* ---------- Section A: evaluation ---------- */
-const SCHEME = [
-  ["Uses sin²θ + cos²θ = 1, or draws a right triangle", "1", "1"],
-  ["Finds cos θ = 4/5", "1", "1"],
-  ["Finds tan θ = 3/4", "1", "½"],
-];
-function Evaluate() {
-  return (
-    <section className="chapter" id="evaluate">
-      <div className="wrap chapter-grid">
-        <header className="chapter-head" data-reveal>
-          <p className="label mono">Section A · Evaluation</p>
-          <h2 className="h-lg">Marked the way your best teacher marks.</h2>
-          <p className="body">Not just right or wrong. Each answer is read line by line and checked against the marking scheme you already use, with partial credit for every step a student gets right and a short note on the step they missed.</p>
-        </header>
-        <div className="eval" data-reveal>
-          <div className="eval-sheet hand">
-            <p><span className="qn">4.</span> sin θ = 3/5</p>
-            <p>cos θ = √(1 − 9/25) = 4/5 <Tick d={0.5} /></p>
-            <p>tan θ = 3/5 ÷ 4/5 = <Strike d={0.9}>4/3</Strike> 3/4 <Tick d={1.2} /></p>
-            <p className="pen-note">correct, but show the cancel step <Ring d={1.4} w={54}>2½</Ring></p>
-          </div>
-          <table className="scheme mono">
-            <thead><tr><th>Marking scheme · Q4</th><th>Max</th><th>Given</th></tr></thead>
-            <tbody>{SCHEME.map(([s, m, g], i) => (
-              <tr key={s} style={v({ "--d": `${0.3 + i * 0.25}s` })}><td>{s}</td><td>{m}</td><td className="given">{g}</td></tr>
-            ))}</tbody>
-            <tfoot><tr><td>Total</td><td>3</td><td className="given">2½</td></tr></tfoot>
-          </table>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/* ---------- Section B: question papers ---------- */
-function Generate() {
-  return (
-    <section className="chapter alt" id="papers">
-      <div className="wrap chapter-grid flip">
-        <header className="chapter-head" data-reveal>
-          <p className="label mono">Section B · Question papers</p>
-          <h2 className="h-lg">A fresh paper for every batch, in the format they'll face.</h2>
-          <p className="body">Choose the board, class, chapters and pattern. You get an original paper with answer key, worked solutions and a step-wise marking scheme, laid out like the real exam. Edit anything before you print.</p>
-        </header>
-        <article className="qpaper" data-reveal aria-label="Sample question paper">
-          <div className="qp-top">
-            <b>SUNRISE ACADEMY, JAIPUR</b>
-            <span>Unit Test II · Class X · Mathematics</span>
-            <div className="qp-meta"><span>Time: 1 hr</span><span>M.M.: 20</span></div>
-          </div>
-          <p className="qp-gi"><b>General Instructions:</b> All questions are compulsory. Section A carries 1 mark each, Section B carries 3 marks each. Draw neat figures wherever required.</p>
-          <p className="qp-sec">SECTION A</p>
-          <ol className="qp-qs">
-            <li>The 15th term of the A.P. 7, 11, 15, … is <span className="qp-m">[1]</span></li>
-            <li>If sin θ = 3/5 and θ is acute, then tan θ equals<br /><span className="qp-opts">(a) 3/4 &nbsp; (b) 4/3 &nbsp; (c) 4/5 &nbsp; (d) 5/4</span><span className="qp-m">[1]</span></li>
-          </ol>
-          <p className="qp-sec">SECTION B</p>
-          <ol className="qp-qs" start={3}>
-            <li>Prove that √2 is irrational. <span className="qp-m">[3]</span></li>
-          </ol>
-          <div className="qp-stamp mono">Generated in 1 min 48 s · answer key attached</div>
-        </article>
-      </div>
-    </section>
-  );
-}
-
-/* ---------- Section C: analysis ---------- */
-const TOPICS: [string, number][] = [["Trigonometry", 46], ["Heights & distances", 58], ["Quadratic equations", 74], ["Arithmetic progressions", 81], ["Real numbers", 88]];
-function Analyse() {
-  return (
-    <section className="chapter" id="insight">
-      <div className="wrap chapter-grid">
-        <header className="chapter-head" data-reveal>
-          <p className="label mono">Section C · Insight</p>
-          <h2 className="h-lg">Know which chapter is costing marks, before the boards.</h2>
-          <p className="body">Every marked copy feeds a running picture of each student, batch and centre. Topic by topic, test after test.</p>
-        </header>
-        <figure className="topics" data-reveal>
-          <figcaption className="mono">Class 10-A · marks earned by chapter, last 4 tests</figcaption>
-          {TOPICS.map(([t, p], i) => (
-            <div key={t} className={`topic ${p < 50 ? "weak" : ""}`} style={v({ "--w": `${p}%`, "--d": `${i * 0.1}s` })}>
-              <span>{t}</span><div className="tbar"><i /></div><b className="mono">{p}%</b>
-            </div>
-          ))}
-          <p className="topics-note"><span className="hl">Trigonometry</span> is where this batch loses the most marks. Revision drills go to the 14 students below 50%.</p>
-        </figure>
-      </div>
-    </section>
-  );
-}
-
-/* ---------- How it works: pinned while you scroll ---------- */
+/* ---------- How it works ---------- */
 const STEPS = [
-  ["Collect", "Teachers photograph each copy with a phone, or scan a bundle to PDF. Any handwriting, any ink."],
-  ["Mark", "Every answer is read, matched to the marking scheme and given step-wise marks with a reason."],
-  ["Review", "Teachers look over the marks, change any they disagree with, and approve the batch."],
-  ["Share", "Students and parents get their report card the same day, with exactly what to revise."],
+  { t: "Snap or scan", d: "Take phone photos of each answer sheet, or upload a PDF. Any handwriting works.", c: "sky", art: "upload" },
+  { t: "We mark it", d: "Every answer is read and marked step by step against your marking scheme.", c: "gold", art: "mark" },
+  { t: "Everyone knows", d: "Teachers approve, then students and parents get their reports the same day.", c: "coral", art: "share" },
 ];
-function Process() {
-  const [ref, p] = useScrollProgress<HTMLElement>("pin");
-  const step = Math.min(STEPS.length - 1, Math.floor(p * STEPS.length));
+
+function StepArt({ kind }: { kind: string }) {
+  if (kind === "upload") return (
+    <div className="art art-upload" aria-hidden>
+      <div className="phone-s"><div className="viewfinder"><i /><i /><i /><i /><span className="lines" /></div><b className="shutter" /></div>
+    </div>
+  );
+  if (kind === "mark") return (
+    <div className="art art-mark" aria-hidden>
+      <div className="mini-sheet hand"><p>x = ½ , 3 <span className="tick">✓</span></p><p>cos θ = 4/5 <span className="tick">✓</span></p><p className="red">−½ show step</p></div>
+    </div>
+  );
   return (
-    <section className="process" ref={ref} id="how">
-      <div className="process-pin">
-        <div className="wrap">
-          <p className="label mono light">From bundle to report card</p>
-          <div className="process-grid">
-            <div className="process-num" aria-hidden>
-              {STEPS.map((_, i) => <span key={i} className={i === step ? "on" : i < step ? "past" : ""}>{i + 1}</span>)}
-            </div>
-            <div className="process-text">
-              {STEPS.map(([h, t], i) => (
-                <div key={h} className={`pstep ${i === step ? "on" : ""}`} aria-hidden={i !== step}>
-                  <h3 className="h-lg">{h}.</h3><p>{t}</p>
-                </div>
+    <div className="art art-share" aria-hidden>
+      <div className="report-s"><b>94%</b><span>Isha · Unit Test 2</span><div className="rs-bars"><i /><i /><i /></div></div>
+    </div>
+  );
+}
+
+function HowItWorks() {
+  const [ref, p] = useScrollProgress<HTMLDivElement>();
+  return (
+    <section className="section4" id="how">
+      <div className="wrap">
+        <div className="head4" data-reveal>
+          <span className="kicker">How it works</span>
+          <h2 className="h-sec">Three steps. That's it.</h2>
+          <p className="lead center">No new hardware, no training days. If your teachers can take a photo, they can use Veda Vidya.</p>
+        </div>
+        <div className="steps4" ref={ref}>
+          <svg className="path4" viewBox="0 0 1000 60" preserveAspectRatio="none" aria-hidden>
+            <path d="M80 30 C 260 -10, 330 70, 500 30 S 760 -10, 920 30" pathLength={1} style={{ strokeDashoffset: Math.max(0, 1 - Math.min(1, (p - 0.15) * 2.4)) }} />
+          </svg>
+          {STEPS.map((s, i) => (
+            <article key={s.t} className={`step4 c-${s.c}`} data-reveal style={v({ transitionDelay: `${i * 0.12}s` })}>
+              <span className="num">{i + 1}</span>
+              <StepArt kind={s.art} />
+              <h3>{s.t}</h3>
+              <p>{s.d}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- Feature rows ---------- */
+function Feature({ kicker, title, text, points, tone, flip, children, id }: { kicker: string; title: string; text: string; points: string[]; tone: string; flip?: boolean; children: ReactNode; id?: string }) {
+  return (
+    <div className={`feat ${flip ? "flip" : ""}`} id={id}>
+      <div className="feat-copy" data-reveal>
+        <span className="kicker">{kicker}</span>
+        <h3 className="h-feat">{title}</h3>
+        <p className="lead">{text}</p>
+        <ul className="ticks">{points.map((x) => <li key={x}><Check />{x}</li>)}</ul>
+      </div>
+      <div className={`feat-visual tone-${tone}`} data-reveal>
+        <span className="fv-blob" aria-hidden />
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Features() {
+  return (
+    <section className="section4 tinted" id="features">
+      <div className="wrap">
+        <div className="head4" data-reveal>
+          <span className="kicker">Everything in one place</span>
+          <h2 className="h-sec">One app for marking, papers and progress.</h2>
+        </div>
+
+        <Feature id="evaluate" kicker="Smart marking" tone="mint" title="Marks every step, not just the answer."
+          text="Partial credit works just like it does with your best teacher. Each mark comes with a short reason, so students know exactly what to fix."
+          points={["Reads English, Hindi and Sanskrit handwriting", "Follows your own marking scheme", "Flags unclear writing for a teacher to check"]}>
+          <div className="ui-card rubric">
+            <div className="ui-head"><b>Q4 · Prove √2 is irrational</b><span className="score-chip">4.5 / 5</span></div>
+            {[["Assumes √2 = p/q in lowest terms", "1/1"], ["Shows p² = 2q², so p is even", "1.5/1.5"], ["Shows q is also even", "1.5/1.5"], ["States the contradiction", "0.5/1"]].map(([s, m], i) => (
+              <div key={s} className="rub-row" style={v({ "--d": `${0.2 + i * 0.15}s` })}><span className={`rdot ${m.startsWith("0.5") ? "half" : ""}`} />{s}<b>{m}</b></div>
+            ))}
+            <p className="fb">Great proof! Finish by clearly stating the contradiction.</p>
+          </div>
+        </Feature>
+
+        <Feature id="papers" kicker="Question papers" tone="sun" flip title="A fresh question paper in minutes."
+          text="Pick the board, class, chapters and pattern. Get an original paper with answers, solutions and a marking scheme, ready to print or use online."
+          points={["CBSE, ICSE, JEE, NEET and more", "Choose difficulty, marks and sections", "Edit anything before you print"]}>
+          <div className="ui-card paper4">
+            <div className="ui-head"><b>Physics · Class 11</b><span className="score-chip soft">JEE pattern</span></div>
+            <p className="q"><b>Q14.</b> <Typewriter lines={[
+              "A uniform disc rotates freely. If its angular velocity is doubled, its kinetic energy becomes…",
+              "Two resistors of 4 Ω and 12 Ω are joined in parallel. The equivalent resistance is…",
+            ]} /></p>
+            <div className="opts4"><span>Half</span><span>Double</span><span className="ok">Four times</span><span>Same</span></div>
+          </div>
+        </Feature>
+
+        <Feature id="insight" kicker="Progress tracking" tone="lilac" title="See who needs help, before the exam."
+          text="Every marked sheet updates each student's progress, chapter by chapter, so teachers can focus revision where it counts."
+          points={["Reports for every student, batch and centre", "Weak chapters highlighted automatically", "Share reports with parents in one tap"]}>
+          <div className="ui-card chart4">
+            <div className="ui-head"><b>Class 10-A · chapters</b><span className="score-chip">↑ 14% this month</span></div>
+            <div className="cbars">
+              {[["Trig", 46, "coral"], ["AP", 81, "teal"], ["Quad", 74, "teal"], ["Real", 88, "teal"], ["H&D", 58, "gold"]].map(([l, h, c], i) => (
+                <div key={l as string} className="cb"><i className={`c-${c}`} style={v({ "--h": `${h}%`, "--d": `${i * 0.1}s` })}><em>{h}%</em></i><span>{l}</span></div>
               ))}
             </div>
           </div>
-          <div className="process-bar"><i style={{ transform: `scaleX(${p})` }} /></div>
+        </Feature>
+
+        <Feature kicker="Online tests" tone="sky" flip title="Tests on any phone, scored instantly."
+          text="Run timed mock tests online with a question palette and mark-for-review, just like the real exam. Scores and rankings are ready the moment time is up."
+          points={["Works on phones and computers", "Negative marking supported", "Instant scores and rank lists"]}>
+          <div className="ui-card cbt4">
+            <div className="ui-head"><b>JEE Mock · Physics</b><span className="timer4">⏱ 01:42:04</span></div>
+            <div className="pal4">{Array.from({ length: 30 }, (_, i) => <i key={i} className={i < 17 ? "a" : i === 19 || i === 8 ? "r" : i === 21 ? "c" : ""} style={v({ "--d": `${i * 0.03}s` })}>{i + 1}</i>)}</div>
+            <div className="legend"><span><i className="a" />Answered</span><span><i className="r" />Review</span><span><i />Not visited</span></div>
+          </div>
+        </Feature>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- Numbers band ---------- */
+function Numbers() {
+  return (
+    <section className="numbers4">
+      <svg className="wave top" viewBox="0 0 1440 60" preserveAspectRatio="none" aria-hidden><path d="M0 60 V30 C 240 0, 480 0, 720 26 S 1200 56, 1440 20 V60 Z" /></svg>
+      <div className="wrap nums" data-reveal>
+        <div><b>Same day</b><span>results instead of weeks</span></div>
+        <div><b><CountUp to={4} /></b><span>question types marked: MCQ, numerical, short and long answers</span></div>
+        <div><b><CountUp to={3} /></b><span>ways to test: paper, OMR and online</span></div>
+        <div><b><CountUp to={100} suffix="%" /></b><span>of marks approved by your teachers</span></div>
+      </div>
+      <svg className="wave bottom" viewBox="0 0 1440 60" preserveAspectRatio="none" aria-hidden><path d="M0 0 V30 C 240 60, 480 60, 720 34 S 1200 4, 1440 40 V0 Z" /></svg>
+    </section>
+  );
+}
+
+/* ---------- Audience tabs ---------- */
+const AUDIENCE = [
+  { k: "Teachers", c: "teal", h: "Get your evenings back.", pts: ["Upload a class's sheets in minutes", "Review and adjust any mark", "Create the next test paper in minutes"] },
+  { k: "Owners & admins", c: "gold", h: "See every centre at a glance.", pts: ["Results across batches and branches", "Know which teachers and topics need support", "Professional reports that impress parents"] },
+  { k: "Students", c: "sky", h: "Know exactly what to fix.", pts: ["Clear feedback on every answer", "Practice tests on their phone", "Progress they can see improving"] },
+  { k: "Parents", c: "coral", h: "Stay in the loop, effortlessly.", pts: ["A report link you can share on WhatsApp", "Marks, rank and what to revise", "No app or login needed"] },
+];
+function Audience() {
+  const [tab, setTab] = useState(0);
+  return (
+    <section className="section4">
+      <div className="wrap">
+        <div className="head4" data-reveal>
+          <span className="kicker">Made for everyone</span>
+          <h2 className="h-sec">Helpful for your whole institute.</h2>
+        </div>
+        <div className="tabs4" role="tablist" data-reveal>
+          {AUDIENCE.map((a, i) => <button key={a.k} role="tab" aria-selected={tab === i} className={tab === i ? "on" : ""} onClick={() => setTab(i)}>{a.k}</button>)}
+        </div>
+        <div className="aud-stage" data-reveal>
+          {AUDIENCE.map((a, i) => (
+            <div key={a.k} className={`aud c-${a.c} ${tab === i ? "on" : ""}`} aria-hidden={tab !== i}>
+              <h3 className="h-feat">{a.h}</h3>
+              <ul className="ticks big">{a.pts.map((x) => <li key={x}><Check />{x}</li>)}</ul>
+            </div>
+          ))}
         </div>
       </div>
     </section>
   );
 }
 
-/* ---------- Formats ---------- */
-function Formats() {
+/* ---------- FAQ ---------- */
+const FAQ = [
+  ["Can it really read handwriting?", "Yes, including Hindi and Sanskrit. If a word is hard to read, Veda Vidya flags it so a teacher can take a quick look before marks are final."],
+  ["Will it replace our teachers?", "No. It does the slow, repetitive checking. Teachers review every mark, change anything they disagree with, and approve results before students see them."],
+  ["Which boards and exams does it support?", "CBSE, ICSE and state boards, plus competitive exams like JEE, NEET, UPSC and CA. You can also use your own marking scheme."],
+  ["Do students need to install an app?", "No. Online tests work in any phone browser, and parents receive a simple report link."],
+  ["Who can see our answer sheets and results?", "Only your institute's staff. Each student and parent sees only their own report."],
+];
+function Faq() {
+  const [open, setOpen] = useState<number | null>(0);
   return (
-    <section className="formats3">
-      <div className="wrap">
-        <h2 className="h-lg" data-reveal>Three ways to test.<br /><span className="dimtext">One set of results.</span></h2>
-        <div className="f3" data-reveal>
-          <div><p className="mono f3-k">01 · Paper</p><h3>Written tests and homework</h3><p>Long answers, derivations, diagrams and essays, marked step by step.</p></div>
-          <div><p className="mono f3-k">02 · OMR</p><h3>Bubble sheets</h3><p>Objective papers checked against the key, negative marking included.</p></div>
-          <div><p className="mono f3-k">03 · Screen</p><h3>Online tests</h3><p>Timed tests on a phone or computer, with question palette and instant scores.</p></div>
+    <section className="section4 tinted">
+      <div className="wrap faq-grid">
+        <div className="head4 left" data-reveal>
+          <span className="kicker">Questions</span>
+          <h2 className="h-sec">Good questions.</h2>
+          <p className="lead">Anything else? <Link to="/contact" className="inline-link">Ask us directly</Link>.</p>
+        </div>
+        <div className="faq" data-reveal>
+          {FAQ.map(([q, a], i) => (
+            <div key={q} className={`qa ${open === i ? "on" : ""}`}>
+              <button onClick={() => setOpen(open === i ? null : i)} aria-expanded={open === i}>{q}<span className="pm" aria-hidden /></button>
+              <div className="ans"><div><p>{a}</p></div></div>
+            </div>
+          ))}
         </div>
       </div>
     </section>
   );
 }
 
-function Principle() {
+function Cta() {
   return (
-    <section className="principle">
+    <section className="section4">
       <div className="wrap">
-        <blockquote data-reveal>
-          <p className="h-xl">The software suggests a mark. <span className="hl">A teacher decides it.</span></p>
-          <footer className="body">Every mark comes with its reason. Nothing reaches a student or parent until a teacher approves it.</footer>
-        </blockquote>
-      </div>
-    </section>
-  );
-}
-
-function Closing() {
-  return (
-    <section className="closing">
-      <div className="wrap closing-grid">
-        <h2 className="h-xl" data-reveal>Bring us one bundle of copies. We'll mark it in front of you.</h2>
-        <div className="closing-cta" data-reveal>
-          <p>A 20-minute call with your own answer sheets. No slides.</p>
-          <Link to="/contact" className="btn btn-gold btn-lg">Book a demo</Link>
-          <Link to="/login?mode=register" className="link-arrow light">Or set up your institute</Link>
+        <div className="cta4" data-reveal>
+          <span className="cblob c1" aria-hidden /><span className="cblob c2" aria-hidden /><span className="cblob c3" aria-hidden />
+          <h2 className="h-sec">Ready to make marking easy?</h2>
+          <p>See Veda Vidya mark your own answer sheets in a friendly 20-minute call.</p>
+          <div className="actions center">
+            <Link to="/contact" className="btn btn-white btn-lg">Book a free demo</Link>
+            <Link to="/login?mode=register" className="btn btn-ghost-white btn-lg">Create your institute</Link>
+          </div>
         </div>
       </div>
     </section>
@@ -265,16 +322,14 @@ function Closing() {
 
 export default function Home() {
   return (
-    <main className="home3">
+    <main className="home4">
       <Hero />
-      <Week />
-      <Evaluate />
-      <Generate />
-      <Analyse />
-      <Process />
-      <Formats />
-      <Principle />
-      <Closing />
+      <HowItWorks />
+      <Features />
+      <Numbers />
+      <Audience />
+      <Faq />
+      <Cta />
     </main>
   );
 }

@@ -46,7 +46,7 @@ export default function Login() {
       <aside className="auth-art">
         <Logo light />
         <div>
-          <div className="hand" style={{ fontSize: 34, color: "#f5b800", lineHeight: 1.2 }}>“Checked 42 copies before my chai went cold.”</div>
+          <div className="hand" style={{ fontSize: 34, color: "#7be3c6", lineHeight: 1.2 }}>“Checked 42 copies before my chai went cold.”</div>
           <p style={{ color: "#a8a3b8", marginTop: 16, maxWidth: 380 }}>Evaluate answer sheets, generate papers and track every student - from one dashboard.</p>
         </div>
         <div className="small" style={{ color: "#77718c" }}>Admins, teachers and students all sign in here.</div>
