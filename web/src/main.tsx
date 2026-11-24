@@ -4,6 +4,10 @@ import { BrowserRouter, MemoryRouter, Navigate, Route, Routes } from "react-rout
 import { DEMO } from "./lib/api";
 import { DemoBanner } from "./components/DemoBanner";
 import "./styles.css";
+import "./site.css";
+
+// Lets CSS hide scroll-reveal elements only when JS can reveal them again.
+document.documentElement.classList.add("js");
 import { AuthProvider } from "./lib/auth";
 import SiteLayout from "./pages/site/SiteLayout";
 import Home from "./pages/site/Home";

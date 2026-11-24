@@ -1,255 +1,273 @@
-import { Fragment, useState } from "react";
 import { Link } from "react-router-dom";
+import { CountUp, Typewriter, useScrollProgress } from "../../lib/motion";
 
-function HeroSheets() {
+/* ---------- Hero: a product window that tilts flat as you scroll ---------- */
+const RUBRIC = [
+  { q: "Q1", topic: "Quadratic equations", got: 3, max: 3 },
+  { q: "Q2", topic: "Arithmetic progressions", got: 2, max: 2 },
+  { q: "Q3", topic: "Trigonometry", got: 2.5, max: 3 },
+  { q: "Q4", topic: "Real numbers - proof", got: 4.5, max: 5 },
+  { q: "Q5", topic: "Heights & distances", got: 4, max: 5 },
+];
+
+function HeroWindow() {
   return (
-    <div className="sheet-stage" aria-hidden>
-      <div className="sheet back">
-        <div className="score-stamp"><div><b>41</b><small>50</small></div></div>
-        <div className="ln">Q3. v = u + at</div>
-        <div className="ln">&nbsp;&nbsp;= 0 + 4 × 5<span className="tick">✓</span></div>
-        <div className="ln">&nbsp;&nbsp;= 20 m/s<span className="tick">✓</span></div>
-        <div className="ln">Q4. F = ma = 2 × 3</div>
-        <div className="ln">&nbsp;&nbsp;<span className="cut">= 5 N</span> <span className="note">→ 6 N</span></div>
-        <div className="ln note">units ok, arithmetic slip −½</div>
-        <div className="ln">Q5. KE ∝ ω², so 4×<span className="tick">✓</span></div>
-        <div className="ln">Q6. R = 4·12/16 = 3Ω<span className="tick">✓</span></div>
+    <div className="pw" aria-label="Veda Vidya evaluating a handwritten answer sheet">
+      <div className="pw-bar">
+        <span className="pw-dots"><i /><i /><i /></span>
+        <span className="pw-title">Maths Unit Test 2 · Reyansh Singh · Roll 7</span>
+        <span className="pw-live"><i />Evaluating</span>
       </div>
-      <div className="sheet front">
-        <span className="circle" style={{ top: 18 }}>4½</span>
-        <div className="ln">प्र.2 √2 अपरिमेय है</div>
-        <div className="ln">मान लो √2 = p/q<span className="tick">✓</span></div>
-        <div className="ln">p² = 2q² ⇒ p सम<span className="tick">✓</span></div>
-        <div className="ln">p = 2k ⇒ q² = 2k²<span className="tick">✓</span></div>
-        <div className="ln note">conclusion missing −½</div>
-        <div className="ln">Q3. a₁₅ = 7 + 14(4)</div>
-        <div className="ln">&nbsp;&nbsp;= 63<span className="tick">✓✓</span></div>
+      <div className="pw-body">
+        <div className="pw-sheet">
+          <div className="scanbeam" aria-hidden />
+          <div className="hw l1">Q1. 2x² − 7x + 3 = 0</div>
+          <div className="hw l2">(2x − 1)(x − 3) = 0 <b className="tick t1">✓</b></div>
+          <div className="hw l3">x = ½ , x = 3 <b className="tick t2">✓</b></div>
+          <div className="hw l4">Q2. a₁₅ = 7 + 14 × 4 = 63 <b className="tick t3">✓</b></div>
+          <div className="hw l5">प्र.4 मान लो √2 = p/q <b className="tick t4">✓</b></div>
+          <div className="hw l6">p² = 2q² ⇒ p सम <b className="tick t5">✓</b></div>
+          <div className="hw l7 red">conclusion missing −½</div>
+          <span className="ring" aria-hidden>4½</span>
+        </div>
+        <div className="pw-panel">
+          <div className="pw-total">
+            <span className="small muted">Total</span>
+            <div><b><CountUp to={16} decimals={0} duration={2200} /></b><span className="muted">/18</span></div>
+          </div>
+          {RUBRIC.map((r, i) => (
+            <div className="rrow" key={r.q} style={{ ["--d" as string]: `${0.9 + i * 0.35}s` }}>
+              <div className="rrow-top"><b>{r.q}</b><span className="muted">{r.topic}</span><span className="rscore">{r.got}/{r.max}</span></div>
+              <div className="rbar"><i style={{ ["--w" as string]: `${(r.got / r.max) * 100}%` }} /></div>
+            </div>
+          ))}
+          <p className="pw-fb"><b>Feedback.</b> Strong algebra. In proofs, end by stating the contradiction explicitly.</p>
+        </div>
       </div>
-      <div className="ai-pill" style={{ left: 0, top: 60 }}><span className="dot pulse" style={{ color: "var(--green)" }} /> Evaluating 18 of 42 sheets</div>
-      <div className="ai-pill" style={{ right: 10, bottom: 10 }}>Step-wise · Q4 <b style={{ color: "var(--accent)" }}>4.5 / 5</b></div>
     </div>
   );
 }
 
-const PILLARS = [
-  {
-    key: "evaluate", tab: "Evaluate answer sheets", chip: "AI EVALUATION",
-    title: "Handwritten answers, graded like your best teacher would.",
-    body: "Upload phone scans or PDFs. Veda Vidya reads the handwriting, follows your rubric step by step, awards partial credit and writes feedback each student can act on.",
-    points: ["Step-wise partial marks, not just right/wrong", "Reads English, Hindi and other Indian scripts", "Accepts alternative methods that reach the answer", "Teachers review and override any mark in one click"],
-  },
-  {
-    key: "generate", tab: "Generate question papers", chip: "PAPER SETTER",
-    title: "A complete, original question paper in minutes.",
-    body: "Choose the board, class, chapters, difficulty and section layout. You get original questions with answer keys, worked solutions and marking schemes - fully editable.",
-    points: ["CBSE, ICSE, state boards, JEE, NEET and more", "Control sections, marks, negative marking and difficulty", "Solutions and rubrics generated with every question", "Edit, clone and reuse papers across batches"],
-  },
-  {
-    key: "analytics", tab: "Performance analytics", chip: "INSIGHTS",
-    title: "See learning gaps before the next test, not after the exam.",
-    body: "Every evaluated sheet feeds topic-level mastery, score trends and leaderboards - for a single student, a batch, or every centre you run.",
-    points: ["Topic and chapter mastery per batch", "Student report cards with trend vs class average", "Shareable parent report links", "CSV export of every result"],
-  },
-  {
-    key: "operate", tab: "Run your institute", chip: "OPERATIONS",
-    title: "Centres, batches, people and notices in one place.",
-    body: "Onboard a whole batch from a spreadsheet, issue student logins, schedule tests and post announcements - with separate views for admins, teachers and students.",
-    points: ["Multi-centre and multi-batch structure", "Bulk student onboarding with generated logins", "Role-based access for admins, teachers, students", "Batch-targeted notice board"],
-  },
+function Hero() {
+  const [ref, p] = useScrollProgress<HTMLDivElement>();
+  const k = Math.min(1, p * 2.2);
+  return (
+    <section className="hero2">
+      <div className="wrap center">
+        <p className="eyebrow2 rise" style={{ ["--i" as string]: 0 }}>AI evaluation for schools & coaching institutes</p>
+        <h1 className="display rise" style={{ ["--i" as string]: 1 }}>
+          Every answer sheet.<br /><span className="grad">Marked by morning.</span>
+        </h1>
+        <p className="lede rise" style={{ ["--i" as string]: 2 }}>
+          Veda Vidya reads handwriting, marks every step against your rubric, and explains each mark - so your teachers can get back to teaching.
+        </p>
+        <div className="cta-row rise" style={{ ["--i" as string]: 3 }}>
+          <Link to="/contact" className="btn btn-primary btn-lg">Book a demo</Link>
+          <Link to="/login" className="btn-text">Try the live demo <span aria-hidden>›</span></Link>
+        </div>
+      </div>
+      <div className="wrap hero-stage" ref={ref}>
+        <div className="tilt" style={{ transform: `perspective(1600px) rotateX(${(1 - k) * 14}deg) scale(${0.92 + k * 0.08})`, opacity: 0.55 + k * 0.45 }}>
+          <HeroWindow />
+        </div>
+        <div className="glow" aria-hidden />
+      </div>
+      <div className="wrap boards" data-reveal>
+        <span>CBSE</span><span>ICSE</span><span>State Boards</span><span>JEE</span><span>NEET</span><span>UPSC</span><span>CA</span>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- Statement: words light up as you scroll ---------- */
+const STATEMENT = "Every evening, teachers across India sit with a stack of copies and a red pen. Veda Vidya marks them overnight, step by step, in the language they were written in. Mornings start with answers, not paperwork.";
+function Statement() {
+  const [ref, p] = useScrollProgress<HTMLDivElement>();
+  const words = STATEMENT.split(" ");
+  const lit = Math.floor(Math.min(1, Math.max(0, (p - 0.18) / 0.5)) * words.length);
+  return (
+    <section className="statement" ref={ref}>
+      <p className="wrap narrow">
+        {words.map((w, i) => <span key={i} className={i < lit ? "on" : ""}>{w} </span>)}
+      </p>
+    </section>
+  );
+}
+
+/* ---------- How it works: pinned, three steps ---------- */
+const STEPS = [
+  { k: "Upload", h: "Snap it or scan it.", t: "Phone photos or a single PDF per student. Any ink, any handwriting, any number of pages." },
+  { k: "Read", h: "Read like a teacher.", t: "Handwriting, formulas, diagrams and Hindi are transcribed, then matched line by line to your marking scheme." },
+  { k: "Mark", h: "Marked, explained, shared.", t: "Partial credit for every step, feedback for every student, and a report link for every parent." },
 ];
 
-function PillarDemo({ k }: { k: string }) {
-  if (k === "evaluate") return (
-    <div className="card demo-panel">
-      <div className="top"><b>Q4 · Prove √2 is irrational</b><span className="badge green">4.5 / 5</span></div>
-      {[["Assumes √2 = p/q in lowest terms", 1, 1], ["Shows p² = 2q² so p is even", 1.5, 1.5], ["Substitutes p = 2k, shows q even", 1.5, 1.5], ["States contradiction & conclusion", 1, 0.5]].map(([s, m, a]) => (
-        <div key={s as string} className="row between" style={{ padding: "9px 0", borderBottom: "1px solid var(--line)" }}>
-          <span className="small">{s}</span><span className={`badge ${a === m ? "green" : "amber"}`}>{a} / {m}</span>
+function StepVisual({ step }: { step: number }) {
+  return (
+    <div className="sv">
+      <div className={`sv-layer ${step === 0 ? "on" : ""}`}>
+        <div className="pages">
+          {[0, 1, 2].map((i) => <div key={i} className="page" style={{ ["--n" as string]: i }}><span /><span /><span /><span /><span /></div>)}
+          <div className="upl"><b>3 pages</b> uploaded · Roll 7</div>
         </div>
-      ))}
-      <p className="small" style={{ marginTop: 12, color: "var(--ink-2)" }}><b>Feedback:</b> Solid proof. Finish by explicitly stating that p and q share a factor 2, contradicting the assumption.</p>
-    </div>
-  );
-  if (k === "generate") return (
-    <div className="card demo-panel">
-      <div className="top"><b>Physics · Class 11 · 30 marks</b><span className="badge violet">Draft</span></div>
-      <div className="q-card"><div className="q-meta"><span className="badge">MCQ</span><span className="badge">Rotational Motion</span><span className="badge amber">Medium</span><span className="badge">+4 / −1</span></div>
-        <div className="q-text">A uniform disc rotates freely. If its angular velocity is doubled, its rotational kinetic energy becomes</div>
-        <div className="opts"><div className="opt">A. Half</div><div className="opt">B. Double</div><div className="opt correct">C. Four times</div><div className="opt">D. Unchanged</div></div>
+      </div>
+      <div className={`sv-layer ${step === 1 ? "on" : ""}`}>
+        <div className="read">
+          <div className="read-sheet">
+            <div className="hw">sin θ = 3/5</div>
+            <div className="hw">cos θ = √(1 − 9/25) = 4/5</div>
+            <div className="hw">tan θ = 3/4</div>
+            <i className="box b1" /><i className="box b2" />
+          </div>
+          <div className="chips">
+            <span className="chip2">Uses sin²θ + cos²θ = 1 <b>1/1</b></span>
+            <span className="chip2">cos θ = 4/5 <b>1/1</b></span>
+            <span className="chip2 warn">tan θ = 3/4 <b>checking…</b></span>
+          </div>
+        </div>
+      </div>
+      <div className={`sv-layer ${step === 2 ? "on" : ""}`}>
+        <div className="report">
+          <div className="report-top"><div><span className="small muted">Unit Test 2</span><b>Reyansh Singh</b></div><div className="big">89<small>%</small></div></div>
+          {[["Quadratic equations", 100], ["Trigonometry", 83], ["Real numbers", 90], ["Heights & distances", 80]].map(([t, v]) => (
+            <div key={t as string} className="rep-row"><span>{t}</span><div className="rbar"><i style={{ ["--w" as string]: `${v}%` }} /></div><b>{v}%</b></div>
+          ))}
+          <div className="rep-share">Report link sent to parent · 07:42</div>
+        </div>
       </div>
     </div>
   );
-  if (k === "analytics") return (
-    <div className="card demo-panel">
-      <div className="top"><b>JEE 2027 · Alpha - topic mastery</b><span className="badge green">↑ 14% this month</span></div>
-      {[["Rotational Motion", 48], ["Current Electricity", 63], ["Kinematics", 77], ["Units & Dimensions", 88]].map(([t, v]) => (
-        <div key={t as string} style={{ marginBottom: 12 }}>
-          <div className="row between small"><b>{t}</b><span className="muted">{v}%</span></div>
-          <div className="bar"><i style={{ width: `${v}%`, background: (v as number) >= 75 ? "var(--green)" : (v as number) >= 50 ? "var(--amber)" : "var(--red)" }} /></div>
-        </div>
-      ))}
-    </div>
-  );
+}
+
+function HowItWorks() {
+  const [ref, p] = useScrollProgress<HTMLElement>("pin");
+  const step = Math.min(2, Math.floor(p * 3));
   return (
-    <div className="card demo-panel">
-      <div className="top"><b>Centres</b><span className="badge">2 centres · 36 students</span></div>
-      {[["Malviya Nagar", "JEE 2027 - Alpha", "Mock live", "blue"], ["Malviya Nagar", "JEE 2027 - Beta", "Results sent", "green"], ["Vaishali Nagar", "Class 10 Foundation", "Paper drafted", "violet"]].map(([c, b, s, t]) => (
-        <div key={b} className="row between" style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
-          <div><b className="small">{b}</b><div className="small muted">{c}</div></div><span className={`badge ${t}`}>{s}</span>
+    <section className="how" id="how" ref={ref}>
+      <div className="how-pin">
+        <div className="wrap how-grid">
+          <div>
+            <p className="eyebrow2">How it works</p>
+            <h2 className="h2">From a stack of copies to a class report.</h2>
+            <ol className="how-steps">
+              {STEPS.map((s, i) => (
+                <li key={s.k} className={i === step ? "on" : ""}>
+                  <span className="how-k">{s.k}</span>
+                  <h3>{s.h}</h3>
+                  <p>{s.t}</p>
+                </li>
+              ))}
+            </ol>
+            <div className="how-progress"><i style={{ transform: `scaleX(${p})` }} /></div>
+          </div>
+          <StepVisual step={step} />
         </div>
-      ))}
-    </div>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- Bento ---------- */
+function Bento() {
+  return (
+    <section className="section2" id="features">
+      <div className="wrap">
+        <div className="head2" data-reveal>
+          <p className="eyebrow2">Everything in one place</p>
+          <h2 className="h2">Built for how Indian institutes actually run.</h2>
+        </div>
+        <div className="bento">
+          <article className="tile t-paper" data-reveal>
+            <div className="tile-copy"><h3>Question papers in minutes.</h3><p>Pick the board, chapters and pattern. Get original questions with answers, solutions and marking schemes.</p></div>
+            <div className="paper-mock">
+              <div className="pm-meta"><span className="pill">Physics · Class 11</span><span className="pill">JEE pattern</span><span className="pill ac">+4 / −1</span></div>
+              <div className="pm-q"><b>Q14.</b> <Typewriter lines={[
+                "A uniform disc rotates freely. If its angular velocity is doubled, its rotational kinetic energy becomes…",
+                "Two resistors of 4 Ω and 12 Ω are connected in parallel. The equivalent resistance is…",
+                "A projectile is launched at 45°. At the highest point its velocity is…",
+              ]} /></div>
+              <div className="pm-opts"><span>A. Half</span><span>B. Double</span><span className="ok">C. Four times</span><span>D. Unchanged</span></div>
+            </div>
+          </article>
+          <article className="tile t-lang" data-reveal>
+            <div className="tile-copy"><h3>Reads the way students write.</h3><p>English, Hindi, Sanskrit and other Indian scripts.</p></div>
+            <div className="scripts" aria-hidden><span>हिन्दी</span><span>English</span><span>संस्कृतम्</span><span>मराठी</span><span>ગુજરાતી</span><span>தமிழ்</span></div>
+          </article>
+          <article className="tile t-analytics" data-reveal>
+            <div className="tile-copy"><h3>See gaps before the exam.</h3><p>Topic mastery for every student, batch and centre.</p></div>
+            <div className="bars" aria-hidden>{[48, 63, 77, 88, 71].map((v, i) => <i key={i} style={{ ["--h" as string]: `${v}%`, ["--d" as string]: `${i * 0.08}s` }} />)}</div>
+          </article>
+          <article className="tile t-cbt dark" data-reveal>
+            <div className="tile-copy"><h3>Online tests, scored instantly.</h3><p>Timer, question palette, mark for review.</p></div>
+            <div className="palette2" aria-hidden>{Array.from({ length: 24 }, (_, i) => <i key={i} className={i < 15 ? "a" : i === 17 || i === 9 ? "r" : ""} style={{ ["--d" as string]: `${i * 0.04}s` }} />)}</div>
+          </article>
+          <article className="tile t-review" data-reveal>
+            <div className="tile-copy"><h3>Teachers stay in charge.</h3><p>Every mark comes with its reason, and every mark can be changed.</p></div>
+            <div className="stepper" aria-hidden><span>Q4 · Proof</span><b className="flip"><em>4</em><em>4.5</em></b><span className="muted">/ 5</span></div>
+          </article>
+          <article className="tile t-parent" data-reveal>
+            <div className="tile-copy"><h3>Parents get the report, not a rumour.</h3><p>A private link per student with marks, rank and what to revise next. No app or login needed.</p></div>
+            <div className="phone" aria-hidden>
+              <div className="phone-notch" />
+              <div className="msg in">Unit Test 2 results for Isha are ready.</div>
+              <div className="msg card"><b>Isha Patel · 94%</b><span>Rank 2 of 12 · Revise: Trigonometry</span></div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- Same-day results ---------- */
+function Speed() {
+  return (
+    <section className="speed dark">
+      <div className="wrap">
+        <div className="head2" data-reveal>
+          <p className="eyebrow2">Feedback while it still matters</p>
+          <h2 className="h2">Results the same day.<br /><span className="dim">Not two chapters later.</span></h2>
+        </div>
+        <div className="race" data-reveal>
+          <div className="lane"><span>Checking by hand</span><div className="track"><i className="slow" /></div><b>2–3 weeks</b></div>
+          <div className="lane"><span>With Veda Vidya</span><div className="track"><i className="fast" /></div><b>Same day</b></div>
+        </div>
+        <div className="facts" data-reveal>
+          <div><b><CountUp to={4} /></b><span>question types marked: MCQ, numerical, short and long answer</span></div>
+          <div><b><CountUp to={3} /></b><span>ways to test: on paper, OMR-style and online</span></div>
+          <div><b><CountUp to={100} suffix="%" /></b><span>of marks reviewable and editable by your teachers</span></div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FinalCta() {
+  return (
+    <section className="section2">
+      <div className="wrap">
+        <div className="cta2" data-reveal>
+          <div className="cta2-glow" aria-hidden />
+          <h2 className="h2">Give your teachers their evenings back.</h2>
+          <p>See Veda Vidya mark your own answer sheets in a 20-minute walkthrough.</p>
+          <div className="cta-row">
+            <Link to="/contact" className="btn btn-light btn-lg">Book a demo</Link>
+            <Link to="/login?mode=register" className="btn-text light">Create your institute <span aria-hidden>›</span></Link>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
 export default function Home() {
-  const [pillar, setPillar] = useState(PILLARS[0].key);
-  const p = PILLARS.find((x) => x.key === pillar)!;
   return (
-    <main>
-      <section className="site-wrap">
-        <div className="hero">
-          <div>
-            <div className="eyebrow">Evaluation · Paper setting · Analytics</div>
-            <h1>Grade every sheet <span className="serif">faster</span>, teach every student better.</h1>
-            <p className="hero-sub">Veda Vidya checks handwritten answer sheets step by step, writes question papers on demand, and shows you exactly where each student needs help.</p>
-            <div className="hero-cta">
-              <Link to="/contact" className="btn btn-primary">Book a demo →</Link>
-              <Link to="/login?demo=1" className="btn-link">Try the live demo</Link>
-            </div>
-          </div>
-          <HeroSheets />
-        </div>
-        <div className="stats">
-          <div><b>Step-wise</b><span>partial credit on every answer</span></div>
-          <div><b>Minutes</b><span>to a complete question paper</span></div>
-          <div><b>हिंदी + EN</b><span>and other Indian scripts</span></div>
-          <div><b>1 view</b><span>across every centre & batch</span></div>
-        </div>
-      </section>
-
-      <section className="section dark" style={{ marginTop: 72 }}>
-        <div className="site-wrap">
-          <div className="section-head">
-            <span className="chip">The usual week</span>
-            <h2>Most institutes still run on <span className="serif">red pens</span> and spreadsheets.</h2>
-            <p>Your best teachers spend evenings checking copies and typing marks - instead of teaching, mentoring and growing the institute.</p>
-          </div>
-          <div className="chaos">
-            {[["📚", "Stacks of copies", "Hundreds of sheets per test, checked by hand, one at a time."],
-              ["⏳", "Results in weeks", "By the time marks come back, the batch has moved two chapters on."],
-              ["🧮", "Marks in spreadsheets", "Coordinators copy totals into sheets and WhatsApp groups manually."],
-              ["🎯", "No view of gaps", "Nobody can say which topic a batch is weak in until the final exam."]].map(([e, h, t]) => (
-              <div key={h} className="chaos-card"><div className="em">{e}</div><h4>{h}</h4><p>{t}</p></div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="section">
-        <div className="site-wrap">
-          <div className="section-head">
-            <span className="chip">What changes</span>
-            <h2>From bottleneck to <span className="serif">same-day</span> results.</h2>
-          </div>
-          <div className="pain">
-            {[["Checking eats every weekend", "Teachers lose evenings and Sundays to answer sheets and paper setting.", "Hours handed back every week", "Sheets are evaluated in the background while teachers teach."],
-              ["Results come too late", "Feedback arrives after the class has moved on, so gaps quietly widen.", "Results the same day", "Upload after the test; review, publish and share report links within hours."],
-              ["Two checkers, two marks", "Partial credit depends on who checks the copy. Parents notice.", "One rubric for everyone", "Every sheet is marked against the same step-wise scheme, with reasons."],
-              ["No view across branches", "Centre heads compile reports by hand and still can't compare batches.", "Live view of every batch", "Trends, topic mastery and leaderboards update as soon as sheets are marked."]].map(([b, bt, a, at], i) => (
-              <div key={b} className="card pain-card">
-                <div className="row between"><span className="before">Before</span><span className="num">0{i + 1}</span></div>
-                <h4>{b}</h4><p>{bt}</p>
-                <div className="after">With Veda Vidya</div>
-                <h4>{a}</h4><p>{at}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="section" id="formats" style={{ background: "var(--bg-2)" }}>
-        <div className="site-wrap">
-          <div className="section-head">
-            <span className="chip">Exam formats</span>
-            <h2>Pen-and-paper, bubble sheet or <span className="serif">on screen</span>.</h2>
-            <p>Run each test the way your students actually take it - the results land in the same analytics.</p>
-          </div>
-          <div className="formats">
-            <div className="card format-card">
-              <div className="mock">
-                <div className="row between"><b>Online test · Physics mock</b><span className="badge red">⏱ 01:42:04</span></div>
-                <div className="palette">{Array.from({ length: 20 }, (_, i) => <i key={i} className={i < 9 ? "a" : i === 11 || i === 4 ? "r" : i === 13 ? "c" : ""}>{i + 1}</i>)}</div>
-                <div className="small"><b>Q14.</b> A uniform disc rotates freely. If its angular velocity is doubled…</div>
-                <div className="row small muted" style={{ marginTop: 8 }}><span className="badge green">Answered</span><span className="badge amber">Review</span><span className="badge">+4 / −1</span></div>
-              </div>
-              <h4>Online (CBT) tests</h4><p className="muted small">Timed tests with a question palette, mark-for-review and instant +/− scoring.</p>
-            </div>
-            <div className="card format-card">
-              <div className="mock">
-                <div className="row between"><b>Bubble sheet</b><span className="badge green">Auto-scored</span></div>
-                <div className="bubbles" style={{ marginTop: 14 }}>
-                  {[2, 0, 3, 1, 2].map((f, r) => (<Fragment key={r}>
-                    <span>{r + 1}.</span>
-                    {[0, 1, 2, 3].map((c) => <i key={c} className={c === f ? "f" : ""} />)}
-                  </Fragment>))}
-                </div>
-              </div>
-              <h4>Objective & OMR-style papers</h4><p className="muted small">Scan the sheet and objective answers are checked against the key, negative marking included.</p>
-            </div>
-            <div className="card format-card">
-              <div className="mock">
-                <div className="row between"><b>Homework · Chemistry</b><span className="badge violet">Due today</span></div>
-                <div className="q-card" style={{ marginTop: 12, padding: 12 }}>
-                  <div className="row between small"><b>Aarav S. · Roll 24</b><span className="badge green">8.5 / 10</span></div>
-                  <div className="hand" style={{ fontSize: 20, color: "#263066", marginTop: 6 }}>Mg + 2HCl → MgCl₂ + H₂↑ <span style={{ color: "var(--red)" }}>✓</span></div>
-                  <div className="small muted">Balanced correctly; state symbols missing (−½)</div>
-                </div>
-              </div>
-              <h4>Handwritten tests & homework</h4><p className="muted small">Collect photos or PDFs per student and get step-wise marks with written feedback.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="section" id="product">
-        <div className="site-wrap">
-          <div className="section-head">
-            <span className="chip">The platform</span>
-            <h2>One system that <span className="serif">works while you teach</span>.</h2>
-          </div>
-          <div className="pillar-tabs">{PILLARS.map((x) => <button key={x.key} className={x.key === pillar ? "on" : ""} onClick={() => setPillar(x.key)}>{x.tab}</button>)}</div>
-          <div className="pillar">
-            <div>
-              <span className="chip">{p.chip}</span>
-              <h3>{p.title}</h3>
-              <p style={{ color: "var(--ink-2)" }}>{p.body}</p>
-              <ul>{p.points.map((pt) => <li key={pt}>{pt}</li>)}</ul>
-            </div>
-            <PillarDemo k={pillar} />
-          </div>
-        </div>
-      </section>
-
-      <section className="site-wrap">
-        <div className="card card-pad" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 20, textAlign: "center" }}>
-          {[["🔒", "Your data stays yours", "Sheets and results are private to your institute"], ["🧑‍🏫", "Teacher in the loop", "Every AI mark can be reviewed and changed"], ["📱", "Works on any device", "Students take tests and see results on their phone"], ["📤", "Easy exports", "CSV results and shareable parent reports"]].map(([e, h, t]) => (
-            <div key={h}><div style={{ fontSize: 26 }}>{e}</div><b>{h}</b><p className="small muted">{t}</p></div>
-          ))}
-        </div>
-      </section>
-
-      <section className="site-wrap" style={{ marginTop: 96 }}>
-        <div className="cta-band">
-          <span className="chip" style={{ background: "rgba(255,255,255,.15)", color: "#fff", borderColor: "rgba(255,255,255,.3)" }}>Get started</span>
-          <h2>Give your teachers their evenings back.</h2>
-          <p>See Veda Vidya evaluate your own answer sheets in a 20-minute walkthrough, or set up your institute today.</p>
-          <div className="row" style={{ justifyContent: "center", marginTop: 28, flexWrap: "wrap" }}>
-            <Link to="/contact" className="btn btn-primary">Book a demo</Link>
-            <Link to="/login?mode=register" className="btn btn-ghost">Create your institute</Link>
-          </div>
-        </div>
-      </section>
+    <main className="home2">
+      <Hero />
+      <Statement />
+      <HowItWorks />
+      <Bento />
+      <Speed />
+      <FinalCta />
     </main>
   );
 }

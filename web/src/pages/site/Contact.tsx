@@ -16,13 +16,13 @@ export default function Contact() {
   };
 
   return (
-    <main className="site-wrap">
-      <section className="page-hero">
-        <span className="chip">Contact</span>
-        <h1>Let's look at <span className="serif" style={{ color: "var(--accent)" }}>your</span> answer sheets.</h1>
-        <p className="muted" style={{ marginTop: 12 }}>Tell us about your institute and we'll get back within one working day.</p>
-      </section>
-      <div className="card" style={{ maxWidth: 640, margin: "0 auto", padding: 28 }}>
+    <main className="page2"><div className="wrap">
+      <header className="page2-head">
+        <p className="eyebrow2 rise" style={{ ["--i" as string]: 0 }}>Book a demo</p>
+        <h1 className="display rise" style={{ ["--i" as string]: 1, fontSize: "clamp(40px, 6vw, 72px)" }}>Let's mark <span className="grad">your</span> answer sheets.</h1>
+        <p className="lede rise" style={{ ["--i" as string]: 2 }}>Tell us about your institute and we'll get back within one working day.</p>
+      </header>
+      <div className="form-card rise" style={{ ["--i" as string]: 3 }}>
         {state === "done" ? (
           <div className="stack" style={{ textAlign: "center", padding: 20 }}>
             <div style={{ fontSize: 40 }}>✅</div>
@@ -46,10 +46,10 @@ export default function Contact() {
             </div>
             <label className="field"><span>Anything else? (optional)</span><textarea className="input" value={form.message} onChange={set("message")} /></label>
             {error && <div className="error-box">{error}</div>}
-            <button className="btn btn-primary" disabled={state === "sending"}>{state === "sending" ? "Sending…" : "Request a demo"}</button>
+            <button className="btn btn-primary btn-lg" disabled={state === "sending"}>{state === "sending" ? "Sending…" : "Request a demo"}</button>
           </form>
         )}
       </div>
-    </main>
+    </div></main>
   );
 }
