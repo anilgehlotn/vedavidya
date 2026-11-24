@@ -4,6 +4,7 @@ import { api, DEMO, fileUrl, fmtDate, fmtDateTime, pct } from "../../lib/api";
 import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/types";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, StatusBadge, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
+import { bulkUpload, compressImage, isAllowedFile, type BulkResult } from "../../lib/upload";
 
 interface TestRow { id: string; title: string; mode: "offline" | "cbt"; scheduled_at: string | null; results_published: number; paper_title: string; total_marks: number; subject: string | null; batch_names: string | null; candidates: number; evaluated: number }
 
@@ -104,10 +105,13 @@ function UploadCell({ a, onDone }: { a: AttemptRow; onDone: () => void }) {
   const [err, setErr] = useState<string | null>(null);
   const send = async (files: FileList | null) => {
     if (!files?.length) return;
-    const form = new FormData();
-    [...files].forEach((f) => form.append("files", f));
     setBusy(true); setErr(null);
-    try { await api(`/attempts/${a.id}/files${a.files ? "?replace=1" : ""}`, { form }); onDone(); }
+    try {
+      const form = new FormData();
+      for (const f of [...files].filter(isAllowedFile)) { const c = await compressImage(f); form.append("files", c, c.name); }
+      if (!form.has("files")) throw new Error("Choose JPG, PNG, WEBP or PDF files");
+      await api(`/attempts/${a.id}/files${a.files ? "?replace=1" : ""}`, { form }); onDone();
+    }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); if (ref.current) ref.current.value = ""; }
   };
@@ -120,16 +124,67 @@ function UploadCell({ a, onDone }: { a: AttemptRow; onDone: () => void }) {
   );
 }
 
+function BulkUploadModal({ testId, batches, onClose, onDone }: { testId: string; batches: string[]; onClose: () => void; onDone: () => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [progress, setProgress] = useState<{ done: number; total: number; stage: string } | null>(null);
+  const [result, setResult] = useState<BulkResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const start = async () => {
+    setError(null); setResult(null);
+    try { const r = await bulkUpload(testId, files, null, (done, total, stage) => setProgress({ done, total, stage })); setResult(r); onDone(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setProgress(null); }
+  };
+  return (
+    <Modal title="Upload the whole class" onClose={progress ? () => {} : onClose} wide>
+      <div className="stack">
+        <p className="small">Name each photo or PDF with the student's <b>roll number first</b>. For several pages, add a page number:
+          <code> 7.jpg</code>, <code>7-1.jpg</code>, <code>7-2.jpg</code>, <code>Roll 12.pdf</code>. Pages are put in order by file name.</p>
+        {batches.length > 1 && <p className="small" style={{ color: "var(--amber)" }}>This test has more than one batch ({batches.join(", ")}). If two students share a roll number, upload one batch at a time from each student's row instead.</p>}
+        <input ref={ref} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" style={{ display: "none" }}
+          onChange={(e) => { setFiles([...(e.target.files ?? [])].filter(isAllowedFile)); setResult(null); }} />
+        <div className="drop" onClick={() => !progress && ref.current?.click()} role="button" tabIndex={0}
+          onKeyDown={(e) => e.key === "Enter" && ref.current?.click()}
+          onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); setFiles([...e.dataTransfer.files].filter(isAllowedFile)); setResult(null); }}>
+          {files.length ? <b>{files.length} file{files.length > 1 ? "s" : ""} selected</b> : <>Click to choose files, or drop them here</>}
+        </div>
+        {progress && (
+          <div>
+            <div className="row between small"><span>{progress.stage}…</span><span>{progress.done} / {progress.total}</span></div>
+            <div className="bar" style={{ marginTop: 6 }}><i style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
+          </div>
+        )}
+        {error && <div className="error-box">{error}</div>}
+        {result && (
+          <div className="ok-box">
+            Uploaded <b>{result.pages}</b> page{result.pages === 1 ? "" : "s"} for <b>{result.students}</b> student{result.students === 1 ? "" : "s"}.
+            {result.unmatched.length > 0 && <div style={{ color: "var(--red)", marginTop: 6 }}>No student with that roll number: {result.unmatched.join(", ")}</div>}
+            {result.ambiguous.length > 0 && <div style={{ color: "var(--amber)", marginTop: 6 }}>Roll number used in more than one batch (upload these from the student's row): {result.ambiguous.join(", ")}</div>}
+            {result.busy.length > 0 && <div style={{ color: "var(--amber)", marginTop: 6 }}>Skipped while being evaluated: {result.busy.join(", ")}</div>}
+            {result.warnings.length > 0 && <div style={{ color: "var(--amber)", marginTop: 6 }}>{result.warnings.join(" ")}</div>}
+          </div>
+        )}
+        <div className="row" style={{ justifyContent: "flex-end" }}>
+          <button className="btn btn-ghost" disabled={!!progress} onClick={onClose}>{result ? "Done" : "Cancel"}</button>
+          {!result && <button className="btn btn-primary" disabled={!files.length || !!progress} onClick={start}>{progress ? "Uploading…" : `Upload ${files.length || ""} file${files.length === 1 ? "" : "s"}`}</button>}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export function TestDetail() {
   const { id } = useParams();
   const t = useApi<TestDetailData>(`/tests/${id}`);
   const nav = useNavigate();
   const [msg, setMsg] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | AttemptStatus>("all");
+  const [bulk, setBulk] = useState(false);
 
   const busy = t.data?.attempts.some((a) => a.status === "evaluating");
   useEffect(() => {
-    if (!busy) return;
+    if (!busy) { setMsg((m) => (m?.startsWith("Evaluating") ? "All sheets have been marked. Review them, then publish." : m)); return; }
     const i = setInterval(() => t.reload(true), 3000);
     return () => clearInterval(i);
   }, [busy]);
@@ -160,11 +215,13 @@ export function TestDetail() {
     <>
       <PageTitle title={d.title} sub={<>{d.mode === "cbt" ? "Online test" : "Handwritten test"} · {d.paper.total_marks} marks · {d.duration_min} min · {fmtDateTime(d.scheduled_at)} · <Link to={`/app/papers/${d.paper.id}`} className="btn-link">View paper</Link></>}>
         {!DEMO && <a className="btn btn-ghost" href={fileUrl(`/tests/${d.id}/results.csv`)}>Export CSV</a>}
-        {d.mode === "offline" && <button className="btn btn-ghost" disabled={!toEvaluate} onClick={() => evaluate()}>✦ Evaluate {toEvaluate || ""} sheet{toEvaluate === 1 ? "" : "s"}</button>}
+        {d.mode === "offline" && !DEMO && <button className="btn btn-ghost" onClick={() => setBulk(true)}>⇪ Bulk upload</button>}
+        {d.mode === "offline" && <button className="btn btn-ghost" disabled={!toEvaluate} onClick={() => evaluate()}>✦ Evaluate {toEvaluate || ""} new sheet{toEvaluate === 1 ? "" : "s"}</button>}
         {d.results_published ? <button className="btn btn-ghost" onClick={() => publish(false)}>Unpublish</button>
           : <button className="btn btn-primary" disabled={!scored.length} onClick={() => publish(true)}>Publish results</button>}
       </PageTitle>
       {msg && <div className="ok-box" style={{ marginBottom: 14 }}>{msg}</div>}
+      {bulk && <BulkUploadModal testId={d.id} batches={(d.batch_names ?? "").split(", ").filter(Boolean)} onClose={() => setBulk(false)} onDone={() => t.reload(true)} />}
       <div className="grid g4" style={{ marginBottom: 16 }}>
         <div className="card stat"><div className="label">Candidates</div><div className="value">{d.attempts.length}</div></div>
         <div className="card stat"><div className="label">Evaluated</div><div className="value">{scored.length}</div></div>
@@ -173,7 +230,7 @@ export function TestDetail() {
       </div>
       {d.mode === "offline" && d.attempts.some((a) => a.status === "pending") && (
         <div className="card card-pad small" style={{ marginBottom: 14, background: "var(--accent-soft)", borderColor: "#f0d77a" }}>
-          <b>How it works:</b> upload each student's scanned pages (photos or a PDF), then click <b>Evaluate</b>. AI marks every question step by step using the paper's rubric. Open any sheet to review and adjust marks, then publish.
+          <b>How it works:</b> upload each student's pages from their row, or use <b>Bulk upload</b> for the whole class (files named by roll number, e.g. <code>7-1.jpg</code>), then click <b>Evaluate</b>. AI marks every question step by step using the paper's rubric. Open any sheet to review and adjust marks, then publish.
         </div>
       )}
       <div className="tabs">
@@ -195,7 +252,7 @@ export function TestDetail() {
               <td>{a.score != null ? <><b>{a.score}</b><span className="muted">/{a.max_score}</span> <ScoreBadge value={pct(a.score, a.max_score)} /></> : "—"}</td>
               <td><div className="row" style={{ justifyContent: "flex-end" }}>
                 {d.mode === "offline" && a.status !== "evaluating" && <UploadCell a={a} onDone={() => t.reload(true)} />}
-                {d.mode === "offline" && a.files > 0 && a.status !== "evaluating" && <button className="btn btn-ghost btn-sm" onClick={() => evaluate([a.id])}>{a.status === "evaluated" ? "Re-evaluate" : "Evaluate"}</button>}
+                {d.mode === "offline" && a.files > 0 && a.status !== "evaluating" && <button className="btn btn-ghost btn-sm" onClick={() => { if (a.status !== "evaluated" || confirm(`Re-mark ${a.student_name}'s sheet? This uses AI credits again and replaces any marks you changed.`)) evaluate([a.id]); }}>{a.status === "evaluated" ? "Re-evaluate" : "Evaluate"}</button>}
                 {a.score != null && <button className="btn btn-ghost btn-sm" onClick={() => nav(`/app/attempts/${a.id}`)}>Review</button>}
                 {a.share_token && d.results_published ? <button className="btn btn-ghost btn-sm" onClick={() => copyLink(a.share_token!)}>🔗</button> : null}
               </div></td>

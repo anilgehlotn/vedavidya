@@ -61,6 +61,7 @@ const PRESETS: Record<string, { board: string; sections: SectionSpec[]; duration
 
 export function PaperGenerate() {
   const nav = useNavigate();
+  const ai = useApi<{ configured: boolean; demo: boolean }>("/settings/ai");
   const [f, setF] = useState({ subject: "Physics", board: "CBSE", class_level: "Class 10", topics: "", language: "English", difficulty: "mixed", duration_min: 180, notes: "" });
   const [sections, setSections] = useState<SectionSpec[]>(PRESETS["CBSE board pattern"].sections);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +79,9 @@ export function PaperGenerate() {
   return (
     <>
       <PageTitle title="Generate a question paper" sub="Describe the paper; AI writes original questions, answer keys, solutions and marking rubrics." />
+      {ai.data && !ai.data.configured && (
+        <div className="error-box" style={{ marginBottom: 16 }}>{ai.data.demo ? "AI is switched off in the public demo institute." : <>AI isn't set up yet. An admin can add the Claude API key in <Link to="/app/settings">Settings</Link>.</>}</div>
+      )}
       <form className="grid" style={{ gridTemplateColumns: "minmax(0,1.4fr) minmax(0,1fr)", gap: 16, alignItems: "start" }} onSubmit={submit}>
         <div className="card card-pad stack">
           <div className="row wrap small"><span className="muted">Presets:</span>{Object.keys(PRESETS).map((k) => (

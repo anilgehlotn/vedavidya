@@ -321,7 +321,6 @@ export function Settings() {
   const o = useForm({ name: org?.name ?? "", city: org?.city ?? "" });
   const p = useForm({ current: "", next: "" });
   const [msg, setMsg] = useState<{ ok?: string; err?: string }>({});
-  const health = useApi<{ ai: boolean }>("/health");
   return (
     <>
       <PageTitle title="Settings" />
@@ -340,16 +339,55 @@ export function Settings() {
           <label className="field"><span>New password (8+ characters)</span><input className="input" type="password" minLength={8} required value={p.f.next} onChange={p.set("next")} /></label>
           <button className="btn btn-primary" style={{ alignSelf: "flex-start" }}>Update password</button>
         </form>
-        {user!.role !== "student" && (
-          <div className="card card-pad stack">
-            <b>AI engine</b>
-            {health.data?.ai ? <span className="badge green" style={{ alignSelf: "flex-start" }}>● Connected</span>
-              : <><span className="badge red" style={{ alignSelf: "flex-start" }}>● Not configured</span><p className="small muted">Add <code>ANTHROPIC_API_KEY</code> to <code>server/.env</code> and restart the server to enable paper generation and answer-sheet evaluation.</p></>}
-          </div>
-        )}
+        {user!.role !== "student" && <AiEngineCard isAdmin={user!.role === "admin"} />}
       </div>
       {msg.ok && <div className="ok-box" style={{ marginTop: 14 }}>{msg.ok}</div>}
       {msg.err && <div className="error-box" style={{ marginTop: 14 }}>{msg.err}</div>}
     </>
+  );
+}
+
+interface AiStatus { demo: boolean; configured: boolean; hint: string | null; model: string }
+function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
+  const st = useApi<AiStatus>("/settings/ai");
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState<null | "save" | "test" | "remove">(null);
+  const [msg, setMsg] = useState<{ ok?: string; err?: string }>({});
+  const act = async (kind: "save" | "test" | "remove") => {
+    setBusy(kind); setMsg({});
+    try {
+      if (kind === "save") { const r = await api<AiStatus & { model_name: string }>("/settings/ai", { method: "PUT", body: { key } }); st.setData(r); setKey(""); setMsg({ ok: `Connected to ${r.model_name}. AI marking and paper generation are ready.` }); }
+      if (kind === "test") { const r = await api<{ model_name: string }>("/settings/ai/test", { body: {} }); setMsg({ ok: `Working. Connected to ${r.model_name}.` }); }
+      if (kind === "remove") { st.setData(await api<AiStatus>("/settings/ai", { method: "DELETE" })); setMsg({ ok: "API key removed." }); }
+    } catch (e) { setMsg({ err: (e as Error).message }); }
+    finally { setBusy(null); }
+  };
+  const s = st.data;
+  return (
+    <div className="card card-pad stack">
+      <div className="row between"><b>AI engine (Claude API key)</b>
+        {s && (s.configured ? <span className="badge green">● Connected {s.hint}</span> : <span className="badge red">● Not set up</span>)}</div>
+      {!s ? <Loading /> : s.demo ? (
+        <p className="small muted">AI is switched off in the public demo institute. Create your own institute (Log in → Create an institute) to add your key.</p>
+      ) : !isAdmin ? (
+        <p className="small muted">{s.configured ? "AI marking is ready." : "Ask your institute admin to add a Claude API key here."}</p>
+      ) : (
+        <>
+          <p className="small muted">Paste your key from console.anthropic.com → API Keys. It is checked, then stored encrypted and never shown again. Model: <code>{s.model}</code></p>
+          <form className="row wrap" onSubmit={(e) => { e.preventDefault(); act("save"); }}>
+            <input className="input grow" type="password" autoComplete="off" spellCheck={false} placeholder={s.configured ? "Paste a new key to replace the current one" : "sk-ant-..."} value={key} onChange={(e) => setKey(e.target.value)} style={{ minWidth: 220 }} />
+            <button className="btn btn-primary" disabled={!key.trim() || !!busy}>{busy === "save" ? "Checking…" : "Save key"}</button>
+          </form>
+          {s.configured && (
+            <div className="row">
+              <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => act("test")}>{busy === "test" ? "Testing…" : "Test connection"}</button>
+              <button className="btn btn-danger btn-sm" disabled={!!busy} onClick={() => act("remove")}>Remove key</button>
+            </div>
+          )}
+        </>
+      )}
+      {msg.ok && <div className="ok-box">{msg.ok}</div>}
+      {msg.err && <div className="error-box">{msg.err}</div>}
+    </div>
   );
 }

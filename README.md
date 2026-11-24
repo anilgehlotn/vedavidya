@@ -37,7 +37,7 @@ npm install
 ```
 
 ```bash
-cp server/.env.example server/.env   # then put your ANTHROPIC_API_KEY in it
+cp server/.env.example server/.env   # then set JWT_SECRET
 ```
 
 ```bash
@@ -50,8 +50,35 @@ npm run dev     # web on http://localhost:5173, API on http://localhost:4000
 
 Production: run `npm run build`, then `JWT_SECRET=... npm start`. That serves the built site and the API together on port 4000.
 
-Everything works without an API key except paper generation and answer-sheet evaluation, which show a clear error until
-the key is set. The demo data's scores are synthetic. They were not produced by the AI.
+Each institute adds its own Claude API key in **Settings → AI engine**. The key is checked against the API, stored
+encrypted (AES-256-GCM, derived from `JWT_SECRET`), and never sent back to the browser. Everything except paper generation
+and answer-sheet evaluation works without a key. The public demo institute can never use a key, and its scores are
+synthetic, not produced by the AI.
+
+### Uploading a whole class
+
+On a test, **Bulk upload** accepts photos or PDFs named by roll number, for example `7.jpg`, `7-1.jpg`, `7-2.jpg` or
+`Roll 12.pdf`. Photos are shrunk in the browser and again on the server, so they always fit Claude's 5 MB image limit.
+Sheets are marked in the background, 3 at a time by default (`EVAL_CONCURRENCY`). Busy or rate-limit errors are retried
+automatically, and sheets that were being marked when the server restarted are resumed.
+
+### Testing without an API key
+
+`scripts/mock-claude.mjs` imitates the Claude API, including streaming, its size limits and random 429/529 errors.
+`scripts/e2e-api.mjs` runs 193 checks over every endpoint, including a 50-student upload and marking run, role and
+institute isolation, and cleanup. `scripts/e2e-restart.mjs` checks that marking resumes after a restart.
+
+```bash
+MOCK_FAIL_RATE=0.3 node scripts/mock-claude.mjs
+```
+
+```bash
+cd server && NODE_ENV=production JWT_SECRET=x DATA_DIR=/tmp/vv PORT=4300 ANTHROPIC_BASE_URL=http://localhost:4999 npx tsx src/index.ts
+```
+
+```bash
+DATA_DIR=/tmp/vv node scripts/e2e-api.mjs
+```
 
 ## Layout
 
@@ -72,9 +99,10 @@ web/src/
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | none | Required for AI features |
 | `CLAUDE_MODEL` | `claude-opus-5-5` | Model used for generation and evaluation |
-| `JWT_SECRET` | dev value | **Required in production** |
+| `JWT_SECRET` | dev value | **Required in production**. Also encrypts stored API keys, so if you change it, re-enter the key |
+| `ALLOW_SIGNUP` | `true` | Set `false` to stop strangers creating institutes from the login page |
+| `SEED_DEMO` | `true` (Docker) | Creates the public demo institute on first start |
 | `EVAL_CONCURRENCY` | `3` | Answer sheets evaluated in parallel |
 | `PORT` | `4000` | API port |
 | `DATA_DIR` | `server/data` | Database and uploaded sheets |
@@ -84,7 +112,7 @@ web/src/
 The app is one Docker container that serves the website, the app and the API. It needs a **persistent disk**
 mounted at `/data` (database and uploaded answer sheets), so use Render, Railway or Fly.io rather than Vercel.
 
-On Render, choose **New → Blueprint**, pick this repo, and set `ANTHROPIC_API_KEY`. `render.yaml` sets up the service,
+On Render, choose **New → Blueprint** and pick this repo, then add the Claude key in the app under Settings → AI engine. `render.yaml` sets up the service,
 a 5 GB disk, a generated `JWT_SECRET` and the demo institute. Then go to **Settings → Custom Domains**, add `app.vedavidya.co`,
 and create the CNAME record Render shows you at your DNS provider (GoDaddy).
 

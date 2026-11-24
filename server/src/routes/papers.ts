@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { all, json, one, run, uid } from "../db.js";
 import { staff } from "../auth.js";
-import { generatePaper, AiError, type PaperSpec } from "../ai/claude.js";
+import { generatePaper, AiError, aiProblem, type PaperSpec } from "../ai/claude.js";
 import { Section, type Section as SectionT } from "../ai/schemas.js";
 
 export const paperRoutes = Router();
@@ -37,12 +37,14 @@ const SpecBody = z.object({
 // Generation runs in the background; the client polls the paper's status.
 paperRoutes.post("/papers/generate", staff, (req, res) => {
   const spec = SpecBody.parse(req.body) as PaperSpec;
+  const problem = aiProblem(req.user!.org_id);
+  if (problem) return res.status(400).json({ error: problem });
   const id = uid("qp");
   run(`INSERT INTO question_papers (id, org_id, title, subject, board, class_level, language, duration_min, status, created_by)
        VALUES (?,?,?,?,?,?,?,?, 'generating', ?)`,
     id, req.user!.org_id, `${spec.subject} - ${spec.class_level}`, spec.subject, spec.board, spec.class_level, spec.language, spec.duration_min, req.user!.id);
   res.json({ id });
-  generatePaper(spec)
+  generatePaper(req.user!.org_id, spec)
     .then((paper) => {
       run("UPDATE question_papers SET title = ?, instructions = ?, sections = ?, total_marks = ?, status = 'draft' WHERE id = ?",
         paper.title, paper.instructions, JSON.stringify(paper.sections), totalMarks(paper.sections), id);
@@ -98,3 +100,8 @@ paperRoutes.delete("/papers/:id", staff, (req, res) => {
   run("DELETE FROM question_papers WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   res.json({ ok: true });
 });
+
+// Generation jobs live in memory; if the server restarted mid-generation, mark them failed so users can retry.
+export function recoverPaperJobs() {
+  run("UPDATE question_papers SET status = 'failed', error = 'Interrupted by a server restart. Please generate it again.' WHERE status = 'generating'");
+}

@@ -2,7 +2,13 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { all, one, run, uid } from "../db.js";
+import { all, one, run, uid, UPLOAD_DIR } from "../db.js";
+import { removeFiles } from "../images.js";
+import { studentFiles } from "./tests.js";
+
+class ClientError extends Error { constructor(msg: string, public status = 400) { super(msg); } }
+const inOrg = (table: "batches" | "centres" | "users", id: string | null | undefined, org: string) =>
+  !id || Boolean(one(`SELECT 1 FROM ${table} WHERE id = ? AND org_id = ?`, id, org));
 import { adminOnly, staff } from "../auth.js";
 
 export const orgRoutes = Router();
@@ -57,8 +63,13 @@ orgRoutes.get("/batches", staff, (req, res) => {
     WHERE b.org_id = ? ORDER BY c.name, b.name`, req.user!.org_id));
 });
 const BatchBody = z.object({ name: z.string().min(1), course: z.string().optional(), centre_id: z.string().nullable().optional(), teacher_id: z.string().nullable().optional() });
+const checkBatchRefs = (b: z.infer<typeof BatchBody>, org: string) => {
+  if (!inOrg("centres", b.centre_id, org)) throw new ClientError("Unknown centre");
+  if (b.teacher_id && !one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role IN ('admin','teacher')", b.teacher_id, org)) throw new ClientError("Unknown teacher");
+};
 orgRoutes.post("/batches", adminOnly, (req, res) => {
   const b = BatchBody.parse(req.body);
+  checkBatchRefs(b, req.user!.org_id);
   const id = uid("bat");
   run("INSERT INTO batches (id, org_id, centre_id, name, course, teacher_id) VALUES (?,?,?,?,?,?)",
     id, req.user!.org_id, b.centre_id || null, b.name, b.course ?? null, b.teacher_id || null);
@@ -66,6 +77,7 @@ orgRoutes.post("/batches", adminOnly, (req, res) => {
 });
 orgRoutes.put("/batches/:id", adminOnly, (req, res) => {
   const b = BatchBody.parse(req.body);
+  checkBatchRefs(b, req.user!.org_id);
   run("UPDATE batches SET name = ?, course = ?, centre_id = ?, teacher_id = ? WHERE id = ? AND org_id = ?",
     b.name, b.course ?? null, b.centre_id || null, b.teacher_id || null, req.params.id, req.user!.org_id);
   res.json({ ok: true });
@@ -76,8 +88,14 @@ orgRoutes.delete("/batches/:id", adminOnly, (req, res) => {
 });
 
 // ---- People
-const makeUsername = (name: string) =>
-  name.toLowerCase().replace(/[^a-z]/g, "").slice(0, 10) + Math.floor(1000 + Math.random() * 9000);
+const makeUsername = (name: string) => {
+  const base = name.toLowerCase().replace(/[^a-z]/g, "").slice(0, 10) || "student";
+  for (let i = 0; i < 50; i++) {
+    const u = base + Math.floor(1000 + Math.random() * (i < 20 ? 9000 : 900000));
+    if (!one("SELECT 1 FROM users WHERE username = ?", u)) return u;
+  }
+  throw new ClientError("Couldn't create a unique username. Please try again.", 500);
+};
 const makePassword = () => Math.random().toString(36).slice(2, 10);
 
 orgRoutes.get("/students", staff, (req, res) => {
@@ -96,7 +114,8 @@ const StudentBody = z.object({
 });
 
 function createStudent(orgId: string, s: z.infer<typeof StudentBody>) {
-  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", s.batch_id, orgId)) throw new Error("Unknown batch");
+  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", s.batch_id, orgId)) throw new ClientError("Pick a batch from your institute");
+  if (s.email && one("SELECT 1 FROM users WHERE lower(email) = ?", s.email.toLowerCase())) throw new ClientError(`The email ${s.email} is already used by another account`, 409);
   const id = uid("usr");
   const username = makeUsername(s.name);
   const password = makePassword();
@@ -113,20 +132,30 @@ orgRoutes.post("/students", staff, (req, res) => {
 
 // Bulk onboarding from pasted CSV rows: name,roll_no,phone,email,parent_phone
 orgRoutes.post("/students/bulk", staff, (req, res) => {
-  const { batch_id, csv } = z.object({ batch_id: z.string(), csv: z.string() }).parse(req.body);
-  const created = [];
-  for (const line of csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
-    const [name, roll_no, phone, email, parent_phone] = line.split(",").map((c) => c?.trim());
-    if (!name || /^name$/i.test(name)) continue;
-    created.push(createStudent(req.user!.org_id, { name, roll_no, phone, email: email && email.includes("@") ? email : "", parent_phone, batch_id }));
-  }
-  res.json({ created });
+  const { batch_id, csv } = z.object({ batch_id: z.string(), csv: z.string().max(200_000) }).parse(req.body);
+  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", batch_id, req.user!.org_id)) return res.status(400).json({ error: "Pick a batch from your institute" });
+  const rows = csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (rows.length > 1000) return res.status(400).json({ error: "Add at most 1,000 students at a time" });
+  const created: ReturnType<typeof createStudent>[] = [];
+  const skipped: { line: number; reason: string }[] = [];
+  rows.forEach((line, i) => {
+    const [name, roll_no, phone, email, parent_phone] = line.split(/[,\t]/).map((c) => c?.trim().replace(/^"|"$/g, ""));
+    if (!name || /^name$/i.test(name)) return;
+    try {
+      created.push(createStudent(req.user!.org_id, StudentBody.parse({ name, roll_no, phone, email: email && email.includes("@") ? email : "", parent_phone, batch_id })));
+    } catch (e) {
+      skipped.push({ line: i + 1, reason: e instanceof ClientError ? e.message : e instanceof z.ZodError ? "invalid details" : "could not be added" });
+    }
+  });
+  res.json({ created, skipped });
 });
 
 orgRoutes.put("/students/:id", staff, (req, res) => {
   const s = StudentBody.parse(req.body);
   const org = req.user!.org_id;
   if (!one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, org)) return res.status(404).json({ error: "Not found" });
+  if (!inOrg("batches", s.batch_id, org)) return res.status(400).json({ error: "Pick a batch from your institute" });
+  if (s.email && one("SELECT 1 FROM users WHERE lower(email) = ? AND id <> ?", s.email.toLowerCase(), req.params.id)) return res.status(409).json({ error: "That email is already used by another account" });
   run("UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?", s.name, s.email || null, s.phone || null, req.params.id);
   run("DELETE FROM enrollments WHERE student_id = ?", req.params.id);
   run("INSERT INTO enrollments (student_id, batch_id, roll_no, parent_name, parent_phone, parent_email) VALUES (?,?,?,?,?,?)",
@@ -143,6 +172,8 @@ orgRoutes.post("/students/:id/reset-password", staff, (req, res) => {
 });
 
 orgRoutes.delete("/students/:id", staff, (req, res) => {
+  if (!one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id)) return res.status(404).json({ error: "Not found" });
+  removeFiles(UPLOAD_DIR, studentFiles(req.params.id));
   run("DELETE FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id);
   res.json({ ok: true });
 });
@@ -176,7 +207,8 @@ orgRoutes.get("/notices", (req, res) => {
   res.json(rows);
 });
 orgRoutes.post("/notices", staff, (req, res) => {
-  const b = z.object({ title: z.string().min(1), body: z.string().min(1), batch_id: z.string().nullable().optional() }).parse(req.body);
+  const b = z.object({ title: z.string().min(1).max(200), body: z.string().min(1).max(5000), batch_id: z.string().nullable().optional() }).parse(req.body);
+  if (!inOrg("batches", b.batch_id, req.user!.org_id)) return res.status(400).json({ error: "Unknown batch" });
   run("INSERT INTO notices (id, org_id, title, body, batch_id, created_by) VALUES (?,?,?,?,?,?)",
     uid("ntc"), req.user!.org_id, b.title, b.body, b.batch_id || null, req.user!.id);
   res.json({ ok: true });
@@ -191,3 +223,5 @@ orgRoutes.put("/organisation", adminOnly, (req, res) => {
   run("UPDATE orgs SET name = ?, city = ? WHERE id = ?", b.name, b.city ?? null, req.user!.org_id);
   res.json({ ok: true });
 });
+
+export { ClientError };

@@ -1,5 +1,5 @@
 // Tests: scheduling, answer-sheet upload, AI evaluation, teacher review, result publishing and online (CBT) attempts.
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -7,7 +7,8 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import { all, json, one, run, uid, UPLOAD_DIR } from "../db.js";
 import { staff, requireRole } from "../auth.js";
-import { evaluateSheet, AiError } from "../ai/claude.js";
+import { evaluateSheet, AiError, aiProblem } from "../ai/claude.js";
+import { normalisePage, removeFiles, UploadError } from "../images.js";
 import type { Question, Section, SheetEvaluation } from "../ai/schemas.js";
 
 export const testRoutes = Router();
@@ -21,6 +22,12 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024, files: 30 },
   fileFilter: (_req, file, cb) => cb(null, /\.(jpe?g|png|webp|pdf)$/i.test(file.originalname)),
 });
+// Bulk upload for a whole class: up to 400 pages in one request.
+const bulkUpload = multer({ storage: (upload as any).storage, limits: { fileSize: 25 * 1024 * 1024, files: 400 },
+  fileFilter: (_req, file, cb) => cb(null, /\.(jpe?g|png|webp|pdf)$/i.test(file.originalname)) });
+
+// Express 4 doesn't catch rejected promises from async handlers.
+const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { fn(req, res).catch(next); };
 
 interface Paper { id: string; title: string; subject: string | null; instructions: string | null; total_marks: number; sections: Section[] }
 const paperFor = (testId: string): Paper | null => {
@@ -47,13 +54,16 @@ testRoutes.post("/tests", staff, (req, res) => {
   const org = req.user!.org_id;
   const paper = one<any>("SELECT * FROM question_papers WHERE id = ? AND org_id = ?", b.paper_id, org);
   if (!paper || paper.status === "generating" || paper.status === "failed") return res.status(400).json({ error: "Pick a ready question paper" });
-  if (b.mode === "cbt" && !questionsOf(json(paper.sections, [])).every(isObjective))
+  const qs = questionsOf(json<Section[]>(paper.sections, []));
+  if (!qs.length || !(paper.total_marks > 0)) return res.status(400).json({ error: "This paper has no questions yet. Add questions before creating a test." });
+  if (b.mode === "cbt" && !qs.every(isObjective))
     return res.status(400).json({ error: "Online (CBT) tests need a paper with only MCQ / numeric questions" });
+  const batchIds = [...new Set(b.batch_ids)].filter((bid) => one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", bid, org));
+  if (!batchIds.length) return res.status(400).json({ error: "Pick at least one batch from your institute" });
   const id = uid("tst");
   run("INSERT INTO tests (id, org_id, paper_id, title, mode, scheduled_at, duration_min) VALUES (?,?,?,?,?,?,?)",
     id, org, b.paper_id, b.title, b.mode, b.scheduled_at || null, b.duration_min ?? paper.duration_min);
-  for (const batchId of b.batch_ids) {
-    if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", batchId, org)) continue;
+  for (const batchId of batchIds) {
     run("INSERT OR IGNORE INTO test_batches (test_id, batch_id) VALUES (?, ?)", id, batchId);
     // One attempt row per enrolled student, so the roster is ready for uploads.
     for (const s of all<{ student_id: string }>("SELECT student_id FROM enrollments WHERE batch_id = ?", batchId))
@@ -63,7 +73,8 @@ testRoutes.post("/tests", staff, (req, res) => {
 });
 
 testRoutes.get("/tests/:id", staff, (req, res) => {
-  const t = one<any>("SELECT * FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  const t = one<any>(`SELECT t.*, (SELECT group_concat(b.name, ', ') FROM test_batches tb JOIN batches b ON b.id = tb.batch_id WHERE tb.test_id = t.id) AS batch_names
+    FROM tests t WHERE t.id = ? AND t.org_id = ?`, req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
   const attempts = all<any>(`SELECT a.id, a.status, a.score, a.max_score, a.error, a.reviewed, a.files, a.submitted_at,
       u.id AS student_id, u.name AS student_name, e.roll_no, b.name AS batch_name,
@@ -76,24 +87,96 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
 });
 
 testRoutes.delete("/tests/:id", staff, (req, res) => {
+  const t = one("SELECT id FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  if (!t) return res.status(404).json({ error: "Test not found" });
+  const files = all<{ files: string }>("SELECT files FROM attempts WHERE test_id = ?", req.params.id).flatMap((a) => json<string[]>(a.files, []));
   run("DELETE FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  removeFiles(UPLOAD_DIR, files);
   res.json({ ok: true });
 });
 
 const attemptInOrg = (attemptId: string, orgId: string) =>
   one<any>("SELECT a.* FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ? AND t.org_id = ?", attemptId, orgId);
 
+async function normaliseAll(files: Express.Multer.File[]) {
+  const out: { name: string; original: string }[] = [];
+  const errors: string[] = [];
+  for (const f of files) {
+    try { out.push({ name: await normalisePage(UPLOAD_DIR, f.filename, f.originalname), original: f.originalname }); }
+    catch (e) { errors.push(e instanceof UploadError ? e.message : `${f.originalname}: upload failed`); }
+  }
+  return { out, errors };
+}
+
 // Upload scanned pages (images or PDF) for one student's answer sheet.
-testRoutes.post("/attempts/:id/files", staff, upload.array("files", 30), (req, res) => {
-  const a = attemptInOrg(req.params.id, req.user!.org_id);
+testRoutes.post("/attempts/:id/files", staff, upload.array("files", 30), wrap(async (req, res) => {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-  if (!a) { files.forEach((f) => fs.rmSync(f.path, { force: true })); return res.status(404).json({ error: "Not found" }); }
+  const drop = () => files.forEach((f) => fs.rmSync(f.path, { force: true }));
+  const a = one<any>("SELECT a.*, t.mode FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ? AND t.org_id = ?", req.params.id, req.user!.org_id);
+  if (!a) { drop(); return res.status(404).json({ error: "Not found" }); }
+  if (a.mode !== "offline") { drop(); return res.status(400).json({ error: "Online tests don't take uploaded sheets" }); }
+  if (a.status === "evaluating") { drop(); return res.status(409).json({ error: "This sheet is being evaluated right now. Wait for it to finish, then upload again." }); }
   if (!files.length) return res.status(400).json({ error: "Upload JPG, PNG, WEBP or PDF files" });
-  const existing = req.query.replace === "1" ? [] : json<string[]>(a.files, []);
-  run("UPDATE attempts SET files = ?, status = 'uploaded', error = NULL, submitted_at = CURRENT_TIMESTAMP WHERE id = ?",
-    JSON.stringify([...existing, ...files.map((f) => f.filename)]), a.id);
-  res.json({ ok: true, pages: existing.length + files.length });
-});
+  const { out, errors } = await normaliseAll(files);
+  if (!out.length) return res.status(400).json({ error: errors.join(" ") });
+  const replace = req.query.replace === "1";
+  const previous = json<string[]>(a.files, []);
+  const pages = [...(replace ? [] : previous), ...out.map((o) => o.name)];
+  run("UPDATE attempts SET files = ?, status = 'uploaded', error = NULL, evaluation = NULL, score = NULL, reviewed = 0, submitted_at = CURRENT_TIMESTAMP WHERE id = ?",
+    JSON.stringify(pages), a.id);
+  if (replace) removeFiles(UPLOAD_DIR, previous);
+  res.json({ ok: true, pages: pages.length, warnings: errors });
+}));
+
+// Bulk upload for a whole test: files are matched to students by the roll number at the start of the
+// file name, e.g. "7.jpg", "07-1.jpg", "7_2.jpg", "Roll 7 page 2.png". Pages are ordered by file name.
+testRoutes.post("/tests/:id/bulk-files", staff, bulkUpload.array("files", 400), wrap(async (req, res) => {
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  const drop = (fs_: Express.Multer.File[]) => fs_.forEach((f) => fs.rmSync(f.path, { force: true }));
+  const t = one<any>("SELECT * FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  if (!t) { drop(files); return res.status(404).json({ error: "Test not found" }); }
+  if (t.mode !== "offline") { drop(files); return res.status(400).json({ error: "Online tests don't take uploaded sheets" }); }
+  if (!files.length) return res.status(400).json({ error: "Choose JPG, PNG, WEBP or PDF files named by roll number, e.g. 7.jpg or 7-1.jpg" });
+  const batchId = typeof req.query.batch_id === "string" && req.query.batch_id ? req.query.batch_id : null;
+  const roster = all<{ id: string; status: string; files: string; roll_no: string | null }>(`SELECT a.id, a.status, a.files, e.roll_no FROM attempts a
+    LEFT JOIN enrollments e ON e.student_id = a.student_id WHERE a.test_id = ? ${batchId ? "AND e.batch_id = ?" : ""}`, ...(batchId ? [t.id, batchId] : [t.id]));
+  const byRoll = new Map<string, typeof roster[number]>();
+  const dupes = new Set<string>();
+  for (const r of roster) {
+    if (!r.roll_no) continue;
+    const k = String(Number(r.roll_no.replace(/\D/g, "")) || r.roll_no.trim().toLowerCase());
+    if (byRoll.has(k)) dupes.add(k); else byRoll.set(k, r);
+  }
+  for (const k of dupes) byRoll.delete(k);
+  const ambiguous: string[] = [];
+  const rollOf = (name: string) => { const m = name.match(/^\D{0,8}?(\d+)/); return m ? String(Number(m[1])) : null; };
+  const groups = new Map<string, Express.Multer.File[]>();
+  const unmatched: string[] = [];
+  const busy: string[] = [];
+  for (const f of files) {
+    const roll = rollOf(f.originalname);
+    if (roll && dupes.has(roll)) { ambiguous.push(f.originalname); fs.rmSync(f.path, { force: true }); continue; }
+    const att = roll ? byRoll.get(roll) : undefined;
+    if (!att) { unmatched.push(f.originalname); fs.rmSync(f.path, { force: true }); continue; }
+    if (att.status === "evaluating") { busy.push(f.originalname); fs.rmSync(f.path, { force: true }); continue; }
+    groups.set(roll!, [...(groups.get(roll!) ?? []), f]);
+  }
+  const collator = new Intl.Collator(undefined, { numeric: true });
+  const warnings: string[] = [];
+  let students = 0, pages = 0;
+  for (const [roll, list] of groups) {
+    list.sort((x, y) => collator.compare(x.originalname, y.originalname));
+    const { out, errors } = await normaliseAll(list);
+    warnings.push(...errors);
+    if (!out.length) continue;
+    const att = byRoll.get(roll)!;
+    run("UPDATE attempts SET files = ?, status = 'uploaded', error = NULL, evaluation = NULL, score = NULL, reviewed = 0, submitted_at = CURRENT_TIMESTAMP WHERE id = ?",
+      JSON.stringify(out.map((o) => o.name)), att.id);
+    removeFiles(UPLOAD_DIR, json<string[]>(att.files, []));
+    students++; pages += out.length;
+  }
+  res.json({ students, pages, unmatched, ambiguous, busy, warnings });
+}));
 
 testRoutes.get("/attempts/:id/files/:n", staff, (req, res) => {
   const a = attemptInOrg(req.params.id, req.user!.org_id);
@@ -117,11 +200,14 @@ function scoreEvaluation(ev: SheetEvaluation, questions: Question[]) {
 async function runEvaluation(attemptId: string) {
   const a = one<any>("SELECT * FROM attempts WHERE id = ?", attemptId);
   if (!a) return;
-  const paper = paperFor(a.test_id)!;
+  const paper = paperFor(a.test_id);
+  const t = one<{ org_id: string }>("SELECT org_id FROM tests WHERE id = ?", a.test_id);
+  if (!paper || !t) return;
   run("UPDATE attempts SET status = 'evaluating', error = NULL WHERE id = ?", attemptId);
   try {
     const files = json<string[]>(a.files, []).map((f) => path.join(UPLOAD_DIR, f));
-    const ev = await evaluateSheet(paper, files);
+    const ev = await evaluateSheet(t.org_id, paper, files);
+    if (!Array.isArray(ev?.questions)) throw new AiError("Claude's answer couldn't be read. Please try again.");
     const score = scoreEvaluation(ev, questionsOf(paper.sections));
     run("UPDATE attempts SET status = 'evaluated', evaluation = ?, score = ?, max_score = ?, reviewed = 0, evaluated_at = CURRENT_TIMESTAMP WHERE id = ?",
       JSON.stringify(ev), score, paper.total_marks, attemptId);
@@ -149,9 +235,13 @@ function enqueue(ids: string[]) {
 testRoutes.post("/tests/:id/evaluate", staff, (req, res) => {
   const t = one("SELECT id FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
-  const only = (req.body?.attempt_ids as string[] | undefined) ?? null;
-  const ids = all<{ id: string; files: string }>("SELECT id, files FROM attempts WHERE test_id = ? AND status IN ('uploaded','failed','evaluated')", req.params.id)
-    .filter((a) => json<string[]>(a.files, []).length && (!only || only.includes(a.id))).map((a) => a.id);
+  const problem = aiProblem(req.user!.org_id);
+  if (problem) return res.status(400).json({ error: problem });
+  const only = z.array(z.string()).max(1000).optional().parse(req.body?.attempt_ids) ?? null;
+  // Without a selection only new and failed sheets are marked; already-marked sheets are re-marked only when picked explicitly.
+  const allowed = only ? ["uploaded", "failed", "evaluated"] : ["uploaded", "failed"];
+  const ids = all<{ id: string; files: string; status: string }>("SELECT id, files, status FROM attempts WHERE test_id = ?", req.params.id)
+    .filter((a) => allowed.includes(a.status) && json<string[]>(a.files, []).length && (!only || only.includes(a.id))).map((a) => a.id);
   enqueue(ids);
   res.json({ queued: ids.length });
 });
@@ -184,7 +274,8 @@ testRoutes.put("/attempts/:id/evaluation", staff, (req, res) => {
 
 testRoutes.post("/tests/:id/publish", staff, (req, res) => {
   const publish = req.body?.publish !== false;
-  run("UPDATE tests SET results_published = ? WHERE id = ? AND org_id = ?", publish ? 1 : 0, req.params.id, req.user!.org_id);
+  const r = run("UPDATE tests SET results_published = ? WHERE id = ? AND org_id = ?", publish ? 1 : 0, req.params.id, req.user!.org_id);
+  if (!r.changes) return res.status(404).json({ error: "Test not found" });
   if (publish)
     for (const a of all<{ id: string }>("SELECT id FROM attempts WHERE test_id = ? AND score IS NOT NULL", req.params.id))
       run("INSERT OR IGNORE INTO share_tokens (token, attempt_id) VALUES (?, ?)", crypto.randomBytes(12).toString("base64url"), a.id);
@@ -259,3 +350,13 @@ testRoutes.post("/cbt/:testId/submit", student, (req, res) => {
        evaluated_at = CURRENT_TIMESTAMP WHERE id = ?`, JSON.stringify(responses), JSON.stringify(ev), score, paper.total_marks, a.id);
   res.json({ ok: true });
 });
+
+// After a restart, sheets that were queued or mid-evaluation are queued again automatically.
+export function recoverEvaluations() {
+  const ids = all<{ id: string }>("SELECT id FROM attempts WHERE status = 'evaluating'").map((a) => a.id);
+  if (ids.length) { console.log(`Resuming ${ids.length} interrupted evaluation(s)`); enqueue(ids); }
+}
+
+/** Files to delete when a student is removed. */
+export const studentFiles = (studentId: string) =>
+  all<{ files: string }>("SELECT files FROM attempts WHERE student_id = ?", studentId).flatMap((a) => json<string[]>(a.files, []));

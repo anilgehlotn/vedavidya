@@ -95,3 +95,18 @@ export const json = <T>(s: string | null | undefined, fallback: T): T => {
   if (!s) return fallback;
   try { return JSON.parse(s) as T; } catch { return fallback; }
 };
+
+// ---- Migrations for databases created by earlier versions (safe to run every start) ----
+const addColumn = (table: string, col: string, def: string) => {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+};
+addColumn("orgs", "is_demo", "INTEGER DEFAULT 0");
+addColumn("orgs", "claude_key_enc", "TEXT");
+addColumn("orgs", "claude_key_hint", "TEXT");
+// The public demo institute must never use a real API key (its logins are published on the login page).
+db.exec(`UPDATE orgs SET is_demo = 1 WHERE id IN (SELECT org_id FROM users WHERE email = 'admin@demo.school')`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_attempts_test ON attempts(test_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_attempts_student ON attempts(student_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id, role)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_enroll_batch ON enrollments(batch_id)");

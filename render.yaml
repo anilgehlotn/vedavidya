@@ -1,14 +1,21 @@
-# Render blueprint: New > Blueprint, pick this repo. Add ANTHROPIC_API_KEY in the dashboard.
+# Render blueprint: New > Blueprint, pick this repo.
+# The Claude API key is added inside the app: Settings → AI engine (stored encrypted per institute).
 services:
   - type: web
     name: vedavidya
     runtime: docker
-    plan: free
+    plan: starter
     healthCheckPath: /api/health
     envVars:
       - key: JWT_SECRET
         generateValue: true
-      - key: ANTHROPIC_API_KEY
-        sync: false
       - key: SEED_DEMO
         value: "true"
+      - key: ALLOW_SIGNUP
+        value: "true"
+      - key: EVAL_CONCURRENCY
+        value: "3"
+    disk:
+      name: vedavidya-data
+      mountPath: /data
+      sizeGB: 5

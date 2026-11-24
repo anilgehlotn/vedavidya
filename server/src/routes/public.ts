@@ -3,11 +3,24 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { one, run, uid, json, all } from "../db.js";
 import { requireAuth, signToken, type AuthUser } from "../auth.js";
+import { rateLimit } from "../ratelimit.js";
 
 export const publicRoutes = Router();
 
-publicRoutes.post("/auth/login", (req, res) => {
-  const { identifier, password } = z.object({ identifier: z.string().min(1), password: z.string().min(1) }).parse(req.body);
+const ALLOW_SIGNUP = process.env.ALLOW_SIGNUP !== "false";
+const loginLimit = rateLimit("login", 10, 5 * 60 * 1000, (r) => `${r.ip}:${String(r.body?.identifier ?? "").toLowerCase()}`);
+const loginIpLimit = rateLimit("login-ip", 60, 15 * 60 * 1000);
+const signupLimit = rateLimit("signup", 5, 60 * 60 * 1000);
+const contactLimit = rateLimit("contact", 5, 10 * 60 * 1000);
+
+publicRoutes.get("/config", (_req, res) => {
+  const demo = Boolean(one("SELECT 1 FROM users WHERE email = 'admin@demo.school'"));
+  res.json({ signup: ALLOW_SIGNUP, demo });
+});
+
+
+publicRoutes.post("/auth/login", loginIpLimit, loginLimit, (req, res) => {
+  const { identifier, password } = z.object({ identifier: z.string().min(1).max(200), password: z.string().min(1).max(200) }).parse(req.body);
   const id = identifier.trim().toLowerCase();
   const user = one<AuthUser & { password_hash: string }>(
     "SELECT id, org_id, role, name, email, password_hash FROM users WHERE lower(email) = ? OR lower(username) = ? OR phone = ?",
@@ -19,10 +32,11 @@ publicRoutes.post("/auth/login", (req, res) => {
 });
 
 // Self-serve signup: creates an institute and its first admin.
-publicRoutes.post("/auth/register", (req, res) => {
+publicRoutes.post("/auth/register", signupLimit, (req, res) => {
+  if (!ALLOW_SIGNUP) return res.status(403).json({ error: "New institutes are created by invitation. Please book a demo." });
   const body = z.object({
-    institute: z.string().min(2), city: z.string().optional(),
-    name: z.string().min(2), email: z.string().email(), password: z.string().min(8),
+    institute: z.string().min(2).max(120), city: z.string().max(80).optional(),
+    name: z.string().min(2).max(80), email: z.string().email().max(200), password: z.string().min(8).max(200),
   }).parse(req.body);
   if (one("SELECT 1 FROM users WHERE lower(email) = ?", body.email.toLowerCase())) return res.status(409).json({ error: "That email is already registered" });
   const orgId = uid("org");
@@ -35,23 +49,23 @@ publicRoutes.post("/auth/register", (req, res) => {
 });
 
 publicRoutes.get("/me", requireAuth, (req, res) => {
-  const org = one("SELECT id, name, city FROM orgs WHERE id = ?", req.user!.org_id);
+  const org = one("SELECT id, name, city, is_demo FROM orgs WHERE id = ?", req.user!.org_id);
   res.json({ user: req.user, org });
 });
 
 publicRoutes.post("/auth/change-password", requireAuth, (req, res) => {
-  const { current, next } = z.object({ current: z.string(), next: z.string().min(8) }).parse(req.body);
+  const { current, next } = z.object({ current: z.string().max(200), next: z.string().min(8).max(200) }).parse(req.body);
   const u = one<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = ?", req.user!.id)!;
   if (!bcrypt.compareSync(current, u.password_hash)) return res.status(400).json({ error: "Current password is wrong" });
   run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(next, 10), req.user!.id);
   res.json({ ok: true });
 });
 
-publicRoutes.post("/contact", (req, res) => {
+publicRoutes.post("/contact", contactLimit, (req, res) => {
   const b = z.object({
-    first_name: z.string().min(1), last_name: z.string().min(1), phone: z.string().min(6),
-    institute: z.string().min(1), students: z.string().min(1),
-    email: z.string().email().optional().or(z.literal("")), message: z.string().optional(),
+    first_name: z.string().min(1).max(80), last_name: z.string().min(1).max(80), phone: z.string().min(6).max(30),
+    institute: z.string().min(1).max(150), students: z.string().min(1).max(40),
+    email: z.string().email().max(200).optional().or(z.literal("")), message: z.string().max(3000).optional(),
   }).parse(req.body);
   run("INSERT INTO leads (id, first_name, last_name, phone, institute, students, email, message) VALUES (?,?,?,?,?,?,?,?)",
     uid("lead"), b.first_name, b.last_name, b.phone, b.institute, b.students, b.email || null, b.message ?? null);

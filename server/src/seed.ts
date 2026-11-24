@@ -17,7 +17,7 @@ const hash = bcrypt.hashSync("demo1234", 10);
 
 db.exec("BEGIN");
 const org = uid("org");
-run("INSERT INTO orgs (id, name, city) VALUES (?, 'Sunrise Academy', 'Jaipur')", org);
+run("INSERT INTO orgs (id, name, city, is_demo) VALUES (?, 'Sunrise Academy', 'Jaipur', 1)", org);
 const admin = uid("usr");
 run("INSERT INTO users (id, org_id, role, name, email, password_hash) VALUES (?,?, 'admin', 'Priya Nair', 'admin@demo.school', ?)", admin, org, hash);
 const teachers = [["Rahul Verma", "Physics"], ["Meera Iyer", "Mathematics"], ["Arjun Rao", "Chemistry"]].map(([name, subject], i) => {

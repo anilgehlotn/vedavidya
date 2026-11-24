@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -12,6 +12,8 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const { login } = useAuth();
   const nav = useNavigate();
+  const [cfg, setCfg] = useState({ signup: true, demo: true });
+  useEffect(() => { api<{ signup: boolean; demo: boolean }>("/config").then(setCfg).catch(() => {}); }, []);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
   const doLogin = async (identifier: string, password: string) => {
@@ -69,11 +71,11 @@ export default function Login() {
             {error && <div className="error-box">{error}</div>}
             <button className="btn btn-primary" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create institute"}</button>
           </form>
-          <p className="small muted" style={{ marginTop: 16, textAlign: "center" }}>
+          {(cfg.signup || mode === "register") && <p className="small muted" style={{ marginTop: 16, textAlign: "center" }}>
             {mode === "login" ? "New to Veda Vidya? " : "Already have an account? "}
             <button className="btn-link" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(null); }}>{mode === "login" ? "Create an institute" : "Sign in"}</button>
-          </p>
-          {mode === "login" && (
+          </p>}
+          {mode === "login" && cfg.demo && (
             <div style={{ borderTop: "1px solid var(--line)", marginTop: 18, paddingTop: 16 }}>
               <div className="small muted" style={{ textAlign: "center", marginBottom: 10 }}>Explore the demo institute as</div>
               <div className="row" style={{ justifyContent: "center", flexWrap: "wrap" }}>
