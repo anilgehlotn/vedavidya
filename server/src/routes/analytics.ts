@@ -5,7 +5,7 @@ import type { Section, SheetEvaluation } from "../ai/schemas.js";
 
 export const analyticsRoutes = Router();
 
-interface AttemptRow { test_id: string; title: string; date: string; score: number; max_score: number; evaluation: string; sections: string; student_id: string }
+interface AttemptRow { test_id: string; title: string; date: string; score: number; max_score: number; evaluation: string; sections: string; student_id: string; subject: string | null }
 
 function topicMastery(rows: AttemptRow[]) {
   const topics = new Map<string, { got: number; max: number }>();
@@ -24,9 +24,19 @@ function topicMastery(rows: AttemptRow[]) {
     .sort((a, b) => a.pct - b.pct);
 }
 
-const BASE = `SELECT a.test_id, t.title, coalesce(t.scheduled_at, t.created_at) AS date, a.score, a.max_score, a.evaluation, p.sections, a.student_id
+const BASE = `SELECT a.test_id, t.title, coalesce(t.scheduled_at, t.created_at) AS date, a.score, a.max_score, a.evaluation, p.sections, a.student_id,
+  coalesce(nullif(trim(p.subject), ''), 'General') AS subject
   FROM attempts a JOIN tests t ON t.id = a.test_id JOIN question_papers p ON p.id = t.paper_id
   WHERE a.score IS NOT NULL AND a.max_score > 0`;
+
+// Average % per subject (Physics, Chemistry, ...) so subjects are never mixed into one number.
+function subjectsOf(rows: AttemptRow[]) {
+  const m = new Map<string, number[]>();
+  for (const r of rows) m.set(r.subject ?? "General", [...(m.get(r.subject ?? "General") ?? []), (r.score / r.max_score) * 100]);
+  return [...m.entries()].map(([subject, p]) => ({ subject, avg: Math.round(p.reduce((a, b) => a + b, 0) / p.length), tests: p.length }))
+    .sort((a, b) => a.subject.localeCompare(b.subject));
+}
+const subjectFilter = (q: unknown) => (typeof q === "string" && q.trim() ? q.trim().slice(0, 80) : null);
 
 analyticsRoutes.get("/analytics/student/:id", (req, res) => {
   const u = req.user!;
@@ -35,13 +45,15 @@ analyticsRoutes.get("/analytics/student/:id", (req, res) => {
     LEFT JOIN enrollments e ON e.student_id = u.id LEFT JOIN batches b ON b.id = e.batch_id
     WHERE u.id = ? AND u.org_id = ? AND u.role = 'student'`, req.params.id, u.org_id);
   if (!student) return res.status(404).json({ error: "Student not found" });
-  const rows = all<AttemptRow>(`${BASE} AND a.student_id = ? ${u.role === "student" ? "AND t.results_published = 1" : ""} ORDER BY date`, student.id);
+  const allRows = all<AttemptRow>(`${BASE} AND a.student_id = ? ${u.role === "student" ? "AND t.results_published = 1" : ""} ORDER BY date`, student.id);
+  const subject = subjectFilter(req.query.subject);
+  const rows = subject ? allRows.filter((r) => r.subject === subject) : allRows;
   const trend = rows.map((r) => {
     const classAvg = one<{ v: number }>("SELECT avg(score * 100.0 / max_score) v FROM attempts WHERE test_id = ? AND score IS NOT NULL AND max_score > 0", r.test_id)?.v ?? 0;
-    return { test_id: r.test_id, title: r.title, date: r.date, pct: Math.round((r.score / r.max_score) * 100), class_avg: Math.round(classAvg) };
+    return { test_id: r.test_id, title: r.title, subject: r.subject, date: r.date, pct: Math.round((r.score / r.max_score) * 100), class_avg: Math.round(classAvg) };
   });
   const gaps = rows.flatMap((r) => json<SheetEvaluation | null>(r.evaluation, null)?.gaps ?? []);
-  res.json({ student, trend, topics: topicMastery(rows), gaps: [...new Set(gaps)].slice(-8),
+  res.json({ student, trend, topics: topicMastery(rows), gaps: [...new Set(gaps)].slice(-8), subjects: subjectsOf(allRows), subject,
     average: trend.length ? Math.round(trend.reduce((t, x) => t + x.pct, 0) / trend.length) : null });
 });
 
@@ -50,7 +62,9 @@ analyticsRoutes.get("/analytics/batch/:id", (req, res) => {
   if (u.role === "student") return res.status(403).json({ error: "Forbidden" });
   const batch = one<any>("SELECT b.*, c.name AS centre_name FROM batches b LEFT JOIN centres c ON c.id = b.centre_id WHERE b.id = ? AND b.org_id = ?", req.params.id, u.org_id);
   if (!batch) return res.status(404).json({ error: "Batch not found" });
-  const rows = all<AttemptRow>(`${BASE} AND a.student_id IN (SELECT student_id FROM enrollments WHERE batch_id = ?) ORDER BY date`, batch.id);
+  const allRows = all<AttemptRow>(`${BASE} AND a.student_id IN (SELECT student_id FROM enrollments WHERE batch_id = ?) ORDER BY date`, batch.id);
+  const subject = subjectFilter(req.query.subject);
+  const rows = subject ? allRows.filter((r) => r.subject === subject) : allRows;
   const byTest = new Map<string, { title: string; date: string; pcts: number[] }>();
   const byStudent = new Map<string, number[]>();
   for (const r of rows) {
@@ -65,7 +79,7 @@ analyticsRoutes.get("/analytics/batch/:id", (req, res) => {
   const buckets = [0, 0, 0, 0, 0];
   for (const s of leaderboard) buckets[Math.min(4, Math.floor(s.avg / 20))]++;
   res.json({
-    batch, student_count: names.size,
+    batch, student_count: names.size, subjects: subjectsOf(allRows), subject,
     trend: [...byTest.entries()].map(([id, t]) => ({ test_id: id, title: t.title, date: t.date, avg: avg(t.pcts), top: Math.round(Math.max(...t.pcts)) })),
     topics: topicMastery(rows), leaderboard,
     distribution: ["0-20", "20-40", "40-60", "60-80", "80-100"].map((label, i) => ({ label, count: buckets[i] })),

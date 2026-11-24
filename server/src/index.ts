@@ -5,7 +5,7 @@ import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
 import { ZodError } from "zod";
-import { requireAuth } from "./auth.js";
+import { requireAuth, demoReadOnly } from "./auth.js";
 import { publicRoutes } from "./routes/public.js";
 import { orgRoutes, ClientError } from "./routes/org.js";
 import { paperRoutes, recoverPaperJobs } from "./routes/papers.js";
@@ -26,13 +26,20 @@ app.use((_req, res, next) => {
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   if (PROD) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  // Content-Security-Policy: only this site's own scripts can run; fonts from Google Fonts; files shown via blob: URLs.
+  res.setHeader("Content-Security-Policy", [
+    "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "connect-src 'self'",
+    "frame-src 'self' blob:", "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
+  ].join("; "));
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   next();
 });
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.use("/api", publicRoutes);
-app.use("/api", requireAuth, orgRoutes, paperRoutes, testRoutes, analyticsRoutes, settingsRoutes);
+app.use("/api", requireAuth, demoReadOnly, orgRoutes, paperRoutes, testRoutes, analyticsRoutes, settingsRoutes);
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
 const onError: ErrorRequestHandler = (err, _req, res, _next) => {

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { one, run, uid, json, all } from "../db.js";
+import { one, run, uid, json, all, bumpTokenVersion } from "../db.js";
 import { requireAuth, signToken, type AuthUser } from "../auth.js";
 import { rateLimit } from "../ratelimit.js";
 
@@ -11,6 +11,11 @@ const ALLOW_SIGNUP = process.env.ALLOW_SIGNUP !== "false";
 const loginLimit = rateLimit("login", 10, 5 * 60 * 1000, (r) => `${r.ip}:${String(r.body?.identifier ?? "").toLowerCase()}`);
 // A whole class on one school Wi-Fi shares an IP, so the per-network limit is generous; per-account guessing stays tight.
 const loginIpLimit = rateLimit("login-ip", 600, 15 * 60 * 1000);
+// Locks an account after repeated failures no matter which networks they come from.
+const accountLimit = rateLimit("login-account", 20, 15 * 60 * 1000, (r) => String(r.body?.identifier ?? "").trim().toLowerCase());
+const passwordLimit = rateLimit("change-password", 10, 15 * 60 * 1000, (r) => r.user?.id ?? r.ip ?? "?");
+// A fixed hash so a missing account costs the same time as a wrong password (no account discovery by timing).
+const DUMMY_HASH = bcrypt.hashSync("not-a-real-password", 10);
 const signupLimit = rateLimit("signup", 5, 60 * 60 * 1000);
 const contactLimit = rateLimit("contact", 5, 10 * 60 * 1000);
 
@@ -20,18 +25,24 @@ publicRoutes.get("/config", (_req, res) => {
 });
 
 
-publicRoutes.post("/auth/login", loginIpLimit, loginLimit, async (req, res, next) => {
+publicRoutes.post("/auth/login", loginIpLimit, accountLimit, loginLimit, async (req, res, next) => {
   try {
-  const { identifier, password } = z.object({ identifier: z.string().min(1).max(200), password: z.string().min(1).max(200) }).parse(req.body);
-  const id = identifier.trim().toLowerCase();
-  const user = one<AuthUser & { password_hash: string }>(
-    "SELECT id, org_id, role, name, email, password_hash FROM users WHERE lower(email) = ? OR lower(username) = ? OR phone = ?",
-    id, id, identifier.trim(),
-  );
-  // Async compare keeps the server responsive while a whole class signs in at once.
-  if (!user || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: "Wrong email/username or password" });
-  const { password_hash: _, ...safe } = user;
-  res.json({ token: signToken(safe), user: safe });
+    const { identifier, password } = z.object({ identifier: z.string().min(1).max(200), password: z.string().min(1).max(200) }).parse(req.body);
+    const id = identifier.trim().toLowerCase();
+    type Row = AuthUser & { password_hash: string };
+    const cols = "id, org_id, role, name, email, password_hash";
+    let user = one<Row>(`SELECT ${cols} FROM users WHERE lower(email) = ? OR lower(username) = ?`, id, id);
+    if (!user && /^\+?[\d\s-]{6,20}$/.test(identifier.trim())) {
+      // Phone login only when exactly one account uses that number (siblings may share a phone).
+      const byPhone = all<Row>(`SELECT ${cols} FROM users WHERE phone = ? LIMIT 2`, identifier.trim());
+      if (byPhone.length > 1) { await bcrypt.compare(password, DUMMY_HASH); return res.status(401).json({ error: "More than one account uses this phone number. Sign in with your username instead." }); }
+      user = byPhone[0];
+    }
+    // Async compare keeps the server responsive while a whole class signs in at once.
+    const valid = await bcrypt.compare(password, user?.password_hash ?? DUMMY_HASH);
+    if (!user || !valid) return res.status(401).json({ error: "Wrong email/username or password" });
+    const { password_hash: _, ...safe } = user;
+    res.json({ token: signToken(safe), user: safe });
   } catch (e) { next(e); }
 });
 
@@ -57,12 +68,17 @@ publicRoutes.get("/me", requireAuth, (req, res) => {
   res.json({ user: req.user, org });
 });
 
-publicRoutes.post("/auth/change-password", requireAuth, (req, res) => {
-  const { current, next } = z.object({ current: z.string().max(200), next: z.string().min(8).max(200) }).parse(req.body);
-  const u = one<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = ?", req.user!.id)!;
-  if (!bcrypt.compareSync(current, u.password_hash)) return res.status(400).json({ error: "Current password is wrong" });
-  run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(next, 10), req.user!.id);
-  res.json({ ok: true });
+publicRoutes.post("/auth/change-password", requireAuth, passwordLimit, async (req, res, next) => {
+  try {
+    if (req.user!.is_demo) return res.status(403).json({ error: "The demo institute is read-only." });
+    const { current, next: nextPw } = z.object({ current: z.string().max(200), next: z.string().min(8).max(200) }).parse(req.body);
+    if (current === nextPw) return res.status(400).json({ error: "Choose a different password" });
+    const u = one<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = ?", req.user!.id)!;
+    if (!(await bcrypt.compare(current, u.password_hash))) return res.status(400).json({ error: "Current password is wrong" });
+    run("UPDATE users SET password_hash = ? WHERE id = ?", await bcrypt.hash(nextPw, 10), req.user!.id);
+    bumpTokenVersion(req.user!.id); // signs out other devices
+    res.json({ ok: true, token: signToken(req.user!) });
+  } catch (e) { next(e); }
 });
 
 publicRoutes.post("/contact", contactLimit, (req, res) => {
@@ -89,6 +105,8 @@ publicRoutes.get("/public/report/:token", (req, res) => {
     .findIndex((r) => r.student_id === row.student_id) + 1;
   res.json({
     org_name: row.org_name, student_name: row.student_name, test_title: row.test_title, subject: row.subject,
-    score: row.score, max_score: row.max_score, rank, evaluation: json(row.evaluation, null), sections: json(row.sections, []),
+    score: row.score, max_score: row.max_score, rank, evaluation: json(row.evaluation, null),
+    // Only what the report shows: question topics and marks (never the answer key or solutions).
+    sections: json<any[]>(row.sections, []).map((s) => ({ name: s.name, questions: (s.questions ?? []).map((q: any) => ({ id: q.id, topic: q.topic, marks: q.marks })) })),
   });
 });

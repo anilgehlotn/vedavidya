@@ -104,9 +104,15 @@ const addColumn = (table: string, col: string, def: string) => {
 addColumn("orgs", "is_demo", "INTEGER DEFAULT 0");
 addColumn("orgs", "claude_key_enc", "TEXT");
 addColumn("orgs", "claude_key_hint", "TEXT");
+addColumn("users", "token_version", "INTEGER DEFAULT 0");
 // The public demo institute must never use a real API key (its logins are published on the login page).
 db.exec(`UPDATE orgs SET is_demo = 1 WHERE id IN (SELECT org_id FROM users WHERE email = 'admin@demo.school')`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_attempts_test ON attempts(test_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_attempts_student ON attempts(student_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id, role)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_enroll_batch ON enrollments(batch_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_tests_org ON tests(org_id)");
+
+/** Signs the user out everywhere (after a password change or reset). */
+export const bumpTokenVersion = (userId: string) => run("UPDATE users SET token_version = coalesce(token_version, 0) + 1 WHERE id = ?", userId);

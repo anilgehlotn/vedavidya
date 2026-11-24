@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, DEMO, fileUrl, fmtDate, fmtDateTime, pct } from "../../lib/api";
+import { api, blobUrl, csvCell, DEMO, download, fmtDate, fmtDateTime, pct } from "../../lib/api";
 import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/types";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, StatusBadge, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
@@ -186,7 +186,7 @@ const resultMessage = (a: AttemptRow, test: string, org: string) =>
 export function TestDetail() {
   const { id } = useParams();
   const t = useApi<TestDetailData>(`/tests/${id}`);
-  const { org } = useAuth();
+  const { org, user } = useAuth();
   const nav = useNavigate();
   const [msg, setMsg] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | AttemptStatus>("all");
@@ -220,7 +220,7 @@ export function TestDetail() {
     t.reload(true);
   };
   const downloadLinks = () => {
-    const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const esc = csvCell;
     const rows = d.attempts.filter((a) => a.share_token && a.score != null).map((a) =>
       [a.roll_no, a.student_name, a.batch_name, a.parent_phone, a.phone, a.score, a.max_score, `${pct(a.score, a.max_score)}%`, reportUrl(a.share_token!)].map(esc).join(","));
     const csv = ["Roll,Name,Batch,Parent phone,Student phone,Score,Max,Percent,Report link", ...rows].join("\n");
@@ -234,7 +234,7 @@ export function TestDetail() {
   return (
     <>
       <PageTitle title={d.title} sub={<>{d.mode === "cbt" ? "Online test" : "Handwritten test"} · {d.paper.total_marks} marks · {d.duration_min} min · {fmtDateTime(d.scheduled_at)} · <Link to={`/app/papers/${d.paper.id}`} className="btn-link">View paper</Link></>}>
-        {!DEMO && <a className="btn btn-ghost" href={fileUrl(`/tests/${d.id}/results.csv`)}>Export CSV</a>}
+        {!DEMO && <button className="btn btn-ghost" onClick={() => download(`/tests/${d.id}/results.csv`, `${d.title.replace(/\W+/g, "_")}_results.csv`).catch((e) => setMsg(e.message))}>Export CSV</button>}
         {d.mode === "offline" && !DEMO && <button className="btn btn-ghost" onClick={() => setBulk(true)}>⇪ Bulk upload</button>}
         {d.mode === "offline" && <button className="btn btn-ghost" disabled={!toEvaluate} onClick={() => evaluate()}>✦ Evaluate {toEvaluate || ""} new sheet{toEvaluate === 1 ? "" : "s"}</button>}
         {d.results_published && !DEMO ? <button className="btn btn-ghost" onClick={downloadLinks}>⤓ Report links</button> : null}
@@ -286,7 +286,12 @@ export function TestDetail() {
         </table></div>
         {!list.length && <Empty title="No students here" />}
       </div>
-      <div style={{ marginTop: 20 }}><button className="btn btn-danger btn-sm" onClick={async () => { if (confirm("Delete this test and all its results?")) { await api(`/tests/${d.id}`, { method: "DELETE" }); nav("/app/tests"); } }}>Delete test</button></div>
+      {(!d.results_published || user?.role === "admin") && (
+        <div style={{ marginTop: 20 }}><button className="btn btn-danger btn-sm" onClick={async () => {
+          if (!confirm("Delete this test and all its results? This can't be undone.")) return;
+          try { await api(`/tests/${d.id}`, { method: "DELETE" }); nav("/app/tests"); } catch (e) { setMsg((e as Error).message); }
+        }}>Delete test</button></div>
+      )}
     </>
   );
 }
@@ -297,6 +302,22 @@ interface AttemptData {
 }
 
 // Shared by teachers (editable) and students (read-only, after publishing).
+// Shows one uploaded page using the login header; images as <img>, PDFs in a frame.
+function PagePreview({ attemptId, n, big }: { attemptId: string; n: number; big?: boolean }) {
+  const [file, setFile] = useState<{ url: string; type: string } | null>(null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    let url = "";
+    blobUrl(`/attempts/${attemptId}/files/${n}`).then((f) => { url = f.url; setFile(f); }).catch(() => setErr(true));
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [attemptId, n]);
+  if (err) return <span className="small muted">Page {n + 1} unavailable</span>;
+  if (!file) return <span className="spinner" />;
+  return file.type === "application/pdf"
+    ? <iframe src={file.url} title={`Page ${n + 1}`} style={{ width: "100%", height: big ? "75vh" : "100%", border: 0, pointerEvents: big ? "auto" : "none" }} />
+    : <img src={file.url} alt={`Page ${n + 1}`} style={{ width: "100%", height: big ? "auto" : "100%", objectFit: big ? "contain" : "cover" }} />;
+}
+
 export function AttemptReview() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -331,16 +352,16 @@ export function AttemptReview() {
           <div className="row between"><b>Answer sheet ({d.files} page{d.files > 1 ? "s" : ""})</b><span className="small muted">Click a page to enlarge</span></div>
           <div className="row" style={{ overflowX: "auto", marginTop: 10, gap: 10 }}>
             {Array.from({ length: d.files }, (_, i) => (
-              <a key={i} href={fileUrl(`/attempts/${d.id}/files/${i}`)} target="_blank" rel="noreferrer" onClick={(e) => { e.preventDefault(); setPage(i); }}
+              <button key={i} type="button" onClick={() => setPage(i)} aria-label={`Open page ${i + 1}`}
                 className="q-card" style={{ padding: 4, flex: "none", width: 110, height: 140, display: "grid", placeItems: "center", overflow: "hidden" }}>
-                <object data={fileUrl(`/attempts/${d.id}/files/${i}`)} style={{ width: "100%", height: "100%", pointerEvents: "none" }}>Page {i + 1}</object>
-              </a>))}
+                <PagePreview attemptId={d.id} n={i} />
+              </button>))}
           </div>
         </div>
       )}
       {page != null && (
         <Modal title={`Page ${page + 1}`} onClose={() => setPage(null)} wide>
-          <object data={fileUrl(`/attempts/${d.id}/files/${page}`)} style={{ width: "100%", height: "75vh" }}>Unable to preview</object>
+          <PagePreview attemptId={d.id} n={page} big />
         </Modal>
       )}
       {ev && (ev.overall_feedback || ev.gaps.length > 0) && (

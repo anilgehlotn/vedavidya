@@ -2,6 +2,10 @@ import { Router } from "express";
 import { z } from "zod";
 import { all, json, one, run, uid } from "../db.js";
 import { staff } from "../auth.js";
+import { rateLimit } from "../ratelimit.js";
+
+// Each AI paper costs API credits; cap how many an institute can start in a short time.
+const aiPaperLimit = rateLimit("ai-paper", 30, 60 * 60 * 1000, (r) => r.user?.org_id ?? r.ip ?? "?");
 import { generatePaper, importPaper, AiError, aiProblem, type PaperSpec } from "../ai/claude.js";
 import multer from "multer";
 import crypto from "node:crypto";
@@ -30,18 +34,18 @@ paperRoutes.get("/papers/:id", staff, (req, res) => {
 });
 
 const SpecBody = z.object({
-  subject: z.string().min(1), board: z.string().min(1), class_level: z.string().min(1), topics: z.string().min(1),
-  language: z.string().default("English"), difficulty: z.enum(["easy", "medium", "hard", "mixed"]).default("mixed"),
+  subject: z.string().trim().min(1).max(80), board: z.string().trim().min(1).max(80), class_level: z.string().trim().min(1).max(80), topics: z.string().trim().min(1).max(2000),
+  language: z.string().max(60).default("English"), difficulty: z.enum(["easy", "medium", "hard", "mixed"]).default("mixed"),
   duration_min: z.number().int().min(5).max(360).default(60),
   sections: z.array(z.object({
-    name: z.string().min(1), type: z.enum(["mcq", "numeric", "short", "long"]),
+    name: z.string().min(1).max(100), type: z.enum(["mcq", "numeric", "short", "long"]),
     count: z.number().int().min(1).max(60), marks_each: z.number().min(0.5).max(50), negative_marks: z.number().min(0).max(10).default(0),
   })).min(1).max(8),
-  notes: z.string().optional(),
+  notes: z.string().max(1000).optional(),
 });
 
 // Generation runs in the background; the client polls the paper's status.
-paperRoutes.post("/papers/generate", staff, (req, res) => {
+paperRoutes.post("/papers/generate", staff, aiPaperLimit, (req, res) => {
   const spec = SpecBody.parse(req.body) as PaperSpec;
   const problem = aiProblem(req.user!.org_id);
   if (problem) return res.status(400).json({ error: problem });
@@ -70,7 +74,7 @@ const paperUpload = multer({
   fileFilter: (_req, file, cb) => cb(null, /\.(jpe?g|png|webp|pdf)$/i.test(file.originalname)),
 }).fields([{ name: "paper", maxCount: 20 }, { name: "key", maxCount: 20 }]);
 
-paperRoutes.post("/papers/import", staff, paperUpload, async (req, res, next) => {
+paperRoutes.post("/papers/import", staff, aiPaperLimit, paperUpload, async (req, res, next) => {
   const got = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
   const all_ = [...(got.paper ?? []), ...(got.key ?? [])];
   try {
@@ -111,9 +115,10 @@ paperRoutes.post("/papers/import", staff, paperUpload, async (req, res, next) =>
 
 // Manual creation / full save from the editor.
 const PaperBody = z.object({
-  title: z.string().min(1), subject: z.string().optional(), board: z.string().optional(), class_level: z.string().optional(),
-  language: z.string().optional(), duration_min: z.number().int().min(5).max(360), instructions: z.string().optional(),
-  sections: z.array(Section),
+  title: z.string().trim().min(1).max(200), subject: z.string().max(80).optional(), board: z.string().max(80).optional(), class_level: z.string().max(80).optional(),
+  language: z.string().max(60).optional(), duration_min: z.number().int().min(5).max(360), instructions: z.string().max(5000).optional(),
+  sections: z.array(Section).max(20).refine((ss) => ss.reduce((t, x) => t + x.questions.length, 0) <= 300, "At most 300 questions")
+    .refine((ss) => { const ids = ss.flatMap((x) => x.questions.map((q) => q.id)); return new Set(ids).size === ids.length; }, "Question ids must be unique"),
 });
 
 paperRoutes.post("/papers", staff, (req, res) => {
@@ -152,6 +157,8 @@ paperRoutes.post("/papers/:id/clone", staff, (req, res) => {
 });
 
 paperRoutes.delete("/papers/:id", staff, (req, res) => {
+  const used = one<{ n: number }>("SELECT count(*) n FROM tests WHERE paper_id = ? AND org_id = ?", req.params.id, req.user!.org_id)?.n ?? 0;
+  if (used) return res.status(409).json({ error: `This paper is used by ${used} test${used > 1 ? "s" : ""}. Delete ${used > 1 ? "those tests" : "that test"} first, so no results are lost by accident.` });
   run("DELETE FROM question_papers WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   res.json({ ok: true });
 });

@@ -35,7 +35,23 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
 }
 
 // Authenticated file URL (for <img src> and downloads).
-export const fileUrl = (path: string) => `/api${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(getToken() ?? "")}`;
+/** Fetches a protected file with the login header (never a token in the URL) and returns a temporary blob: URL. */
+export async function blobUrl(path: string): Promise<{ url: string; type: string }> {
+  const res = await fetch(`/api${path}`, { headers: { Authorization: `Bearer ${getToken() ?? ""}` } });
+  if (!res.ok) throw new ApiError(res.status === 404 ? "File not found" : `Download failed (${res.status})`, res.status);
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), type: blob.type };
+}
+
+export async function download(path: string, filename: string) {
+  const { url } = await blobUrl(path);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** Spreadsheet-safe CSV cell (cells starting with = + - @ would run as formulas). */
+export const csvCell = (v: unknown) => { const t = String(v ?? ""); return `"${(/^[=+\-@\t\r]/.test(t) ? `'${t}` : t).replace(/"/g, '""')}"`; };
 
 export const pct = (score: number | null | undefined, max: number | null | undefined) =>
   score == null || !max ? null : Math.round((score / max) * 100);

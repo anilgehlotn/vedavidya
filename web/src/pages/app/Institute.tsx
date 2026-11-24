@@ -1,7 +1,7 @@
 // Centres & batches, students, staff, notices and settings.
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, fmtDate } from "../../lib/api";
+import { api, csvCell, fmtDate, setToken } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, useApi } from "../../components/ui";
 
@@ -114,6 +114,8 @@ export function Batches() {
 interface Student { id: string; name: string; email: string | null; phone: string | null; username: string; batch_id: string; batch_name: string; roll_no: string | null; parent_name: string | null; parent_phone: string | null; parent_email: string | null }
 
 export function Students() {
+  const { user } = useAuth();
+  const isAdmin = user!.role === "admin";
   const [params, setParams] = useSearchParams();
   const batchId = params.get("batch") ?? "";
   const batches = useApi<Batch[]>("/batches");
@@ -141,7 +143,11 @@ export function Students() {
   };
   const saveBulk = async (e: FormEvent) => {
     e.preventDefault();
-    try { const r = await api<{ created: { name: string; username: string; password: string }[] }>("/students/bulk", { body: bulk }); setCreds(r.created); setModal(null); students.reload(); }
+    try {
+      const r = await api<{ created: { name: string; username: string; password: string }[]; skipped: { line: number; reason: string }[] }>("/students/bulk", { body: bulk });
+      setCreds(r.created); setModal(null); students.reload();
+      if (r.skipped.length) alert(`${r.created.length} added. Not added:\n` + r.skipped.map((x) => `Line ${x.line}: ${x.reason}`).join("\n"));
+    }
     catch (err) { setError((err as Error).message); }
   };
   const batchLogins = async () => {
@@ -161,14 +167,14 @@ export function Students() {
   };
   const list = (students.data ?? []).filter((x) => !q || `${x.name} ${x.username} ${x.phone ?? ""} ${x.roll_no ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   const downloadCreds = () => {
-    const csv = ["Roll,Name,Username,Password,Login at", ...creds!.map((c) => `${c.roll_no ?? ""},"${c.name}",${c.username},${c.password},${location.origin}/login`)].join("\n");
+    const csv = ["Roll,Name,Username,Password,Login at", ...creds!.map((c) => [c.roll_no, c.name, c.username, c.password, `${location.origin}/login`].map(csvCell).join(","))].join("\n");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "student-logins.csv"; a.click();
   };
 
   return (
     <>
       <PageTitle title="Students" sub={`${students.data?.length ?? 0} students${batchId ? " in this batch" : ""}`}>
-        {batchId && <button className="btn btn-ghost" onClick={batchLogins}>Logins for this batch</button>}
+        {batchId && isAdmin && <button className="btn btn-ghost" onClick={batchLogins}>Logins for this batch</button>}
         <button className="btn btn-ghost" onClick={() => { setError(null); setBulk({ batch_id: batchId || batches.data?.[0]?.id || "", csv: "" }); setModal("bulk"); }}>Bulk add</button>
         <button className="btn btn-primary" onClick={() => open()}>+ Student</button>
       </PageTitle>
@@ -197,7 +203,7 @@ export function Students() {
                 <td><div className="row" style={{ justifyContent: "flex-end" }}>
                   <button className="btn btn-ghost btn-sm" onClick={() => open(st)}>Edit</button>
                   <button className="btn btn-ghost btn-sm" onClick={() => reset(st)}>Reset login</button>
-                  <button className="btn btn-danger btn-sm" onClick={() => remove(st)}>Remove</button>
+                  {isAdmin && <button className="btn btn-danger btn-sm" onClick={() => remove(st)}>Remove</button>}
                 </div></td>
               </tr>))}
             </tbody>
@@ -254,14 +260,17 @@ export function StaffPage() {
       <PageTitle title="Staff" sub="Admins and teachers who can manage tests and papers">
         {user!.role === "admin" && <button className="btn btn-primary" onClick={() => { setError(null); t.setF({ name: "", email: "", phone: "", subject: "", role: "teacher" }); setOpen(true); }}>+ Add staff</button>}
       </PageTitle>
-      {creds && <div className="ok-box" style={{ marginBottom: 14 }}>Account created. Login: <b>{creds.email}</b> · temporary password: <b>{creds.password}</b> <button className="btn-link" onClick={() => setCreds(null)}>Dismiss</button></div>}
+      {creds && <div className="ok-box" style={{ marginBottom: 14 }}>Login: <b>{creds.email}</b> · temporary password: <b>{creds.password}</b> (share it privately; they can change it in Settings) <button className="btn-link" onClick={() => setCreds(null)}>Dismiss</button></div>}
       <div className="card">
         {staff.loading ? <Loading /> : (
           <div className="table-wrap"><table className="t">
             <thead><tr><th>Name</th><th>Role</th><th>Subject</th><th>Email</th><th></th></tr></thead>
             <tbody>{staff.data?.map((s) => (
               <tr key={s.id}><td><b>{s.name}</b></td><td><span className={`badge ${s.role === "admin" ? "violet" : ""}`} style={{ textTransform: "capitalize" }}>{s.role}</span></td><td>{s.subject ?? "—"}</td><td>{s.email}</td>
-                <td style={{ textAlign: "right" }}>{user!.role === "admin" && s.id !== user!.id && <button className="btn btn-danger btn-sm" onClick={async () => { if (confirm(`Remove ${s.name}?`)) { await api(`/teachers/${s.id}`, { method: "DELETE" }); staff.reload(); } }}>Remove</button>}</td></tr>))}
+                <td style={{ textAlign: "right" }}>{user!.role === "admin" && s.id !== user!.id && <div className="row" style={{ justifyContent: "flex-end" }}>
+                  <button className="btn btn-ghost btn-sm" onClick={async () => { if (confirm(`Create a new password for ${s.name}? They will be signed out.`)) setCreds(await api(`/teachers/${s.id}/reset-password`, { body: {} })); }}>Reset password</button>
+                  <button className="btn btn-danger btn-sm" onClick={async () => { if (confirm(`Remove ${s.name}?`)) { await api(`/teachers/${s.id}`, { method: "DELETE" }); staff.reload(); } }}>Remove</button>
+                </div>}</td></tr>))}
             </tbody>
           </table></div>
         )}
@@ -340,7 +349,7 @@ export function Settings() {
             <button className="btn btn-primary" style={{ alignSelf: "flex-start" }}>Save</button>
           </form>
         )}
-        <form className="card card-pad stack" onSubmit={async (e) => { e.preventDefault(); try { await api("/auth/change-password", { body: p.f }); p.setF({ current: "", next: "" }); setMsg({ ok: "Password changed" }); } catch (err) { setMsg({ err: (err as Error).message }); } }}>
+        <form className="card card-pad stack" onSubmit={async (e) => { e.preventDefault(); try { const r = await api<{ token: string }>("/auth/change-password", { body: p.f }); setToken(r.token); p.setF({ current: "", next: "" }); setMsg({ ok: "Password changed" }); } catch (err) { setMsg({ err: (err as Error).message }); } }}>
           <b>Change password</b>
           <label className="field"><span>Current password</span><input className="input" type="password" required value={p.f.current} onChange={p.set("current")} /></label>
           <label className="field"><span>New password (8+ characters)</span><input className="input" type="password" minLength={8} required value={p.f.next} onChange={p.set("next")} /></label>

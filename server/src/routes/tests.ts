@@ -91,8 +91,9 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
 });
 
 testRoutes.delete("/tests/:id", staff, (req, res) => {
-  const t = one("SELECT id FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  const t = one<{ results_published: number }>("SELECT id, results_published FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
+  if (t.results_published && req.user!.role !== "admin") return res.status(403).json({ error: "Results are published. Only an admin can delete this test." });
   const files = all<{ files: string }>("SELECT files FROM attempts WHERE test_id = ?", req.params.id).flatMap((a) => json<string[]>(a.files, []));
   run("DELETE FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   removeFiles(UPLOAD_DIR, files);
@@ -266,7 +267,7 @@ testRoutes.put("/attempts/:id/evaluation", staff, (req, res) => {
   if (!a) return res.status(404).json({ error: "Not found" });
   const ev = json<SheetEvaluation | null>(a.evaluation, null);
   if (!ev) return res.status(400).json({ error: "Not evaluated yet" });
-  const edits = z.array(z.object({ question_id: z.string(), marks_awarded: z.number(), feedback: z.string().optional() })).parse(req.body.questions);
+  const edits = z.array(z.object({ question_id: z.string().max(40), marks_awarded: z.number().finite().min(-1000).max(1000), feedback: z.string().max(2000).optional() })).max(500).parse(req.body?.questions);
   for (const e of edits) {
     const qe = ev.questions.find((q) => q.question_id === e.question_id);
     if (qe) { qe.marks_awarded = e.marks_awarded; if (e.feedback !== undefined) qe.feedback = e.feedback; }
@@ -292,15 +293,20 @@ testRoutes.get("/tests/:id/results.csv", staff, (req, res) => {
   const rows = all<any>(`SELECT u.name, e.roll_no, b.name AS batch, a.score, a.max_score, a.status FROM attempts a
     JOIN users u ON u.id = a.student_id LEFT JOIN enrollments e ON e.student_id = u.id LEFT JOIN batches b ON b.id = e.batch_id
     WHERE a.test_id = ? ORDER BY a.score DESC`, t.id);
-  const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const esc = (v: unknown) => `"${csvSafe(v).replace(/"/g, '""')}"`;
   res.type("text/csv").attachment(`${t.title.replace(/\W+/g, "_")}_results.csv`)
     .send(["Rank,Name,Roll No,Batch,Score,Max,Status", ...rows.map((r, i) => [r.score == null ? "" : i + 1, r.name, r.roll_no, r.batch, r.score, r.max_score, r.status].map(esc).join(","))].join("\n"));
 });
 
+// Spreadsheet apps run cells starting with = + - @ as formulas; prefix them so names can't inject formulas.
+const csvSafe = (v: unknown) => { const t = String(v ?? ""); return /^[=+\-@\t\r]/.test(t) ? `'${t}` : t; };
+
 // ---------------- Student side ----------------
 testRoutes.get("/my/tests", student, (req, res) => {
+  // Scores stay hidden until the teacher publishes the results.
   res.json(all(`SELECT t.id, t.title, t.mode, t.scheduled_at, t.duration_min, t.results_published, p.subject, p.total_marks,
-      a.id AS attempt_id, a.status, a.score, a.max_score
+      a.id AS attempt_id, a.status,
+      CASE WHEN t.results_published = 1 THEN a.score END AS score, CASE WHEN t.results_published = 1 THEN a.max_score END AS max_score
     FROM attempts a JOIN tests t ON t.id = a.test_id JOIN question_papers p ON p.id = t.paper_id
     WHERE a.student_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC`, req.user!.id));
 });
@@ -325,17 +331,24 @@ testRoutes.post("/cbt/:testId/start", student, (req, res) => {
   res.json({ attempt_id: a.id, title: a.title, remaining_seconds: remainingSeconds(fresh), responses: json(fresh.responses, {}), sections, instructions: paper.instructions });
 });
 
+const Responses = z.record(z.string().max(40), z.object({ answer: z.number().finite().nullable(), review: z.boolean().optional() }))
+  .refine((r) => Object.keys(r).length <= 500, "Too many answers");
+const GRACE_SECONDS = 120; // allows for slow connections at the final auto-submit
+
 testRoutes.put("/cbt/:testId/responses", student, (req, res) => {
   const a = myCbtAttempt(req.params.testId, req.user!.id);
   if (!a || a.status !== "in_progress") return res.status(400).json({ error: "Test is not in progress" });
-  run("UPDATE attempts SET responses = ? WHERE id = ?", JSON.stringify(req.body.responses ?? {}), a.id);
+  if (remainingSeconds(a) <= 0) return res.status(400).json({ error: "Time is up" });
+  run("UPDATE attempts SET responses = ? WHERE id = ?", JSON.stringify(Responses.parse(req.body?.responses ?? {})), a.id);
   res.json({ ok: true, remaining_seconds: remainingSeconds(a) });
 });
 
 testRoutes.post("/cbt/:testId/submit", student, (req, res) => {
   const a = myCbtAttempt(req.params.testId, req.user!.id);
   if (!a || a.status !== "in_progress") return res.status(400).json({ error: "Test is not in progress" });
-  const responses = (req.body.responses ?? json(a.responses, {})) as Record<string, { answer: number | null; review?: boolean }>;
+  // After time (plus a short grace) only the last autosaved answers count.
+  const late = remainingSeconds(a) <= 0 && a.started_at && Date.now() - Date.parse(a.started_at.replace(" ", "T") + "Z") > (a.duration_min * 60 + GRACE_SECONDS) * 1000;
+  const responses = late || !req.body?.responses ? Responses.parse(json(a.responses, {})) : Responses.parse(req.body.responses);
   const paper = paperFor(a.test_id)!;
   const evQuestions = questionsOf(paper.sections).map((q) => {
     const given = responses[q.id]?.answer;

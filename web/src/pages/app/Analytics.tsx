@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { BarList, Columns, Empty, ErrorBox, LineChart, Loading, PageTitle, ScoreBadge, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
@@ -8,20 +9,33 @@ interface BatchData {
   topics: { topic: string; pct: number }[];
   leaderboard: { id: string; name: string; avg: number; tests: number }[];
   distribution: { label: string; count: number }[];
+  subjects: { subject: string; avg: number; tests: number }[]; subject: string | null;
+}
+
+function SubjectPicker({ subjects, value, onChange }: { subjects: { subject: string }[]; value: string; onChange: (v: string) => void }) {
+  if (subjects.length < 2 && !value) return null;
+  return (
+    <select className="input" style={{ width: 200 }} value={value} onChange={(e) => onChange(e.target.value)} aria-label="Subject">
+      <option value="">All subjects</option>
+      {subjects.map((x) => <option key={x.subject} value={x.subject}>{x.subject}</option>)}
+    </select>
+  );
 }
 
 export function Analytics() {
   const [params, setParams] = useSearchParams();
   const batches = useApi<{ id: string; name: string }[]>("/batches");
   const batchId = params.get("batch") ?? batches.data?.[0]?.id ?? null;
-  const data = useApi<BatchData>(batchId ? `/analytics/batch/${batchId}` : null);
+  const subject = params.get("subject") ?? "";
+  const data = useApi<BatchData>(batchId ? `/analytics/batch/${batchId}${subject ? `?subject=${encodeURIComponent(subject)}` : ""}` : null);
 
   if (batches.loading) return <Loading />;
   if (!batches.data?.length) return <><PageTitle title="Analytics" /><div className="card"><Empty title="Create a batch and run a test to see analytics" /></div></>;
   const d = data.data;
   return (
     <>
-      <PageTitle title="Analytics" sub={d ? `${d.batch.name} · ${d.batch.centre_name ?? ""} · ${d.student_count} students` : undefined}>
+      <PageTitle title="Analytics" sub={d ? [d.batch.name, d.batch.centre_name, `${d.student_count} students`].filter(Boolean).join(" · ") : undefined}>
+        {d && <SubjectPicker subjects={d.subjects} value={subject} onChange={(v) => setParams(v ? { batch: batchId!, subject: v } : { batch: batchId! })} />}
         <select className="input" style={{ width: 240 }} value={batchId ?? ""} onChange={(e) => setParams({ batch: e.target.value })}>
           {batches.data.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
@@ -35,6 +49,10 @@ export function Analytics() {
             <div className="card stat"><div className="label">Change since first</div><div className="value" style={{ color: d.trend.at(-1)!.avg >= d.trend[0].avg ? "var(--green)" : "var(--red)" }}>{d.trend.at(-1)!.avg - d.trend[0].avg >= 0 ? "+" : ""}{d.trend.at(-1)!.avg - d.trend[0].avg}%</div></div>
             <div className="card stat"><div className="label">Weakest topic</div><div className="value" style={{ fontSize: 18, marginTop: 10 }}>{d.topics[0]?.topic ?? "—"}</div></div>
           </div>
+          {d.subjects.length > 1 && !subject && (
+            <div className="card card-pad" style={{ marginBottom: 16 }}><b>By subject</b><p className="small muted" style={{ marginBottom: 14 }}>Class average per subject. Pick a subject above to see only its tests.</p>
+              <BarList items={d.subjects.map((x) => ({ label: x.subject, value: x.avg, sub: `${x.avg}% · ${x.tests} result${x.tests === 1 ? "" : "s"}` }))} /></div>
+          )}
           <div className="grid g2" style={{ marginBottom: 16 }}>
             <div className="card card-pad">
               <div className="row between" style={{ marginBottom: 8 }}><b>Score trend</b>
@@ -62,23 +80,30 @@ export function Analytics() {
 
 interface StudentData {
   student: { id: string; name: string; username: string; roll_no: string | null; batch_name: string | null };
-  trend: { test_id: string; title: string; date: string; pct: number; class_avg: number }[];
+  trend: { test_id: string; title: string; subject: string; date: string; pct: number; class_avg: number }[];
   topics: { topic: string; pct: number }[]; gaps: string[]; average: number | null;
+  subjects: { subject: string; avg: number; tests: number }[]; subject: string | null;
 }
 
 export function StudentReport({ self }: { self?: boolean }) {
   const params = useParams();
   const { user } = useAuth();
   const id = self ? user!.id : params.id!;
-  const r = useApi<StudentData>(`/analytics/student/${id}`);
+  const [subject, setSubject] = useState("");
+  const r = useApi<StudentData>(`/analytics/student/${id}${subject ? `?subject=${encodeURIComponent(subject)}` : ""}`);
   if (r.loading) return <Loading />;
   if (!r.data) return <ErrorBox error={r.error} />;
   const d = r.data;
   return (
     <>
       <PageTitle title={self ? "My report card" : d.student.name} sub={`${d.student.batch_name ?? ""} · Roll ${d.student.roll_no ?? "—"} · ${d.trend.length} tests`}>
+        <SubjectPicker subjects={d.subjects} value={subject} onChange={setSubject} />
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
       </PageTitle>
+      {d.subjects.length > 1 && !subject && (
+        <div className="card card-pad" style={{ marginBottom: 16 }}><b>By subject</b>
+          <div style={{ marginTop: 14 }}><BarList items={d.subjects.map((x) => ({ label: x.subject, value: x.avg, sub: `${x.avg}% · ${x.tests} test${x.tests === 1 ? "" : "s"}` }))} /></div></div>
+      )}
       {!d.trend.length ? <div className="card"><Empty title="No published results yet" /></div> : (
         <>
           <div className="grid g3" style={{ marginBottom: 16 }}>

@@ -314,7 +314,7 @@ export function PaperDetail() {
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
         <button className="btn btn-ghost no-print" onClick={async () => { const r = await api<{ id: string }>(`/papers/${p.id}/clone`, { body: {} }); nav(`/app/papers/${r.id}`); }}>Duplicate</button>
         <button className="btn btn-ghost no-print" onClick={() => setEdit(true)}>Edit</button>
-        <button className="btn btn-danger no-print" onClick={async () => { if (confirm("Delete this paper and any tests using it?")) { await api(`/papers/${p.id}`, { method: "DELETE" }); nav("/app/papers"); } }}>Delete</button>
+        <button className="btn btn-danger no-print" onClick={async () => { if (confirm("Delete this paper?")) { try { await api(`/papers/${p.id}`, { method: "DELETE" }); nav("/app/papers"); } catch (e) { alert((e as Error).message); } } }}>Delete</button>
         {p.status === "draft" && <button className="btn btn-primary no-print" onClick={async () => { await api(`/papers/${p.id}/approve`, { body: {} }); paper.reload(); }}>Approve</button>}
         {p.status !== "failed" && <Link to={`/app/tests?new=1&paper=${p.id}`} className="btn btn-primary no-print">Use in a test →</Link>}
       </PageTitle>

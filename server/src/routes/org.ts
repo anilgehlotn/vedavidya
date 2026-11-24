@@ -3,7 +3,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { z } from "zod";
-import { all, one, run, uid, UPLOAD_DIR } from "../db.js";
+import { all, one, run, uid, UPLOAD_DIR, bumpTokenVersion } from "../db.js";
 import { removeFiles } from "../images.js";
 import { studentFiles } from "./tests.js";
 
@@ -46,7 +46,7 @@ orgRoutes.get("/centres", staff, (req, res) => {
     FROM centres c WHERE org_id = ? ORDER BY name`, req.user!.org_id));
 });
 orgRoutes.post("/centres", adminOnly, (req, res) => {
-  const b = z.object({ name: z.string().min(1), city: z.string().optional() }).parse(req.body);
+  const b = z.object({ name: z.string().trim().min(1).max(100), city: z.string().max(80).optional() }).parse(req.body);
   const id = uid("ctr");
   run("INSERT INTO centres (id, org_id, name, city) VALUES (?, ?, ?, ?)", id, req.user!.org_id, b.name, b.city ?? null);
   res.json({ id });
@@ -63,7 +63,7 @@ orgRoutes.get("/batches", staff, (req, res) => {
     FROM batches b LEFT JOIN centres c ON c.id = b.centre_id LEFT JOIN users u ON u.id = b.teacher_id
     WHERE b.org_id = ? ORDER BY c.name, b.name`, req.user!.org_id));
 });
-const BatchBody = z.object({ name: z.string().min(1), course: z.string().optional(), centre_id: z.string().nullable().optional(), teacher_id: z.string().nullable().optional() });
+const BatchBody = z.object({ name: z.string().trim().min(1).max(100), course: z.string().max(100).optional(), centre_id: z.string().max(40).nullable().optional(), teacher_id: z.string().max(40).nullable().optional() });
 const checkBatchRefs = (b: z.infer<typeof BatchBody>, org: string) => {
   if (!inOrg("centres", b.centre_id, org)) throw new ClientError("Unknown centre");
   if (b.teacher_id && !one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role IN ('admin','teacher')", b.teacher_id, org)) throw new ClientError("Unknown teacher");
@@ -111,14 +111,17 @@ orgRoutes.get("/students", staff, (req, res) => {
 });
 
 const StudentBody = z.object({
-  name: z.string().min(1), email: z.string().email().optional().or(z.literal("")), phone: z.string().optional(),
-  batch_id: z.string().min(1), roll_no: z.string().optional(),
-  parent_name: z.string().optional(), parent_phone: z.string().optional(), parent_email: z.string().optional(),
+  name: z.string().trim().min(1).max(100), email: z.string().email().max(200).optional().or(z.literal("")), phone: z.string().max(20).optional(),
+  batch_id: z.string().min(1).max(40), roll_no: z.string().trim().max(20).optional(),
+  parent_name: z.string().max(100).optional(), parent_phone: z.string().max(20).optional(), parent_email: z.string().max(200).optional(),
 });
+const rollTaken = (batchId: string, roll: string | undefined, exceptStudent?: string) =>
+  Boolean(roll) && Boolean(one("SELECT 1 FROM enrollments WHERE batch_id = ? AND lower(trim(roll_no)) = lower(?) AND student_id <> ?", batchId, roll!.trim(), exceptStudent ?? ""));
 
 function createStudent(orgId: string, s: z.infer<typeof StudentBody>) {
   if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", s.batch_id, orgId)) throw new ClientError("Pick a batch from your institute");
   if (s.email && one("SELECT 1 FROM users WHERE lower(email) = ?", s.email.toLowerCase())) throw new ClientError(`The email ${s.email} is already used by another account`, 409);
+  if (rollTaken(s.batch_id, s.roll_no)) throw new ClientError(`Roll number ${s.roll_no} is already used in this batch`, 409);
   const id = uid("usr");
   const username = makeUsername(s.name);
   const password = makePassword();
@@ -159,6 +162,7 @@ orgRoutes.put("/students/:id", staff, (req, res) => {
   if (!one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, org)) return res.status(404).json({ error: "Not found" });
   if (!inOrg("batches", s.batch_id, org)) return res.status(400).json({ error: "Pick a batch from your institute" });
   if (s.email && one("SELECT 1 FROM users WHERE lower(email) = ? AND id <> ?", s.email.toLowerCase(), req.params.id)) return res.status(409).json({ error: "That email is already used by another account" });
+  if (rollTaken(s.batch_id, s.roll_no, req.params.id)) return res.status(409).json({ error: `Roll number ${s.roll_no} is already used in this batch` });
   run("UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?", s.name, s.email || null, s.phone || null, req.params.id);
   run("DELETE FROM enrollments WHERE student_id = ?", req.params.id);
   run("INSERT INTO enrollments (student_id, batch_id, roll_no, parent_name, parent_phone, parent_email) VALUES (?,?,?,?,?,?)",
@@ -171,11 +175,12 @@ orgRoutes.post("/students/:id/reset-password", staff, (req, res) => {
   if (!u) return res.status(404).json({ error: "Not found" });
   const password = makePassword();
   run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(password, 10), req.params.id);
+  bumpTokenVersion(req.params.id);
   res.json({ username: u.username, password });
 });
 
 // Hand out logins for a whole batch: sets a fresh password for every student in it.
-orgRoutes.post("/students/reset-logins", staff, (req, res) => {
+orgRoutes.post("/students/reset-logins", adminOnly, (req, res) => {
   const { batch_id } = z.object({ batch_id: z.string() }).parse(req.body);
   if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", batch_id, req.user!.org_id)) return res.status(404).json({ error: "Batch not found" });
   const students = all<{ id: string; name: string; username: string; roll_no: string | null }>(`SELECT u.id, u.name, u.username, e.roll_no FROM users u
@@ -183,12 +188,13 @@ orgRoutes.post("/students/reset-logins", staff, (req, res) => {
   const out = students.map((st) => {
     const password = makePassword();
     run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(password, 10), st.id);
+    bumpTokenVersion(st.id);
     return { name: st.name, roll_no: st.roll_no, username: st.username, password };
   });
   res.json({ created: out });
 });
 
-orgRoutes.delete("/students/:id", staff, (req, res) => {
+orgRoutes.delete("/students/:id", adminOnly, (req, res) => {
   if (!one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id)) return res.status(404).json({ error: "Not found" });
   removeFiles(UPLOAD_DIR, studentFiles(req.params.id));
   run("DELETE FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id);
@@ -199,7 +205,7 @@ orgRoutes.get("/teachers", staff, (req, res) => {
   res.json(all(`SELECT id, name, email, phone, subject, role FROM users WHERE org_id = ? AND role IN ('admin','teacher') ORDER BY role, name`, req.user!.org_id));
 });
 orgRoutes.post("/teachers", adminOnly, (req, res) => {
-  const b = z.object({ name: z.string().min(1), email: z.string().email(), phone: z.string().optional(), subject: z.string().optional(), role: z.enum(["teacher", "admin"]).default("teacher") }).parse(req.body);
+  const b = z.object({ name: z.string().trim().min(1).max(100), email: z.string().email().max(200), phone: z.string().max(20).optional(), subject: z.string().max(80).optional(), role: z.enum(["teacher", "admin"]).default("teacher") }).parse(req.body);
   if (one("SELECT 1 FROM users WHERE lower(email) = ?", b.email.toLowerCase())) return res.status(409).json({ error: "Email already in use" });
   const password = makePassword();
   const id = uid("usr");
@@ -207,8 +213,17 @@ orgRoutes.post("/teachers", adminOnly, (req, res) => {
     id, req.user!.org_id, b.role, b.name, b.email.toLowerCase(), b.phone || null, b.subject || null, bcrypt.hashSync(password, 10));
   res.json({ id, email: b.email.toLowerCase(), password });
 });
+orgRoutes.post("/teachers/:id/reset-password", adminOnly, (req, res) => {
+  const u = one<{ email: string }>("SELECT email FROM users WHERE id = ? AND org_id = ? AND role IN ('teacher','admin')", req.params.id, req.user!.org_id);
+  if (!u) return res.status(404).json({ error: "Not found" });
+  const password = makePassword();
+  run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(password, 10), req.params.id);
+  bumpTokenVersion(req.params.id);
+  res.json({ email: u.email, password });
+});
 orgRoutes.delete("/teachers/:id", adminOnly, (req, res) => {
   if (req.params.id === req.user!.id) return res.status(400).json({ error: "You can't remove yourself" });
+  if (!one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role IN ('teacher','admin')", req.params.id, req.user!.org_id)) return res.status(404).json({ error: "Not found" });
   run("DELETE FROM users WHERE id = ? AND org_id = ? AND role IN ('teacher','admin')", req.params.id, req.user!.org_id);
   res.json({ ok: true });
 });
@@ -236,7 +251,7 @@ orgRoutes.delete("/notices/:id", staff, (req, res) => {
 });
 
 orgRoutes.put("/organisation", adminOnly, (req, res) => {
-  const b = z.object({ name: z.string().min(1), city: z.string().optional() }).parse(req.body);
+  const b = z.object({ name: z.string().trim().min(1).max(120), city: z.string().max(80).optional() }).parse(req.body);
   run("UPDATE orgs SET name = ?, city = ? WHERE id = ?", b.name, b.city ?? null, req.user!.org_id);
   res.json({ ok: true });
 });

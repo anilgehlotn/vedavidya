@@ -72,7 +72,7 @@ section("Public endpoints & headers");
 section("Register a new institute (the real one)");
 const adminEmail = `owner-${stamp}@example.com`;
 const reg = await expect("register", 200, "POST", "/auth/register", { body: { institute: "Test Coaching Centre", city: "Kota", name: "Owner Admin", email: adminEmail, password: "s3cure-pass" } });
-const admin = reg.data.token;
+let admin = reg.data.token;
 await expect("register duplicate email → 409", 409, "POST", "/auth/register", { body: { institute: "XY", name: "Y Z", email: adminEmail, password: "s3cure-pass" } });
 await expect("register weak password → 400", 400, "POST", "/auth/register", { body: { institute: "X", name: "Y Z", email: `w-${stamp}@example.com`, password: "short" } });
 const me = await expect("me", 200, "GET", "/me", { token: admin });
@@ -107,9 +107,17 @@ const demoAdmin = await login("admin@demo.school", "demo1234");
 {
   ok(Boolean(demoAdmin), "demo admin login");
   await expect("demo can't save a key", 403, "PUT", "/settings/ai", { token: demoAdmin, body: { key: "sk-ant-test-valid-xxxxxxxxxxxxxxxxxxxx" } });
-  const g = await expect("demo can't generate", 400, "POST", "/papers/generate", { token: demoAdmin, body: { subject: "Maths", board: "CBSE", class_level: "10", topics: "Algebra", sections: [{ name: "A", type: "mcq", count: 2, marks_each: 1 }] } });
+  const g = await expect("demo can't generate", 403, "POST", "/papers/generate", { token: demoAdmin, body: { subject: "Maths", board: "CBSE", class_level: "10", topics: "Algebra", sections: [{ name: "A", type: "mcq", count: 2, marks_each: 1 }] } });
   ok(/demo/i.test(g.data.error), "demo message");
+  await expect("demo can't add students", 403, "POST", "/students", { token: demoAdmin, body: { name: "X", batch_id: "x" } });
+  await expect("demo can't post notices", 403, "POST", "/notices", { token: demoAdmin, body: { title: "x", body: "y" } });
+  await expect("demo can't change password", 403, "POST", "/auth/change-password", { token: demoAdmin, body: { current: "demo1234", next: "hacked-pass-1" } });
+  await expect("demo can still read", 200, "GET", "/tests", { token: demoAdmin });
 }
+
+section("A second, separate institute (for isolation checks)");
+const otherAdmin = (await expect("register other institute", 200, "POST", "/auth/register", { body: { institute: "Other Institute", name: "Other Admin", email: `other-${stamp}@example.com`, password: "other-pass-1" } })).data.token;
+await expect("other institute batch", 200, "POST", "/batches", { token: otherAdmin, body: { name: "Their Batch" } });
 
 section("Institute setup: centre, batch, staff");
 const centre = (await expect("create centre", 200, "POST", "/centres", { token: admin, body: { name: "Main Campus", city: "Kota" } })).data.id;
@@ -147,7 +155,7 @@ let creds;
   await expect("edit student", 200, "PUT", `/students/${one_.data.id}`, { token: admin, body: { name: "Solo Student Edited", batch_id: batch2, roll_no: "3" } });
   await expect("reset student password", 200, "POST", `/students/${one_.data.id}/reset-password`, { token: admin, body: {} });
 }
-const studentTok = await login(creds[0].username, creds[0].password);
+let studentTok = await login(creds[0].username, creds[0].password);
 ok(Boolean(studentTok), "student logs in with generated credentials");
 
 section("Question papers");
@@ -222,7 +230,8 @@ ok(detail.batch_names === "JEE 2027 A", "batch names included");
   await expect("upload junk image → 400", 400, "POST", `/attempts/${a0.id}/files`, { token: teacher, form: f2 });
   const f3 = new FormData(); f3.append("files", new Blob([Buffer.from("text")], { type: "text/plain" }), "x.txt");
   await expect("upload wrong type → 400", 400, "POST", `/attempts/${a0.id}/files`, { token: teacher, form: f3 });
-  const fileRes = await fetch(`${API}/attempts/${a0.id}/files/0?token=${teacher}`);
+  ok((await fetch(`${API}/attempts/${a0.id}/files/0?token=${teacher}`)).status === 401, "tokens in URLs are not accepted");
+  const fileRes = await fetch(`${API}/attempts/${a0.id}/files/0`, { headers: { Authorization: `Bearer ${teacher}` } });
   ok(fileRes.status === 200 && fileRes.headers.get("content-type")?.includes("image"), "staff can view uploaded page");
 }
 
@@ -267,7 +276,7 @@ section("Teacher review, publish, reports");
   ok(mine && mine.results_published && mine.score !== null, "student sees published score");
   await expect("student sees own answers", 200, "GET", `/attempts/${mine.attempt_id}`, { token: studentTok });
   await expect("student can't see others' answers", 403, "GET", `/attempts/${detail.attempts.find((a) => a.student_name === "Student 2").id}`, { token: studentTok });
-  const csv = await fetch(`${API}/tests/${test}/results.csv?token=${teacher}`);
+  const csv = await fetch(`${API}/tests/${test}/results.csv`, { headers: { Authorization: `Bearer ${teacher}` } });
   const csvText = await csv.text();
   ok(csv.status === 200 && csvText.split("\n").length === N + 1, `CSV export has ${N} rows`);
   await expect("unpublish", 200, "POST", `/tests/${test}/publish`, { token: teacher, body: { publish: false } });
@@ -310,10 +319,13 @@ section("Upload an existing question paper (with answer key)");
 
 section(`All ${N} students log in at once and open their results`);
 {
-  const logins = await expect("batch logins", 200, "POST", "/students/reset-logins", { token: teacher, body: { batch_id: batch } });
+  await expect("teacher can't reset a whole batch", 403, "POST", "/students/reset-logins", { token: teacher, body: { batch_id: batch } });
+  const logins = await expect("batch logins (admin)", 200, "POST", "/students/reset-logins", { token: admin, body: { batch_id: batch } });
   ok(logins.data.created.length === N && logins.data.created.every((c) => c.password.length === 8), `${N} fresh 8-character passwords`);
+  await expect("other institute can't reset logins", 404, "POST", "/students/reset-logins", { token: otherAdmin, body: { batch_id: batch } });
+  ok((await call("GET", "/my/tests", { token: studentTok })).status === 401, "old student session ends after the reset");
+  studentTok = await login(logins.data.created[0].username, logins.data.created[0].password);
   await expect("student can't reset logins", 403, "POST", "/students/reset-logins", { token: studentTok, body: { batch_id: batch } });
-  await expect("other institute can't reset logins", 404, "POST", "/students/reset-logins", { token: demoAdmin, body: { batch_id: batch } });
   const roster = (await call("GET", `/tests/${test}`, { token: teacher })).data.attempts;
   ok(roster.every((a) => "parent_phone" in a && "phone" in a), "roster includes phone numbers for WhatsApp");
   const t0 = Date.now();
@@ -369,26 +381,26 @@ section("Security: roles");
 
 section("Security: institutes are isolated");
 {
-  const demoTests = (await call("GET", "/tests", { token: demoAdmin })).data;
-  ok(!demoTests.some((t) => t.id === test), "other institute's tests not listed");
-  await expect("other org: test detail", 404, "GET", `/tests/${test}`, { token: demoAdmin });
-  await expect("other org: attempt", 404, "GET", `/attempts/${detail.attempts[0].id}`, { token: demoAdmin });
-  await expect("other org: evaluate", 404, "POST", `/tests/${test}/evaluate`, { token: demoAdmin, body: {} });
-  await expect("other org: publish → 404", 404, "POST", `/tests/${test}/publish`, { token: demoAdmin, body: { publish: false } });
+  const otherTests = (await call("GET", "/tests", { token: otherAdmin })).data;
+  ok(!otherTests.some((t) => t.id === test), "other institute's tests not listed");
+  await expect("other org: test detail", 404, "GET", `/tests/${test}`, { token: otherAdmin });
+  await expect("other org: attempt", 404, "GET", `/attempts/${detail.attempts[0].id}`, { token: otherAdmin });
+  await expect("other org: evaluate", 404, "POST", `/tests/${test}/evaluate`, { token: otherAdmin, body: {} });
+  await expect("other org: publish → 404", 404, "POST", `/tests/${test}/publish`, { token: otherAdmin, body: { publish: false } });
   ok((await call("GET", `/tests/${test}`, { token: teacher })).data.results_published === 1, "…and results stay published");
-  await expect("other org: delete test", 404, "DELETE", `/tests/${test}`, { token: demoAdmin });
-  await expect("other org: paper", 404, "GET", `/papers/${aiPaper.id}`, { token: demoAdmin });
-  await expect("other org: student analytics", 404, "GET", `/analytics/student/${creds[0].id}`, { token: demoAdmin });
-  await expect("other org: batch analytics", 404, "GET", `/analytics/batch/${batch}`, { token: demoAdmin });
-  const fr = await fetch(`${API}/attempts/${detail.attempts[0].id}/files/0?token=${demoAdmin}`);
+  await expect("other org: delete test", 404, "DELETE", `/tests/${test}`, { token: otherAdmin });
+  await expect("other org: paper", 404, "GET", `/papers/${aiPaper.id}`, { token: otherAdmin });
+  await expect("other org: student analytics", 404, "GET", `/analytics/student/${creds[0].id}`, { token: otherAdmin });
+  await expect("other org: batch analytics", 404, "GET", `/analytics/batch/${batch}`, { token: otherAdmin });
+  const fr = await fetch(`${API}/attempts/${detail.attempts[0].id}/files/0`, { headers: { Authorization: `Bearer ${otherAdmin}` } });
   ok(fr.status === 404, "other org can't download answer sheets");
-  await expect("other org: edit student", 404, "PUT", `/students/${creds[0].id}`, { token: demoAdmin, body: { name: "Hacked", batch_id: batch } });
-  await expect("other org: delete student", 404, "DELETE", `/students/${creds[0].id}`, { token: demoAdmin });
-  const demoBatches = (await call("GET", "/batches", { token: demoAdmin })).data;
-  await expect("move my student into other org's batch → 400", 400, "PUT", `/students/${creds[5].id}`, { token: admin, body: { name: "Student 6", batch_id: demoBatches[0].id } });
-  await expect("batch with other org's teacher → 400", 400, "POST", "/batches", { token: admin, body: { name: "X", teacher_id: (await call("GET", "/teachers", { token: demoAdmin })).data[0].id } });
-  await expect("notice to other org's batch → 400", 400, "POST", "/notices", { token: admin, body: { title: "x", body: "y", batch_id: demoBatches[0].id } });
-  await expect("test for other org's batch → 400", 400, "POST", "/tests", { token: admin, body: { title: "X", paper_id: aiPaper.id, mode: "offline", batch_ids: [demoBatches[0].id] } });
+  await expect("other org: edit student", 404, "PUT", `/students/${creds[0].id}`, { token: otherAdmin, body: { name: "Hacked", batch_id: batch } });
+  await expect("other org: delete student", 404, "DELETE", `/students/${creds[0].id}`, { token: otherAdmin });
+  const otherBatches = (await call("GET", "/batches", { token: otherAdmin })).data;
+  await expect("move my student into other org's batch → 400", 400, "PUT", `/students/${creds[5].id}`, { token: admin, body: { name: "Student 6", batch_id: otherBatches[0].id } });
+  await expect("batch with other org's teacher → 400", 400, "POST", "/batches", { token: admin, body: { name: "X", teacher_id: (await call("GET", "/teachers", { token: otherAdmin })).data[0].id } });
+  await expect("notice to other org's batch → 400", 400, "POST", "/notices", { token: admin, body: { title: "x", body: "y", batch_id: otherBatches[0].id } });
+  await expect("test for other org's batch → 400", 400, "POST", "/tests", { token: admin, body: { title: "X", paper_id: aiPaper.id, mode: "offline", batch_ids: [otherBatches[0].id] } });
 }
 
 section("Notices, settings, password");
@@ -398,7 +410,11 @@ section("Notices, settings, password");
   ok(sn.data.some((x) => x.title === "Test on Monday"), "batch notice visible to student");
   await expect("update institute", 200, "PUT", "/organisation", { token: admin, body: { name: "Test Coaching Centre", city: "Kota" } });
   await expect("wrong current password", 400, "POST", "/auth/change-password", { token: admin, body: { current: "nope", next: "new-password-1" } });
-  await expect("change password", 200, "POST", "/auth/change-password", { token: admin, body: { current: "s3cure-pass", next: "new-password-1" } });
+  const oldAdmin = admin;
+  const cp = await expect("change password", 200, "POST", "/auth/change-password", { token: admin, body: { current: "s3cure-pass", next: "new-password-1" } });
+  admin = cp.data.token;
+  ok((await call("GET", "/me", { token: oldAdmin })).status === 401, "other sessions end after a password change");
+  ok((await call("GET", "/me", { token: admin })).status === 200, "this device stays signed in");
   ok(Boolean(await login(adminEmail, "new-password-1")), "login with new password");
 }
 
@@ -410,7 +426,8 @@ if (DATA_DIR) {
   await expect("delete student", 200, "DELETE", `/students/${creds[4].id}`, { token: admin });
   ok(s1files.length > 0 && s1files.every((f) => !fs.existsSync(path.join(DATA_DIR, "uploads", f))), "student's files deleted from disk");
   const tfiles = filesOf("SELECT files FROM attempts WHERE test_id = ?", test);
-  await expect("delete test", 200, "DELETE", `/tests/${test}`, { token: teacher });
+  await expect("teacher can't delete a published test", 403, "DELETE", `/tests/${test}`, { token: teacher });
+  await expect("admin deletes test", 200, "DELETE", `/tests/${test}`, { token: admin });
   ok(tfiles.length > 0 && tfiles.every((f) => !fs.existsSync(path.join(DATA_DIR, "uploads", f))), "test's files deleted from disk");
   db.close();
 }

@@ -26,9 +26,17 @@ export async function normalisePage(dir: string, filename: string, originalName:
   }
   const out = filename.replace(/\.[^.]+$/, "") + ".v.jpg";
   try {
+    // Photos the browser already shrank (JPEG, upright, ≤ 2000 px, under the size limit) are kept as they are:
+    // only the image header is read, which saves a lot of CPU when a whole class is uploaded.
+    const meta = await sharp(full, { limitInputPixels: 80_000_000 }).metadata();
+    if (meta.format === "jpeg" && (meta.orientation ?? 1) === 1 && Math.max(meta.width ?? 9e9, meta.height ?? 9e9) <= 2000
+        && fs.statSync(full).size <= MAX_IMAGE_BYTES) {
+      fs.renameSync(full, path.join(dir, out));
+      return out;
+    }
     let quality = 85, edge = 2000, buf: Buffer;
     do {
-      buf = await sharp(full, { failOn: "none" }).rotate().resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
+      buf = await sharp(full, { failOn: "none", limitInputPixels: 80_000_000 }).rotate().resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
         .flatten({ background: "#ffffff" }).jpeg({ quality, mozjpeg: true }).toBuffer();
       quality -= 10; edge -= 200;
     } while (buf.length > MAX_IMAGE_BYTES && quality > 40);

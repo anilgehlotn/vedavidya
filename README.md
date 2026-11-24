@@ -65,8 +65,9 @@ automatically, and sheets that were being marked when the server restarted are r
 ### Testing without an API key
 
 `scripts/mock-claude.mjs` imitates the Claude API, including streaming, its size limits and random 429/529 errors.
-`scripts/e2e-api.mjs` runs 193 checks over every endpoint, including a 50-student upload and marking run, role and
-institute isolation, and cleanup. `scripts/e2e-restart.mjs` checks that marking resumes after a restart.
+`scripts/e2e-api.mjs` runs 221 checks over every endpoint, including a 50-student upload and marking run, role and
+institute isolation, and cleanup. `scripts/e2e-institute.mjs` simulates a full institute: classes 8–12 with 20–30 students, 4 subject
+teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart.
 
 ```bash
 MOCK_FAIL_RATE=0.3 node scripts/mock-claude.mjs
@@ -94,6 +95,31 @@ web/src/
   pages/app/         dashboard, institute, papers, tests, analytics, student + CBT
   components/ui.tsx  shared UI, charts, hooks
 ```
+
+## Roles and security
+
+| | Admin | Teacher | Student |
+|---|---|---|---|
+| Classes (batches), centres, staff, institute settings, Claude key | ✅ | view only | - |
+| Add / edit students, reset one student's password | ✅ | ✅ | - |
+| Remove students, reset a whole class's passwords | ✅ | - | - |
+| Upload or generate papers, create tests, upload sheets, evaluate, review, publish | ✅ | ✅ | - |
+| Delete a test after results are published | ✅ | - | - |
+| See own published results, report card, notices; take online tests | - | - | ✅ |
+
+Teachers see every class in their institute. Institutes never see each other's data.
+
+- **Passwords and sessions:** bcrypt hashes; 7-day sessions sent only in the `Authorization` header, never in URLs. Changing or resetting a password signs out every other device.
+- **Brute force:** per account (any network), per account and network, and a per-network cap high enough for a whole class on one Wi-Fi. Login time is the same whether or not an account exists.
+- **Students** see their scores only after results are published, and only their own. Parent report links reveal only that student's marks and feedback, never the answer key.
+- **Uploads:** type and content checked, photos re-encoded or size-checked, stored under random names, served only to staff of the same institute.
+- **Headers:** a strict Content-Security-Policy (own scripts only), HSTS, frame blocking and nosniff. CORS is off in production.
+- **Claude key:** checked before saving, AES-256-GCM encrypted, never returned to the browser. AI paper requests are capped at 30 an hour per institute.
+- **The public demo institute** is read-only and can never use an API key.
+- **Data safety:** a paper used by tests can't be deleted; deleting tests or students removes their files.
+- **Spreadsheets:** CSV exports neutralise spreadsheet formulas.
+
+Run `npm audit --omit=dev` before each release.
 
 ## Configuration (`server/.env`)
 
