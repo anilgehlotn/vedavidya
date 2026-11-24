@@ -19,41 +19,45 @@ export default function SiteLayout() {
   }, []);
 
   return (
-    <div className="site">
-      <header className={`nav4 ${scrolled ? "scrolled" : ""} ${open ? "open" : ""}`}>
-        <div className="wrap nav4-inner">
+    <div className="site site6">
+      <div className="bg6" aria-hidden><i /><i /><i /></div>
+      <header className={`nav6 ${scrolled ? "scrolled" : ""} ${open ? "open" : ""}`}>
+        <div className="nav6-bar">
           <Logo />
-          <nav className="nav4-links">
+          <nav className="nav6-pills">
+            <NavLink to="/" end>Home</NavLink>
             <a href="/#how">How it works</a>
             <a href="/#features">Features</a>
             <NavLink to="/about">About</NavLink>
             <NavLink to="/contact">Contact</NavLink>
           </nav>
-          <div className="nav4-cta">
+          <div className="nav6-cta">
             {user
-              ? <Link to="/app" className="btn btn-primary btn-sm">Open dashboard</Link>
+              ? <Link to="/app" className="btn6 dark sm">Open dashboard</Link>
               : <>
-                  <Link to="/login" className="nav4-login">Log in</Link>
-                  <Link to="/contact" className="btn btn-primary btn-sm">Book a demo</Link>
+                  <Link to="/login" className="btn6 light sm hide-sm">Log in</Link>
+                  <Link to="/contact" className="btn6 dark sm">Book a demo</Link>
                 </>}
-            <button className="nav4-toggle" onClick={() => setOpen(!open)} aria-label="Menu" aria-expanded={open}><span /><span /><span /></button>
+            <button className="nav6-toggle" onClick={() => setOpen(!open)} aria-label="Menu" aria-expanded={open}><span /><span /></button>
           </div>
         </div>
       </header>
       <Outlet />
-      <footer className="footer4">
-        <div className="wrap">
-          <div className="footer4-grid">
-            <div>
-              <Logo />
-              <p>Smart marking, question papers and progress reports for schools and coaching institutes.</p>
-              <span className="mail">hello@vedavidya.co</span>
+      <footer className="footer6">
+        <div className="wrap6">
+          <div className="tile footer6-card">
+            <div className="footer6-grid">
+              <div>
+                <Logo />
+                <p>AI marking, question papers and progress reports for schools and coaching institutes.</p>
+                <span className="mail">hello@vedavidya.co</span>
+              </div>
+              <div><h5>Product</h5><a href="/#how">How it works</a><a href="/#features">Features</a><Link to="/login">Live demo</Link></div>
+              <div><h5>Get started</h5><Link to="/contact">Book a demo</Link><Link to="/login?mode=register">Create institute</Link><Link to="/login">Sign in</Link></div>
+              <div><h5>Company</h5><Link to="/about">About</Link><Link to="/contact">Contact</Link></div>
             </div>
-            <div><h5>Product</h5><a href="/#how">How it works</a><a href="/#features">Features</a><Link to="/login">Live demo</Link></div>
-            <div><h5>Get started</h5><Link to="/contact">Book a demo</Link><Link to="/login?mode=register">Create institute</Link><Link to="/login">Sign in</Link></div>
-            <div><h5>Company</h5><Link to="/about">About</Link><Link to="/contact">Contact</Link></div>
+            <div className="footer6-base"><span>© {new Date().getFullYear()} Veda Vidya</span><span>Made for teachers in India</span></div>
           </div>
-          <div className="footer4-base"><span>© {new Date().getFullYear()} Veda Vidya</span><span>Made with care for teachers in India</span></div>
         </div>
       </footer>
     </div>
