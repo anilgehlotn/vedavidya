@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, fileUrl, fmtDate, fmtDateTime, pct } from "../../lib/api";
+import { api, DEMO, fileUrl, fmtDate, fmtDateTime, pct } from "../../lib/api";
 import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/types";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, StatusBadge, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
@@ -159,7 +159,7 @@ export function TestDetail() {
   return (
     <>
       <PageTitle title={d.title} sub={<>{d.mode === "cbt" ? "Online test" : "Handwritten test"} · {d.paper.total_marks} marks · {d.duration_min} min · {fmtDateTime(d.scheduled_at)} · <Link to={`/app/papers/${d.paper.id}`} className="btn-link">View paper</Link></>}>
-        <a className="btn btn-ghost" href={fileUrl(`/tests/${d.id}/results.csv`)}>Export CSV</a>
+        {!DEMO && <a className="btn btn-ghost" href={fileUrl(`/tests/${d.id}/results.csv`)}>Export CSV</a>}
         {d.mode === "offline" && <button className="btn btn-ghost" disabled={!toEvaluate} onClick={() => evaluate()}>✦ Evaluate {toEvaluate || ""} sheet{toEvaluate === 1 ? "" : "s"}</button>}
         {d.results_published ? <button className="btn btn-ghost" onClick={() => publish(false)}>Unpublish</button>
           : <button className="btn btn-primary" disabled={!scored.length} onClick={() => publish(true)}>Publish results</button>}

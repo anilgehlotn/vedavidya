@@ -1,3 +1,6 @@
+/// <reference types="vite/client" />
+import { demoApi } from "./demo";
+
 const TOKEN_KEY = "markwise_token";
 
 export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
@@ -7,7 +10,13 @@ export const setToken = (t: string | null) => {
 
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 
+export const DEMO = Boolean(import.meta.env.VITE_DEMO);
+
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; form?: FormData } = {}): Promise<T> {
+  if (DEMO) {
+    const method = opts.method ?? (opts.body !== undefined || opts.form ? "POST" : "GET");
+    return demoApi(path, method, opts.body, getToken(), (m, st) => { throw new ApiError(m, st); }) as Promise<T>;
+  }
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;

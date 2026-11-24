@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, MemoryRouter, Navigate, Route, Routes } from "react-router-dom";
+import { DEMO } from "./lib/api";
+import { DemoBanner } from "./components/DemoBanner";
 import "./styles.css";
 import { AuthProvider } from "./lib/auth";
 import SiteLayout from "./pages/site/SiteLayout";
@@ -17,9 +19,14 @@ import { AttemptReview, TestDetail, TestList } from "./pages/app/Tests";
 import { Analytics, StudentReport } from "./pages/app/Analytics";
 import { CbtExam, MyTests } from "./pages/app/Student";
 
+// The preview runs inside a frame without real URLs, so it keeps routes in memory.
+const Router = ({ children }: { children: React.ReactNode }) =>
+  DEMO ? <MemoryRouter>{children}</MemoryRouter> : <BrowserRouter>{children}</BrowserRouter>;
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <Router>
+      {DEMO && <DemoBanner />}
       <AuthProvider>
         <Routes>
           <Route element={<SiteLayout />}>
@@ -51,6 +58,6 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
-    </BrowserRouter>
+    </Router>
   </React.StrictMode>,
 );

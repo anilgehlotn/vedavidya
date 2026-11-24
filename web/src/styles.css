@@ -299,3 +299,7 @@ table.t tr.click:hover td { background: #faf8ff; }
   .app { display: block; } .main { padding: 0; } body { background: #fff; }
   .card { box-shadow: none; }
 }
+
+/* Preview build banner */
+.demo-banner { position: fixed; left: 50%; bottom: max(12px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 200; background: var(--ink); color: #fff; font-size: 12px; font-weight: 600; padding: 7px 14px; border-radius: 999px; box-shadow: var(--shadow-lg); max-width: calc(100% - 32px); text-align: center; pointer-events: none; }
+:root { color-scheme: light; }
