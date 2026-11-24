@@ -76,6 +76,10 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
   const t = one<any>(`SELECT t.*, (SELECT group_concat(b.name, ', ') FROM test_batches tb JOIN batches b ON b.id = tb.batch_id WHERE tb.test_id = t.id) AS batch_names
     FROM tests t WHERE t.id = ? AND t.org_id = ?`, req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
+  // Safety net: every marked student of a published test has a parent report link.
+  if (t.results_published)
+    for (const m of all<{ id: string }>("SELECT a.id FROM attempts a WHERE a.test_id = ? AND a.score IS NOT NULL AND NOT EXISTS (SELECT 1 FROM share_tokens s WHERE s.attempt_id = a.id)", t.id))
+      run("INSERT OR IGNORE INTO share_tokens (token, attempt_id) VALUES (?, ?)", crypto.randomBytes(12).toString("base64url"), m.id);
   const attempts = all<any>(`SELECT a.id, a.status, a.score, a.max_score, a.error, a.reviewed, a.files, a.submitted_at,
       u.id AS student_id, u.name AS student_name, u.phone, e.parent_phone, e.roll_no, b.name AS batch_name,
       (SELECT token FROM share_tokens s WHERE s.attempt_id = a.id) AS share_token
