@@ -172,7 +172,7 @@ export function TestDetail() {
         <div className="card stat"><div className="label">Highest</div><div className="value">{high ?? "—"}{high != null && "%"}</div></div>
       </div>
       {d.mode === "offline" && d.attempts.some((a) => a.status === "pending") && (
-        <div className="card card-pad small" style={{ marginBottom: 14, background: "var(--accent-soft)", borderColor: "#ecc9da" }}>
+        <div className="card card-pad small" style={{ marginBottom: 14, background: "var(--accent-soft)", borderColor: "#f0d77a" }}>
           <b>How it works:</b> upload each student's scanned pages (photos or a PDF), then click <b>Evaluate</b>. AI marks every question step by step using the paper's rubric. Open any sheet to review and adjust marks, then publish.
         </div>
       )}

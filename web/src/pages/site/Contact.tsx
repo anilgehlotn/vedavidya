@@ -18,11 +18,14 @@ export default function Contact() {
   return (
     <main className="page2"><div className="wrap">
       <header className="page2-head">
-        <p className="eyebrow2 rise" style={{ ["--i" as string]: 0 }}>Book a demo</p>
-        <h1 className="display rise" style={{ ["--i" as string]: 1, fontSize: "clamp(40px, 6vw, 72px)" }}>Let's mark <span className="grad">your</span> answer sheets.</h1>
-        <p className="lede rise" style={{ ["--i" as string]: 2 }}>Tell us about your institute and we'll get back within one working day.</p>
+        <p className="label mono fade" style={{ ["--i" as string]: 0 }}>Book a demo</p>
+        <h1 className="h-xl">
+          <span className="mline"><span style={{ ["--i" as string]: 1 }}>Bring one bundle</span></span>
+          <span className="mline"><span style={{ ["--i" as string]: 2 }}>of copies.</span></span>
+        </h1>
+        <p className="lead fade" style={{ ["--i" as string]: 4 }}>Tell us about your institute. We'll set up a 20-minute call and mark your own answer sheets while you watch.</p>
       </header>
-      <div className="form-card rise" style={{ ["--i" as string]: 3 }}>
+      <div className="form-card fade" style={{ ["--i" as string]: 5 }}>
         {state === "done" ? (
           <div className="stack" style={{ textAlign: "center", padding: 20 }}>
             <div style={{ fontSize: 40 }}>✅</div>

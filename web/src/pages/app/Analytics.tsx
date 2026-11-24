@@ -39,7 +39,7 @@ export function Analytics() {
             <div className="card card-pad">
               <div className="row between" style={{ marginBottom: 8 }}><b>Score trend</b>
                 <div className="row small"><span className="badge violet">● Batch average</span><span className="badge green">● Top score</span></div></div>
-              <LineChart labels={d.trend.map((t) => t.title)} series={[{ name: "Average", color: "#68003c", values: d.trend.map((t) => t.avg) }, { name: "Top", color: "#138a55", values: d.trend.map((t) => t.top), dashed: true }]} />
+              <LineChart labels={d.trend.map((t) => t.title)} series={[{ name: "Average", color: "#111111", values: d.trend.map((t) => t.avg) }, { name: "Top", color: "#138a55", values: d.trend.map((t) => t.top), dashed: true }]} />
             </div>
             <div className="card card-pad"><b>Topic mastery</b><p className="small muted" style={{ marginBottom: 14 }}>Share of marks earned per topic across all tests - weakest first</p>
               <BarList items={d.topics.slice(0, 8).map((t) => ({ label: t.topic, value: t.pct }))} /></div>
@@ -89,7 +89,7 @@ export function StudentReport({ self }: { self?: boolean }) {
           <div className="grid g2" style={{ marginBottom: 16 }}>
             <div className="card card-pad">
               <div className="row between" style={{ marginBottom: 8 }}><b>Progress</b><div className="row small"><span className="badge violet">● {self ? "Me" : "Student"}</span><span className="badge">● Class average</span></div></div>
-              <LineChart labels={d.trend.map((t) => t.title)} series={[{ name: "Student", color: "#68003c", values: d.trend.map((t) => t.pct) }, { name: "Class", color: "#9a96a5", values: d.trend.map((t) => t.class_avg), dashed: true }]} />
+              <LineChart labels={d.trend.map((t) => t.title)} series={[{ name: "Student", color: "#111111", values: d.trend.map((t) => t.pct) }, { name: "Class", color: "#9a96a5", values: d.trend.map((t) => t.class_avg), dashed: true }]} />
             </div>
             <div className="card card-pad"><b>Topic mastery</b><p className="small muted" style={{ marginBottom: 14 }}>Weakest first</p><BarList items={d.topics.slice(0, 8).map((t) => ({ label: t.topic, value: t.pct }))} /></div>
           </div>

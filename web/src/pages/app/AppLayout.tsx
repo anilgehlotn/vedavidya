@@ -39,7 +39,7 @@ export default function AppLayout() {
         <div className="me">
           <div style={{ color: "#fff", fontWeight: 600 }}>{user.name}</div>
           <div style={{ color: "#77718c", textTransform: "capitalize" }}>{user.role} · {org?.name}</div>
-          <button className="btn-link" style={{ color: "#f0b6d0", marginTop: 8, fontSize: 13 }} onClick={() => { logout(); nav("/login"); }}>Sign out</button>
+          <button className="btn-link" style={{ color: "#f5b800", marginTop: 8, fontSize: 13 }} onClick={() => { logout(); nav("/login"); }}>Sign out</button>
         </div>
       </aside>
       <main className="main"><Outlet /></main>

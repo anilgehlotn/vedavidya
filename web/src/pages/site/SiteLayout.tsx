@@ -20,43 +20,42 @@ export default function SiteLayout() {
 
   return (
     <div className="site">
-      <header className={`nav2 ${scrolled ? "scrolled" : ""} ${open ? "open" : ""}`}>
-        <div className="nav2-inner">
+      <header className={`nav3 ${scrolled ? "scrolled" : ""} ${open ? "open" : ""}`}>
+        <div className="wrap nav3-inner">
           <Logo />
-          <nav className="nav2-links">
+          <nav className="nav3-links">
+            <a href="/#evaluate">Evaluation</a>
+            <a href="/#papers">Question papers</a>
             <a href="/#how">How it works</a>
-            <a href="/#features">Features</a>
             <NavLink to="/about">About</NavLink>
             <NavLink to="/contact">Contact</NavLink>
           </nav>
-          <div className="nav2-cta">
+          <div className="nav3-cta">
             {user
               ? <Link to="/app" className="btn btn-primary btn-sm">Open dashboard</Link>
               : <>
-                  <Link to="/login" className="nav2-login">Log in</Link>
+                  <Link to="/login">Log in</Link>
                   <Link to="/contact" className="btn btn-primary btn-sm">Book a demo</Link>
                 </>}
-            <button className="nav2-toggle" onClick={() => setOpen(!open)} aria-label="Menu" aria-expanded={open}><span /><span /></button>
+            <button className="nav3-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>{open ? "Close" : "Menu"}</button>
           </div>
         </div>
       </header>
       <Outlet />
-      <footer className="footer2">
+      <footer className="footer3">
         <div className="wrap">
-          <div className="footer2-grid">
-            <div className="footer2-brand">
-              <Logo />
-              <p>AI evaluation, question papers and student analytics for schools and coaching institutes.</p>
+          <div className="footer3-grid">
+            <div>
+              <Logo light />
+              <p style={{ margin: "16px 0 10px", maxWidth: 320 }}>Answer-sheet evaluation, question papers and student insight for schools and coaching institutes.</p>
               <span className="mail">hello@vedavidya.co</span>
             </div>
-            <div><h5>Product</h5><a href="/#how">How it works</a><a href="/#features">Features</a><Link to="/login">Live demo</Link></div>
-            <div><h5>Get started</h5><Link to="/contact">Book a demo</Link><Link to="/login?mode=register">Create institute</Link><Link to="/login">Sign in</Link></div>
+            <div><h5>Product</h5><a href="/#evaluate">Evaluation</a><a href="/#papers">Question papers</a><a href="/#insight">Insight</a><a href="/#how">How it works</a></div>
+            <div><h5>Get started</h5><Link to="/contact">Book a demo</Link><Link to="/login">Live demo</Link><Link to="/login?mode=register">Create institute</Link></div>
             <div><h5>Company</h5><Link to="/about">About</Link><Link to="/contact">Contact</Link></div>
           </div>
-          <div className="footer2-base">
-            <span>© {new Date().getFullYear()} Veda Vidya</span>
-            <span>Made for teachers in India</span>
-          </div>
+          <div className="footer3-word" aria-hidden>Veda Vidya</div>
+          <div className="footer3-base"><span>© {new Date().getFullYear()} Veda Vidya</span><span>Made for teachers in India</span></div>
         </div>
       </footer>
     </div>

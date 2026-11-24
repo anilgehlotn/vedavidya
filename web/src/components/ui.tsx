@@ -7,8 +7,8 @@ export function Logo({ light, to = "/" }: { light?: boolean; to?: string }) {
   return (
     <Link to={to} className="logo" style={light ? { color: "#fff" } : undefined}>
       <svg className="logo-mark" viewBox="0 0 64 64" aria-hidden>
-        <rect width="64" height="64" rx="16" fill="#68003c" />
-        <path d="M17 21l15 24 15-24" fill="none" stroke="#fff" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+        <rect width="64" height="64" rx="14" fill="#F5B800" />
+        <path d="M16 33 L28 45 L49 19" fill="none" stroke="#111111" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
       Veda Vidya
     </Link>
