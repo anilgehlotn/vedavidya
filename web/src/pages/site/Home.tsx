@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CountUp, Typewriter } from "../../lib/motion";
 
@@ -13,27 +13,35 @@ const STUDENTS = [
 ];
 
 function HeroVisual() {
+  const [tilt, setTilt] = useState({ x: 0, y: 0 });
+  const onMove = (e: MouseEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setTilt({ x: ((e.clientY - r.top) / r.height - 0.5) * -7, y: ((e.clientX - r.left) / r.width - 0.5) * 9 });
+  };
   return (
-    <div className="hv" aria-label="A class's answer sheets being marked">
-      <div className="hv-card glide" style={v({ "--i": 3 })}>
-        <div className="hv-head">
-          <div><b>Unit Test 2</b><span>Class 10 · Mathematics</span></div>
-          <span className="muted small"><CountUp to={18} duration={2400} /> of 24 marked</span>
+    <div className="hv" aria-label="A class's answer sheets being marked" onMouseMove={onMove} onMouseLeave={() => setTilt({ x: 0, y: 0 })}>
+      <div className="hv-tilt" style={{ transform: `perspective(1200px) rotateX(${tilt.x}deg) rotateY(${tilt.y}deg)` }}>
+        <div className="hv-card glide" style={v({ "--i": 3 })}>
+          <div className="hv-head">
+            <div><b>Unit Test 2</b><span>Class 10 · Mathematics</span></div>
+            <span className="live"><i />Marking · <CountUp to={18} duration={2400} />/24</span>
+          </div>
+          <ul>
+            <span className="scan" aria-hidden />
+            {STUDENTS.map((s, k) => (
+              <li key={s.n} style={v({ "--d": `${0.8 + k * 0.15}s` })}>
+                <span>{s.n}</span>
+                <span className="bar5"><i style={v({ "--w": `${s.s}%` })} /></span>
+                <b><CountUp to={s.s} duration={1600} />%</b>
+              </li>
+            ))}
+          </ul>
         </div>
-        <ul>
-          {STUDENTS.map((s, k) => (
-            <li key={s.n} style={v({ "--d": `${0.8 + k * 0.15}s` })}>
-              <span>{s.n}</span>
-              <span className="bar5"><i style={v({ "--w": `${s.s}%` })} /></span>
-              <b>{s.s}%</b>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div className="hv-note hand glide" style={v({ "--i": 5 })}>
-        <p>tan θ = 3/4 <span className="tick">✓</span></p>
-        <p>a₁₅ = 7 + 14 × 4 = 63 <span className="tick">✓</span></p>
-        <p className="red">show the last step, −½</p>
+        <div className="hv-note hand">
+          <p>tan θ = 3/4 <span className="tick" style={v({ "--d": "1.9s" })}>✓</span></p>
+          <p>a₁₅ = 7 + 14 × 4 = 63 <span className="tick" style={v({ "--d": "2.2s" })}>✓</span></p>
+          <p className="red write">show the last step, −½</p>
+        </div>
       </div>
     </div>
   );
@@ -44,15 +52,21 @@ function Hero() {
     <section className="hero5">
       <div className="wrap hero5-grid">
         <div>
-          <h1 className="h-hero glide" style={v({ "--i": 0 })}>Marking made easy, so teachers can teach.</h1>
-          <p className="lead glide" style={v({ "--i": 1 })}>
+          <h1 className="h-hero words">
+            {"Marking made easy, so teachers can teach.".split(" ").map((w, i) => (
+              <Fragment key={i}>
+                <span className="w"><span style={v({ "--i": i })}>{w === "easy," ? <><em>easy</em>,</> : w}</span></span>{" "}
+              </Fragment>
+            ))}
+          </h1>
+          <p className="lead glide" style={v({ "--i": 6 })}>
             Take photos of your students' answer sheets. Veda Vidya marks every step, writes short feedback, and your teachers approve the results the same day.
           </p>
-          <div className="actions glide" style={v({ "--i": 2 })}>
-            <Link to="/contact" className="btn btn-primary btn-lg">Book a free demo</Link>
-            <Link to="/login" className="text-link">Try the demo →</Link>
+          <div className="actions glide" style={v({ "--i": 7 })}>
+            <Link to="/contact" className="btn btn-primary btn-lg shine">Book a free demo</Link>
+            <Link to="/login" className="text-link arrow">Try the demo</Link>
           </div>
-          <p className="fine glide" style={v({ "--i": 3 })}>Works with CBSE, ICSE, state boards, JEE and NEET papers, in English and Hindi.</p>
+          <p className="fine glide" style={v({ "--i": 8 })}>Works with CBSE, ICSE, state boards, JEE and NEET papers, in English and Hindi.</p>
         </div>
         <HeroVisual />
       </div>
@@ -89,12 +103,12 @@ function HowItWorks() {
 function Feature({ title, text, points, flip, id, children }: { title: string; text: string; points: string[]; flip?: boolean; id?: string; children: ReactNode }) {
   return (
     <div className={`feat5 ${flip ? "flip" : ""}`} id={id}>
-      <div data-reveal>
+      <div data-reveal="up">
         <h3 className="h-feat">{title}</h3>
         <p className="lead">{text}</p>
         <ul className="dots">{points.map((x) => <li key={x}>{x}</li>)}</ul>
       </div>
-      <div className="panel5" data-reveal>{children}</div>
+      <div className="panel5" data-reveal={flip ? "left" : "right"}>{children}</div>
     </div>
   );
 }
@@ -180,17 +194,26 @@ const AUDIENCE = [
 ];
 function Audience() {
   const [tab, setTab] = useState(0);
+  const [ind, setInd] = useState({ left: 0, width: 0 });
+  const btns = useRef<(HTMLButtonElement | null)[]>([]);
+  useEffect(() => {
+    const place = () => { const b = btns.current[tab]; if (b) setInd({ left: b.offsetLeft, width: b.offsetWidth }); };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [tab]);
   const a = AUDIENCE[tab];
   return (
     <section className="sec5">
       <div className="wrap">
         <h2 className="h-sec" data-reveal>Useful for everyone at your institute</h2>
         <div className="tabs5" role="tablist" data-reveal>
-          {AUDIENCE.map((x, i) => <button key={x.k} role="tab" aria-selected={tab === i} className={tab === i ? "on" : ""} onClick={() => setTab(i)}>{x.k}</button>)}
+          <span className="tab-ind" style={{ transform: `translateX(${ind.left}px)`, width: ind.width }} aria-hidden />
+          {AUDIENCE.map((x, i) => <button key={x.k} ref={(el) => { btns.current[i] = el; }} role="tab" aria-selected={tab === i} className={tab === i ? "on" : ""} onClick={() => setTab(i)}>{x.k}</button>)}
         </div>
         <div className="aud5" key={a.k}>
           <h3 className="h-feat">{a.h}</h3>
-          <ul className="dots">{a.pts.map((x) => <li key={x}>{x}</li>)}</ul>
+          <ul className="dots">{a.pts.map((x, i) => <li key={x} style={v({ "--i": i })}>{x}</li>)}</ul>
         </div>
       </div>
     </section>
@@ -231,14 +254,14 @@ function Cta() {
   return (
     <section className="sec5">
       <div className="wrap">
-        <div className="cta5" data-reveal>
+        <div className="cta5" data-reveal="zoom">
           <div>
             <h2 className="h-sec">Try it with your own answer sheets.</h2>
             <p>Book a free 20-minute demo. Bring a few copies and watch them get marked.</p>
           </div>
           <div className="actions">
-            <Link to="/contact" className="btn btn-white btn-lg">Book a free demo</Link>
-            <Link to="/login?mode=register" className="text-link light">Create your institute →</Link>
+            <Link to="/contact" className="btn btn-white btn-lg shine">Book a free demo</Link>
+            <Link to="/login?mode=register" className="text-link light arrow">Create your institute</Link>
           </div>
         </div>
       </div>
