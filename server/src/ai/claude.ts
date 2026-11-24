@@ -177,3 +177,39 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
     ],
   });
 }
+
+export interface ImportMeta { subject?: string; board?: string; class_level?: string; language?: string; notes?: string }
+
+/** Reads an existing question paper (photos/PDF) and, optionally, its answer key, into an editable paper. */
+export async function importPaper(orgId: string, paperFiles: string[], keyFiles: string[], meta: ImportMeta) {
+  if (!paperFiles.length) throw new AiError("Upload at least one page of the question paper.");
+  const paperBlocks = fileBlocks([...paperFiles, ...keyFiles]);
+  const qBlocks = paperBlocks.slice(0, paperFiles.length);
+  const kBlocks = paperBlocks.slice(paperFiles.length);
+  return structured<{ title: string; instructions: string; sections: Section[] }>(orgId, {
+    effort: "high",
+    format: zodOutputFormat(GeneratedPaper),
+    system:
+      "You digitise question papers for Indian schools and coaching institutes. Transcribe every question exactly as printed " +
+      "(keep the original wording, language, numbering order, options, sections and marks). Never invent, drop or merge questions. " +
+      "Use the answer key when provided; otherwise solve each question carefully yourself. For every question write a worked solution " +
+      "and a step-wise marking rubric whose step marks add up exactly to the question's marks. If a question's marks are not printed, " +
+      "use the section's marking or a sensible value and mention it in the paper instructions.",
+    content: [
+      { type: "text", text: "QUESTION PAPER pages:" },
+      ...qBlocks,
+      ...(kBlocks.length ? [{ type: "text" as const, text: "ANSWER KEY / MARKING SCHEME pages:" }, ...kBlocks] : []),
+      {
+        type: "text",
+        text:
+          `Transcribe this question paper into the required structure.\n` +
+          (meta.subject ? `Subject: ${meta.subject}\n` : "") + (meta.board ? `Board/Exam: ${meta.board}\n` : "") +
+          (meta.class_level ? `Class: ${meta.class_level}\n` : "") + (meta.language ? `Language: ${meta.language}\n` : "") +
+          (meta.notes ? `Teacher's note: ${meta.notes}\n` : "") +
+          `Number question ids sequentially (q1, q2, ...). Use type mcq for single-correct multiple choice (exactly 4 options when the paper has 4; ` +
+          `if it has a different number of options, still list them all), numeric for numerical-answer questions, short or long for written answers. ` +
+          (kBlocks.length ? "Take correct answers and marking from the answer key." : "No answer key was provided: solve each question yourself."),
+      },
+    ],
+  });
+}

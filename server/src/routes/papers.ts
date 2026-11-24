@@ -2,7 +2,13 @@ import { Router } from "express";
 import { z } from "zod";
 import { all, json, one, run, uid } from "../db.js";
 import { staff } from "../auth.js";
-import { generatePaper, AiError, aiProblem, type PaperSpec } from "../ai/claude.js";
+import { generatePaper, importPaper, AiError, aiProblem, type PaperSpec } from "../ai/claude.js";
+import multer from "multer";
+import crypto from "node:crypto";
+import path from "node:path";
+import fs from "node:fs";
+import { UPLOAD_DIR } from "../db.js";
+import { normalisePage, removeFiles, UploadError } from "../images.js";
 import { Section, type Section as SectionT } from "../ai/schemas.js";
 
 export const paperRoutes = Router();
@@ -52,6 +58,55 @@ paperRoutes.post("/papers/generate", staff, (req, res) => {
     .catch((e) => {
       run("UPDATE question_papers SET status = 'failed', error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), id);
     });
+});
+
+// Import an existing paper: photos/PDF of the question paper, plus the answer key if available.
+const paperUpload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (_req, file, cb) => cb(null, `${crypto.randomBytes(10).toString("hex")}${path.extname(file.originalname).toLowerCase()}`),
+  }),
+  limits: { fileSize: 25 * 1024 * 1024, files: 40 },
+  fileFilter: (_req, file, cb) => cb(null, /\.(jpe?g|png|webp|pdf)$/i.test(file.originalname)),
+}).fields([{ name: "paper", maxCount: 20 }, { name: "key", maxCount: 20 }]);
+
+paperRoutes.post("/papers/import", staff, paperUpload, async (req, res, next) => {
+  const got = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
+  const all_ = [...(got.paper ?? []), ...(got.key ?? [])];
+  try {
+    const meta = z.object({
+      subject: z.string().max(80).optional(), board: z.string().max(80).optional(), class_level: z.string().max(80).optional(),
+      language: z.string().max(60).optional(), duration_min: z.coerce.number().int().min(5).max(360).optional(), notes: z.string().max(1000).optional(),
+    }).parse(req.body ?? {});
+    const problem = aiProblem(req.user!.org_id);
+    if (problem) { all_.forEach((f) => fs.rmSync(f.path, { force: true })); return res.status(400).json({ error: problem }); }
+    if (!got.paper?.length) { all_.forEach((f) => fs.rmSync(f.path, { force: true })); return res.status(400).json({ error: "Add photos or a PDF of the question paper" }); }
+    const norm = async (list: Express.Multer.File[] = []) => {
+      const out: string[] = [];
+      for (const f of list) out.push(await normalisePage(UPLOAD_DIR, f.filename, f.originalname));
+      return out;
+    };
+    let paperFiles: string[] = [], keyFiles: string[] = [];
+    try { paperFiles = await norm(got.paper); keyFiles = await norm(got.key); }
+    catch (e) {
+      removeFiles(UPLOAD_DIR, [...paperFiles, ...keyFiles]);
+      all_.forEach((f) => fs.rmSync(f.path, { force: true }));
+      if (e instanceof UploadError) return res.status(400).json({ error: e.message });
+      throw e;
+    }
+    const id = uid("qp");
+    run(`INSERT INTO question_papers (id, org_id, title, subject, board, class_level, language, duration_min, status, created_by)
+         VALUES (?,?,?,?,?,?,?,?, 'generating', ?)`,
+      id, req.user!.org_id, "Imported paper", meta.subject ?? null, meta.board ?? null, meta.class_level ?? null, meta.language ?? "English", meta.duration_min ?? 60, req.user!.id);
+    res.json({ id });
+    importPaper(req.user!.org_id, paperFiles.map((f) => path.join(UPLOAD_DIR, f)), keyFiles.map((f) => path.join(UPLOAD_DIR, f)), meta)
+      .then((paper) => {
+        run("UPDATE question_papers SET title = ?, instructions = ?, sections = ?, total_marks = ?, status = 'draft' WHERE id = ?",
+          paper.title, paper.instructions, JSON.stringify(paper.sections), totalMarks(paper.sections), id);
+      })
+      .catch((e) => run("UPDATE question_papers SET status = 'failed', error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), id))
+      .finally(() => removeFiles(UPLOAD_DIR, [...paperFiles, ...keyFiles]));
+  } catch (e) { next(e); }
 });
 
 // Manual creation / full save from the editor.

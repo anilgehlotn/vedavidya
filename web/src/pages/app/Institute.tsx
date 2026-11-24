@@ -120,7 +120,7 @@ export function Students() {
   const students = useApi<Student[]>(`/students${batchId ? `?batch_id=${batchId}` : ""}`);
   const [q, setQ] = useState("");
   const [modal, setModal] = useState<null | "add" | "bulk" | { edit: Student }>(null);
-  const [creds, setCreds] = useState<{ name: string; username: string; password: string }[] | null>(null);
+  const [creds, setCreds] = useState<{ name: string; username: string; password: string; roll_no?: string | null }[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const s = useForm({ name: "", roll_no: "", phone: "", email: "", batch_id: "", parent_name: "", parent_phone: "", parent_email: "" });
   const [bulk, setBulk] = useState({ batch_id: "", csv: "" });
@@ -144,6 +144,12 @@ export function Students() {
     try { const r = await api<{ created: { name: string; username: string; password: string }[] }>("/students/bulk", { body: bulk }); setCreds(r.created); setModal(null); students.reload(); }
     catch (err) { setError((err as Error).message); }
   };
+  const batchLogins = async () => {
+    const b = batches.data?.find((x) => x.id === batchId);
+    if (!confirm(`Create new passwords for every student in ${b?.name ?? "this batch"}? Their old passwords will stop working.`)) return;
+    const r = await api<{ created: { name: string; username: string; password: string; roll_no: string | null }[] }>("/students/reset-logins", { body: { batch_id: batchId } });
+    setCreds(r.created);
+  };
   const reset = async (st: Student) => {
     if (!confirm(`Generate a new password for ${st.name}?`)) return;
     const r = await api<{ username: string; password: string }>(`/students/${st.id}/reset-password`, { body: {} });
@@ -155,13 +161,14 @@ export function Students() {
   };
   const list = (students.data ?? []).filter((x) => !q || `${x.name} ${x.username} ${x.phone ?? ""} ${x.roll_no ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   const downloadCreds = () => {
-    const csv = ["Name,Username,Password", ...creds!.map((c) => `"${c.name}",${c.username},${c.password}`)].join("\n");
+    const csv = ["Roll,Name,Username,Password,Login at", ...creds!.map((c) => `${c.roll_no ?? ""},"${c.name}",${c.username},${c.password},${location.origin}/login`)].join("\n");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "student-logins.csv"; a.click();
   };
 
   return (
     <>
       <PageTitle title="Students" sub={`${students.data?.length ?? 0} students${batchId ? " in this batch" : ""}`}>
+        {batchId && <button className="btn btn-ghost" onClick={batchLogins}>Logins for this batch</button>}
         <button className="btn btn-ghost" onClick={() => { setError(null); setBulk({ batch_id: batchId || batches.data?.[0]?.id || "", csv: "" }); setModal("bulk"); }}>Bulk add</button>
         <button className="btn btn-primary" onClick={() => open()}>+ Student</button>
       </PageTitle>
@@ -173,7 +180,7 @@ export function Students() {
       </div>
       {creds && (
         <div className="card card-pad" style={{ marginBottom: 14, borderColor: "#bfe6d1" }}>
-          <div className="row between"><b>Login details - share these with students (shown once)</b><div className="row"><button className="btn btn-ghost btn-sm" onClick={downloadCreds}>Download CSV</button><button className="btn-link" onClick={() => setCreds(null)}>Dismiss</button></div></div>
+          <div className="row between"><b>Login details - share these with students (shown once). Students sign in at {location.host}/login</b><div className="row"><button className="btn btn-ghost btn-sm" onClick={downloadCreds}>Download CSV</button><button className="btn-link" onClick={() => setCreds(null)}>Dismiss</button></div></div>
           <div className="table-wrap" style={{ marginTop: 10 }}><table className="t"><tbody>{creds.map((c) => <tr key={c.username}><td>{c.name}</td><td><code>{c.username}</code></td><td><code>{c.password}</code></td></tr>)}</tbody></table></div>
         </div>
       )}

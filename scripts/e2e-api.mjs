@@ -283,6 +283,61 @@ section("Teacher review, publish, reports");
   await expect("tests list", 200, "GET", "/tests", { token: teacher });
 }
 
+section("Upload an existing question paper (with answer key)");
+{
+  const img = await jpeg(1600, 2200, "Printed paper");
+  const form = new FormData();
+  form.append("paper", new Blob([img], { type: "image/jpeg" }), "page1.jpg");
+  form.append("paper", new Blob([img], { type: "image/jpeg" }), "page2.jpg");
+  form.append("key", new Blob([pdf()], { type: "application/pdf" }), "answer-key.pdf");
+  form.append("subject", "Maths"); form.append("class_level", "10"); form.append("duration_min", "45");
+  const r = await expect("import paper", 200, "POST", "/papers/import", { token: teacher, form });
+  const done = await poll(() => call("GET", `/papers/${r.data.id}`, { token: teacher }).then((x) => x.data), (p) => p.status !== "generating");
+  ok(done.status === "draft" && done.sections.flatMap((x) => x.questions).length === 4, `imported paper ready with 4 questions (got ${done.status} ${done.error ?? ""})`);
+  ok(done.total_marks === 10 && done.duration_min === 45 && done.subject === "Maths", "imported paper keeps marks, duration, subject");
+  const st = await fetch(API.replace("/api", "").replace(/:\d+$/, ":4999") + "/__stats").then((x) => x.json()).catch(() => null);
+  if (st?.lastImport) ok(st.lastImport.pages === 3 && st.lastImport.hasKey, "Claude received 2 paper pages + 1 answer-key page");
+  const leftovers = DATA_DIR ? fs.readdirSync(path.join(DATA_DIR, "uploads")).length : 0;
+  const noKey = new FormData(); noKey.append("paper", new Blob([img], { type: "image/jpeg" }), "p.jpg");
+  const r2 = await expect("import without answer key", 200, "POST", "/papers/import", { token: teacher, form: noKey });
+  await poll(() => call("GET", `/papers/${r2.data.id}`, { token: teacher }).then((x) => x.data), (p) => p.status !== "generating");
+  if (DATA_DIR) ok(fs.readdirSync(path.join(DATA_DIR, "uploads")).length <= leftovers, "uploaded paper photos are deleted after reading");
+  await expect("import with no pages → 400", 400, "POST", "/papers/import", { token: teacher, form: new FormData() });
+  const bad = new FormData(); bad.append("paper", new Blob([Buffer.from("nope")], { type: "image/jpeg" }), "x.jpg");
+  await expect("import unreadable photo → 400", 400, "POST", "/papers/import", { token: teacher, form: bad });
+  await expect("student can't import", 403, "POST", "/papers/import", { token: studentTok, form: new FormData() });
+}
+
+section(`All ${N} students log in at once and open their results`);
+{
+  const logins = await expect("batch logins", 200, "POST", "/students/reset-logins", { token: teacher, body: { batch_id: batch } });
+  ok(logins.data.created.length === N && logins.data.created.every((c) => c.password.length === 8), `${N} fresh 8-character passwords`);
+  await expect("student can't reset logins", 403, "POST", "/students/reset-logins", { token: studentTok, body: { batch_id: batch } });
+  await expect("other institute can't reset logins", 404, "POST", "/students/reset-logins", { token: demoAdmin, body: { batch_id: batch } });
+  const roster = (await call("GET", `/tests/${test}`, { token: teacher })).data.attempts;
+  ok(roster.every((a) => "parent_phone" in a && "phone" in a), "roster includes phone numbers for WhatsApp");
+  const t0 = Date.now();
+  const times = [];
+  const results = await Promise.all(logins.data.created.map(async (c) => {
+    const s0 = Date.now();
+    const tok = await login(c.username, c.password);
+    if (!tok) return "login failed";
+    const my = await call("GET", "/my/tests", { token: tok });
+    const t = my.data.find?.((x) => x.id === test);
+    if (!t || t.score == null) return "no published result";
+    const att = await call("GET", `/attempts/${t.attempt_id}`, { token: tok });
+    const rep = await call("GET", "/me", { token: tok });
+    const card = await call("GET", `/analytics/student/${rep.data.user.id}`, { token: tok });
+    times.push(Date.now() - s0);
+    return att.status === 200 && att.data.evaluation?.questions?.length && card.status === 200 ? "ok" : `status ${att.status}/${card.status}`;
+  }));
+  const okCount = results.filter((r) => r === "ok").length;
+  times.sort((a, b) => a - b);
+  console.log(`  ${okCount}/${N} students saw their result · total ${Date.now() - t0} ms · slowest ${times.at(-1)} ms · median ${times[Math.floor(times.length / 2)]} ms`);
+  ok(okCount === N, `all ${N} students logged in and saw marks + feedback (${[...new Set(results.filter((r) => r !== "ok"))].join(", ")})`);
+  ok(times.at(-1) < 15000, "every student got their result within 15 s");
+}
+
 section("Online (CBT) test");
 {
   const q = (id, i) => ({ id, type: "mcq", text: `Q${i}`, options: ["a", "b", "c", "d"], correct_option: 2, numeric_answer: null, marks: 4, negative_marks: 1, difficulty: "easy", topic: "T", solution: "c", rubric: [{ step: "answer", marks: 4 }] });

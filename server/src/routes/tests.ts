@@ -77,7 +77,7 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
     FROM tests t WHERE t.id = ? AND t.org_id = ?`, req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
   const attempts = all<any>(`SELECT a.id, a.status, a.score, a.max_score, a.error, a.reviewed, a.files, a.submitted_at,
-      u.id AS student_id, u.name AS student_name, e.roll_no, b.name AS batch_name,
+      u.id AS student_id, u.name AS student_name, u.phone, e.parent_phone, e.roll_no, b.name AS batch_name,
       (SELECT token FROM share_tokens s WHERE s.attempt_id = a.id) AS share_token
     FROM attempts a JOIN users u ON u.id = a.student_id
     LEFT JOIN enrollments e ON e.student_id = u.id LEFT JOIN batches b ON b.id = e.batch_id

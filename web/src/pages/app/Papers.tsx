@@ -2,14 +2,54 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate } from "../../lib/api";
 import type { Paper, Question, Section } from "../../lib/types";
-import { Empty, ErrorBox, Loading, PageTitle, useApi } from "../../components/ui";
+import { Empty, ErrorBox, Loading, Modal, PageTitle, useApi } from "../../components/ui";
+import { compressImage, isAllowedFile } from "../../lib/upload";
 
 const STATUS: Record<Paper["status"], [string, string]> = { generating: ["Generating", "amber"], draft: ["Draft", ""], approved: ["Approved", "green"], failed: ["Failed", "red"] };
 const TYPE_LABEL: Record<Question["type"], string> = { mcq: "MCQ", numeric: "Numerical", short: "Short answer", long: "Long answer" };
 
+function ImportPaperModal({ onClose }: { onClose: () => void }) {
+  const nav = useNavigate();
+  const [paper, setPaper] = useState<File[]>([]);
+  const [key, setKey] = useState<File[]>([]);
+  const [f, setF] = useState({ subject: "", board: "CBSE", class_level: "", duration_min: "60" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault(); setBusy(true); setError(null);
+    try {
+      const form = new FormData();
+      for (const x of paper) { const c = await compressImage(x); form.append("paper", c, c.name); }
+      for (const x of key) { const c = await compressImage(x); form.append("key", c, c.name); }
+      Object.entries(f).forEach(([k, v]) => v && form.append(k, v));
+      const r = await api<{ id: string }>("/papers/import", { form });
+      nav(`/app/papers/${r.id}`);
+    } catch (err) { setError((err as Error).message); setBusy(false); }
+  };
+  const pick = (set: (x: File[]) => void) => (e: { target: HTMLInputElement }) => set([...(e.target.files ?? [])].filter(isAllowedFile));
+  return (
+    <Modal title="Upload your own question paper" onClose={busy ? () => {} : onClose}>
+      <form className="stack" onSubmit={submit}>
+        <p className="small muted">Add photos or a PDF of the printed paper. If you have the answer key or marking scheme, add it too - marks will follow it exactly. Otherwise the AI solves each question. You can check and edit everything before using it.</p>
+        <label className="field"><span>Question paper pages *</span><input className="input" type="file" multiple required accept="image/jpeg,image/png,image/webp,application/pdf" onChange={pick(setPaper)} /></label>
+        <label className="field"><span>Answer key / marking scheme (optional)</span><input className="input" type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={pick(setKey)} /></label>
+        <div className="grid g2">
+          <label className="field"><span>Subject</span><input className="input" value={f.subject} onChange={(e) => setF({ ...f, subject: e.target.value })} /></label>
+          <label className="field"><span>Class</span><input className="input" value={f.class_level} onChange={(e) => setF({ ...f, class_level: e.target.value })} /></label>
+          <label className="field"><span>Board / exam</span><input className="input" value={f.board} onChange={(e) => setF({ ...f, board: e.target.value })} /></label>
+          <label className="field"><span>Duration (min)</span><input className="input" type="number" min={5} max={360} value={f.duration_min} onChange={(e) => setF({ ...f, duration_min: e.target.value })} /></label>
+        </div>
+        <ErrorBox error={error} />
+        <button className="btn btn-primary" disabled={busy || !paper.length}>{busy ? "Uploading…" : `Read ${paper.length || ""} page${paper.length === 1 ? "" : "s"}`}</button>
+      </form>
+    </Modal>
+  );
+}
+
 export function PaperList() {
   const papers = useApi<Paper[]>("/papers");
   const nav = useNavigate();
+  const [importing, setImporting] = useState(false);
   useEffect(() => {
     if (!papers.data?.some((p) => p.status === "generating")) return;
     const t = setInterval(() => papers.reload(true), 3000);
@@ -22,8 +62,10 @@ export function PaperList() {
           const r = await api<{ id: string }>("/papers", { body: { title: "Untitled paper", duration_min: 60, sections: [{ name: "Section A", instructions: "", questions: [] }] } });
           nav(`/app/papers/${r.id}?edit=1`);
         }}>Blank paper</button>
+        <button className="btn btn-ghost" onClick={() => setImporting(true)}>⇪ Upload a paper</button>
         <Link to="/app/papers/new" className="btn btn-primary">✦ Generate with AI</Link>
       </PageTitle>
+      {importing && <ImportPaperModal onClose={() => setImporting(false)} />}
       <div className="card">
         {papers.loading ? <Loading /> : papers.data?.length ? (
           <div className="table-wrap"><table className="t">
@@ -214,8 +256,8 @@ export function PaperDetail() {
   if (p.status === "generating") return (
     <div className="card" style={{ maxWidth: 560, margin: "60px auto", padding: 40, textAlign: "center" }}>
       <div className="spinner" style={{ width: 32, height: 32, color: "var(--accent)" }} />
-      <h2 style={{ marginTop: 18 }}>Writing your paper…</h2>
-      <p className="muted" style={{ marginTop: 8 }}>Questions, answer keys, solutions and marking rubrics are being written. This page updates automatically.</p>
+      <h2 style={{ marginTop: 18 }}>Preparing your paper…</h2>
+      <p className="muted" style={{ marginTop: 8 }}>Questions, answers, solutions and marking rubrics are being prepared. This usually takes 1–3 minutes, and the page updates by itself.</p>
     </div>
   );
 

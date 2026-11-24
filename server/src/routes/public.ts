@@ -9,7 +9,8 @@ export const publicRoutes = Router();
 
 const ALLOW_SIGNUP = process.env.ALLOW_SIGNUP !== "false";
 const loginLimit = rateLimit("login", 10, 5 * 60 * 1000, (r) => `${r.ip}:${String(r.body?.identifier ?? "").toLowerCase()}`);
-const loginIpLimit = rateLimit("login-ip", 60, 15 * 60 * 1000);
+// A whole class on one school Wi-Fi shares an IP, so the per-network limit is generous; per-account guessing stays tight.
+const loginIpLimit = rateLimit("login-ip", 600, 15 * 60 * 1000);
 const signupLimit = rateLimit("signup", 5, 60 * 60 * 1000);
 const contactLimit = rateLimit("contact", 5, 10 * 60 * 1000);
 
@@ -19,16 +20,19 @@ publicRoutes.get("/config", (_req, res) => {
 });
 
 
-publicRoutes.post("/auth/login", loginIpLimit, loginLimit, (req, res) => {
+publicRoutes.post("/auth/login", loginIpLimit, loginLimit, async (req, res, next) => {
+  try {
   const { identifier, password } = z.object({ identifier: z.string().min(1).max(200), password: z.string().min(1).max(200) }).parse(req.body);
   const id = identifier.trim().toLowerCase();
   const user = one<AuthUser & { password_hash: string }>(
     "SELECT id, org_id, role, name, email, password_hash FROM users WHERE lower(email) = ? OR lower(username) = ? OR phone = ?",
     id, id, identifier.trim(),
   );
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) return res.status(401).json({ error: "Wrong email/username or password" });
+  // Async compare keeps the server responsive while a whole class signs in at once.
+  if (!user || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: "Wrong email/username or password" });
   const { password_hash: _, ...safe } = user;
   res.json({ token: signToken(safe), user: safe });
+  } catch (e) { next(e); }
 });
 
 // Self-serve signup: creates an institute and its first admin.

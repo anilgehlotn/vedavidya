@@ -1,6 +1,7 @@
 // Institute structure: centres, batches, people, notices, and the overview dashboard.
 import { Router } from "express";
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
 import { z } from "zod";
 import { all, one, run, uid, UPLOAD_DIR } from "../db.js";
 import { removeFiles } from "../images.js";
@@ -96,7 +97,9 @@ const makeUsername = (name: string) => {
   }
   throw new ClientError("Couldn't create a unique username. Please try again.", 500);
 };
-const makePassword = () => Math.random().toString(36).slice(2, 10);
+// 8 easy-to-read characters (no 0/O, 1/l/I), cryptographically random.
+const PW_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
+const makePassword = () => Array.from(crypto.randomBytes(8), (b) => PW_CHARS[b % PW_CHARS.length]).join("");
 
 orgRoutes.get("/students", staff, (req, res) => {
   const batch = req.query.batch_id as string | undefined;
@@ -169,6 +172,20 @@ orgRoutes.post("/students/:id/reset-password", staff, (req, res) => {
   const password = makePassword();
   run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(password, 10), req.params.id);
   res.json({ username: u.username, password });
+});
+
+// Hand out logins for a whole batch: sets a fresh password for every student in it.
+orgRoutes.post("/students/reset-logins", staff, (req, res) => {
+  const { batch_id } = z.object({ batch_id: z.string() }).parse(req.body);
+  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", batch_id, req.user!.org_id)) return res.status(404).json({ error: "Batch not found" });
+  const students = all<{ id: string; name: string; username: string; roll_no: string | null }>(`SELECT u.id, u.name, u.username, e.roll_no FROM users u
+    JOIN enrollments e ON e.student_id = u.id WHERE e.batch_id = ? AND u.role = 'student' ORDER BY CAST(e.roll_no AS INTEGER), u.name`, batch_id);
+  const out = students.map((st) => {
+    const password = makePassword();
+    run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(password, 10), st.id);
+    return { name: st.name, roll_no: st.roll_no, username: st.username, password };
+  });
+  res.json({ created: out });
 });
 
 orgRoutes.delete("/students/:id", staff, (req, res) => {

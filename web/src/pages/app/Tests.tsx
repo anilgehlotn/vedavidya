@@ -96,7 +96,7 @@ export function TestList() {
   );
 }
 
-interface AttemptRow { id: string; status: AttemptStatus; score: number | null; max_score: number | null; error: string | null; reviewed: number; files: number; student_id: string; student_name: string; roll_no: string | null; batch_name: string; share_token: string | null }
+interface AttemptRow { phone: string | null; parent_phone: string | null; id: string; status: AttemptStatus; score: number | null; max_score: number | null; error: string | null; reviewed: number; files: number; student_id: string; student_name: string; roll_no: string | null; batch_name: string; share_token: string | null }
 interface TestDetailData extends TestRow { duration_min: number; paper: Paper; attempts: AttemptRow[] }
 
 function UploadCell({ a, onDone }: { a: AttemptRow; onDone: () => void }) {
@@ -174,9 +174,19 @@ function BulkUploadModal({ testId, batches, onClose, onDone }: { testId: string;
   );
 }
 
+const waNumber = (phone: string | null) => {
+  const d = (phone ?? "").replace(/\D/g, "");
+  return d.length === 10 ? `91${d}` : d.length >= 11 && d.length <= 13 ? d.replace(/^0+/, "") : "";
+};
+const reportUrl = (token: string) => `${location.origin}/report/${token}`;
+const resultMessage = (a: AttemptRow, test: string, org: string) =>
+  `Hello! ${a.student_name}'s result for "${test}"${org ? ` at ${org}` : ""}: ${a.score}/${a.max_score} (${pct(a.score, a.max_score)}%). ` +
+  `See the full report with feedback here: ${reportUrl(a.share_token!)}`;
+
 export function TestDetail() {
   const { id } = useParams();
   const t = useApi<TestDetailData>(`/tests/${id}`);
+  const { org } = useAuth();
   const nav = useNavigate();
   const [msg, setMsg] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | AttemptStatus>("all");
@@ -209,6 +219,16 @@ export function TestDetail() {
     setMsg(publish ? "Results published. Students can see them and parent links are active." : "Results hidden from students.");
     t.reload(true);
   };
+  const downloadLinks = () => {
+    const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = d.attempts.filter((a) => a.share_token && a.score != null).map((a) =>
+      [a.roll_no, a.student_name, a.batch_name, a.parent_phone, a.phone, a.score, a.max_score, `${pct(a.score, a.max_score)}%`, reportUrl(a.share_token!)].map(esc).join(","));
+    const csv = ["Roll,Name,Batch,Parent phone,Student phone,Score,Max,Percent,Report link", ...rows].join("\n");
+    const el = document.createElement("a");
+    el.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    el.download = `${d.title.replace(/\W+/g, "_")}_report_links.csv`;
+    el.click();
+  };
   const copyLink = (token: string) => { navigator.clipboard?.writeText(`${location.origin}/report/${token}`); setMsg("Parent report link copied."); };
 
   return (
@@ -217,6 +237,7 @@ export function TestDetail() {
         {!DEMO && <a className="btn btn-ghost" href={fileUrl(`/tests/${d.id}/results.csv`)}>Export CSV</a>}
         {d.mode === "offline" && !DEMO && <button className="btn btn-ghost" onClick={() => setBulk(true)}>⇪ Bulk upload</button>}
         {d.mode === "offline" && <button className="btn btn-ghost" disabled={!toEvaluate} onClick={() => evaluate()}>✦ Evaluate {toEvaluate || ""} new sheet{toEvaluate === 1 ? "" : "s"}</button>}
+        {d.results_published && !DEMO ? <button className="btn btn-ghost" onClick={downloadLinks}>⤓ Report links</button> : null}
         {d.results_published ? <button className="btn btn-ghost" onClick={() => publish(false)}>Unpublish</button>
           : <button className="btn btn-primary" disabled={!scored.length} onClick={() => publish(true)}>Publish results</button>}
       </PageTitle>
@@ -254,7 +275,11 @@ export function TestDetail() {
                 {d.mode === "offline" && a.status !== "evaluating" && <UploadCell a={a} onDone={() => t.reload(true)} />}
                 {d.mode === "offline" && a.files > 0 && a.status !== "evaluating" && <button className="btn btn-ghost btn-sm" onClick={() => { if (a.status !== "evaluated" || confirm(`Re-mark ${a.student_name}'s sheet? This uses AI credits again and replaces any marks you changed.`)) evaluate([a.id]); }}>{a.status === "evaluated" ? "Re-evaluate" : "Evaluate"}</button>}
                 {a.score != null && <button className="btn btn-ghost btn-sm" onClick={() => nav(`/app/attempts/${a.id}`)}>Review</button>}
-                {a.share_token && d.results_published ? <button className="btn btn-ghost btn-sm" onClick={() => copyLink(a.share_token!)}>🔗</button> : null}
+                {a.share_token && d.results_published && a.score != null ? <>
+                  <a className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer" title={`Send on WhatsApp${a.parent_phone || a.phone ? ` to ${a.parent_phone || a.phone}` : ""}`}
+                    href={`https://wa.me/${waNumber(a.parent_phone || a.phone)}?text=${encodeURIComponent(resultMessage(a, d.title, org?.name ?? ""))}`}>WhatsApp</a>
+                  <button className="btn btn-ghost btn-sm" title="Copy report link" onClick={() => copyLink(a.share_token!)}>🔗</button>
+                </> : null}
               </div></td>
             </tr>))}
           </tbody>

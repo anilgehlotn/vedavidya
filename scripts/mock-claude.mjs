@@ -47,6 +47,17 @@ function paperFrom(text) {
   };
 }
 
+function importedPaper(content, hasKey) {
+  const pages = content.filter((b) => b.type === "image" || b.type === "document").length;
+  stats.lastImport = { pages, hasKey };
+  const mk = (n, type, marks) => ({ id: `q${n}`, type, text: `Printed question ${n}`, options: type === "mcq" ? ["A", "B", "C", "D"] : [],
+    correct_option: type === "mcq" ? 1 : null, numeric_answer: null, marks, negative_marks: 0, difficulty: "medium", topic: "Imported",
+    solution: hasKey ? "From answer key" : "Solved", rubric: [{ step: "Working", marks: marks / 2 }, { step: "Answer", marks: marks / 2 }] });
+  return { title: "Imported Unit Test", instructions: "All questions compulsory.", sections: [
+    { name: "Section A", instructions: "", questions: [mk(1, "mcq", 1), mk(2, "mcq", 1)] },
+    { name: "Section B", instructions: "", questions: [mk(3, "short", 3), mk(4, "long", 5)] }] };
+}
+
 function evaluationFrom(text) {
   const key = JSON.parse(text.split("Answer key with rubrics (JSON):\n")[1].split("\n\nEvaluate every question")[0]);
   return {
@@ -116,7 +127,9 @@ http.createServer((req, res) => {
           : apiError(res, 529, "overloaded_error", "Overloaded");
       }
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
-      const out = /Create an original question paper/.test(text) ? paperFrom(text) : evaluationFrom(text);
+      const out = /Create an original question paper/.test(text) ? paperFrom(text)
+        : /Transcribe this question paper/.test(text) ? importedPaper(content, /ANSWER KEY/.test(text))
+        : evaluationFrom(text);
       return setTimeout(() => streamText(res, body.model, JSON.stringify(out)), rnd(100, 600));
     }
     apiError(res, 404, "not_found_error", `no route ${req.method} ${url.pathname}`);
