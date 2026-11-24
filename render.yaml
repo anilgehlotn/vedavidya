@@ -3,7 +3,7 @@ services:
   - type: web
     name: vedavidya
     runtime: docker
-    plan: starter
+    plan: free
     healthCheckPath: /api/health
     envVars:
       - key: JWT_SECRET
@@ -12,7 +12,3 @@ services:
         sync: false
       - key: SEED_DEMO
         value: "true"
-    disk:
-      name: vedavidya-data
-      mountPath: /data
-      sizeGB: 5
