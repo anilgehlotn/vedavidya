@@ -147,6 +147,9 @@ http.createServer((req, res) => {
         if (b.type === "document" && b.source.media_type !== "application/pdf") return reject("bad document type");
       }
       stats.messages++;
+      stats.byModel = stats.byModel ?? {};
+      stats.byModel[body.model] = (stats.byModel[body.model] ?? 0) + 1;
+      if (body.fallbacks && /haiku/.test(body.model)) stats.haikuWithFallback = (stats.haikuWithFallback ?? 0) + 1;
       if (Math.random() < FAIL_RATE) {
         stats.failsInjected++;
         return Math.random() < 0.5

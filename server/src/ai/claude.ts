@@ -4,11 +4,40 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import fs from "node:fs";
 import path from "node:path";
-import { one } from "../db.js";
+import { one, run } from "../db.js";
 import { decrypt } from "../secrets.js";
 import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, SubtopicTags, type Section } from "./schemas.js";
 
-export const MODEL = process.env.CLAUDE_MODEL ?? "claude-opus-5-5";
+// ---- Which model does which job ----
+// "mixed" (default): the strongest model writes question papers and answer keys (one request per test, and an
+// error there affects every student), the low-cost model marks each answer sheet, and the mid model re-checks
+// only doubtful answers. Institutes can switch to one model for everything in Settings → AI engine.
+export const MODELS = {
+  opus: process.env.CLAUDE_MODEL_STRONG ?? "claude-opus-5-5",
+  sonnet: process.env.CLAUDE_MODEL_MID ?? "claude-sonnet-5-5",
+  haiku: process.env.CLAUDE_MODEL_FAST ?? "claude-haiku-5-5",
+};
+export type AiTask = "paper" | "marking" | "recheck" | "tagging" | "practice" | "brief";
+export type AiMode = "mixed" | "sonnet" | "opus";
+export const AI_MODES: Record<AiMode, Record<AiTask, string | null>> = {
+  mixed: { paper: MODELS.opus, marking: MODELS.haiku, recheck: MODELS.sonnet, tagging: MODELS.haiku, practice: MODELS.sonnet, brief: MODELS.sonnet },
+  sonnet: { paper: MODELS.sonnet, marking: MODELS.sonnet, recheck: null, tagging: MODELS.sonnet, practice: MODELS.sonnet, brief: MODELS.sonnet },
+  opus: { paper: MODELS.opus, marking: MODELS.opus, recheck: null, tagging: MODELS.opus, practice: MODELS.opus, brief: MODELS.opus },
+};
+/** USD per million tokens (input, output, cache read, cache write), used for the cost estimate in Settings. */
+export const PRICES: Record<string, { in: number; out: number; cacheRead: number; cacheWrite: number }> = {
+  "claude-opus-5-5": { in: 4, out: 20, cacheRead: 0.2, cacheWrite: 5 },
+  "claude-sonnet-5-5": { in: 2, out: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+  "claude-haiku-5-5": { in: 0.1, out: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+};
+export const aiModeOf = (orgId: string): AiMode => {
+  const m = one<{ ai_mode: string | null }>("SELECT ai_mode FROM orgs WHERE id = ?", orgId)?.ai_mode;
+  return m === "sonnet" || m === "opus" ? m : "mixed";
+};
+/** The model for a job, or null when the job is switched off in this mode (re-checks outside "mixed"). */
+export const modelFor = (orgId: string, task: AiTask) => AI_MODES[aiModeOf(orgId)][task];
+// Server-side refusal fallback is available on these models (not on Haiku).
+const HAS_FALLBACK = new Set(["claude-opus-5-5", "claude-sonnet-5-5"]);
 const MAX_REQUEST_BYTES = 30 * 1024 * 1024; // API request limit is 32 MB
 
 export class AiError extends Error {}
@@ -53,15 +82,17 @@ function describeError(e: unknown): string {
 // One structured-output request, streamed (large outputs). Uses server-side refusal fallback;
 // if the API rejects that option, retries once without it.
 async function structured<T>(orgId: string, opts: {
+  task: AiTask;
   system: string;
   content: Anthropic.Beta.BetaContentBlockParam[];
   format: ReturnType<typeof zodOutputFormat<any>>;
   effort: "low" | "medium" | "high";
 }): Promise<T> {
   const client = clientFor(orgId);
+  const model = modelFor(orgId, opts.task) ?? MODELS.sonnet;
   const run = async (withFallback: boolean) => {
     const params: any = {
-      model: MODEL,
+      model,
       max_tokens: 64000,
       system: opts.system,
       output_config: { effort: opts.effort, format: opts.format },
@@ -69,6 +100,7 @@ async function structured<T>(orgId: string, opts: {
     };
     if (withFallback) { params.betas = ["server-side-fallback-2026-07-01"]; params.fallbacks = "default"; }
     const msg: any = await client.beta.messages.stream(params).finalMessage();
+    recordUsage(orgId, opts.task, msg.model ?? model, msg.usage);
     if (msg.stop_reason === "refusal") throw new AiError("Claude declined this request.");
     if (msg.stop_reason === "max_tokens") throw new AiError("The response was too long. Try fewer questions or fewer pages.");
     const text = msg.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
@@ -76,7 +108,7 @@ async function structured<T>(orgId: string, opts: {
     catch { throw new AiError("Claude's answer couldn't be read. Please try again."); }
   };
   try {
-    try { return await run(true); }
+    try { return await run(HAS_FALLBACK.has(model)); }
     catch (e) {
       if (e instanceof Anthropic.BadRequestError && /fallback|beta/i.test(e.message)) return await run(false);
       throw e;
@@ -87,15 +119,26 @@ async function structured<T>(orgId: string, opts: {
   }
 }
 
-/** Checks a key without spending tokens: looks up the model this app uses. */
+/** Checks a key without spending tokens: confirms the account can use every model the app may call. */
 export async function verifyKey(apiKey: string): Promise<{ ok: true; model: string } | { ok: false; error: string }> {
-  try {
-    const m = await new Anthropic({ apiKey, maxRetries: 1, timeout: 20000 }).models.retrieve(MODEL);
-    return { ok: true, model: (m as any).display_name ?? MODEL };
-  } catch (e) {
-    if (e instanceof Anthropic.NotFoundError) return { ok: false, error: `The key works, but this account can't use ${MODEL}.` };
-    return { ok: false, error: describeError(e) };
+  const c = new Anthropic({ apiKey, maxRetries: 1, timeout: 20000 });
+  const names: string[] = [];
+  for (const id of [...new Set(Object.values(MODELS))]) {
+    try { const m = await c.models.retrieve(id); names.push((m as any).display_name ?? id); }
+    catch (e) {
+      if (e instanceof Anthropic.NotFoundError) return { ok: false, error: `The key works, but this account can't use ${id}.` };
+      return { ok: false, error: describeError(e) };
+    }
   }
+  return { ok: true, model: names.join(", ") };
+}
+
+/** Saves the tokens of one request, so Settings can show this month's AI bill. Never fails the request. */
+function recordUsage(orgId: string, task: AiTask, model: string, u: any) {
+  try {
+    run(`INSERT INTO ai_usage (org_id, task, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) VALUES (?,?,?,?,?,?,?)`,
+      orgId, task, String(model).slice(0, 60), u?.input_tokens ?? 0, u?.output_tokens ?? 0, u?.cache_read_input_tokens ?? 0, u?.cache_creation_input_tokens ?? 0);
+  } catch (e) { console.error("usage not recorded:", e); }
 }
 
 export interface PaperSpec {
@@ -115,6 +158,7 @@ export async function generatePaper(orgId: string, spec: PaperSpec) {
     .map((s, i) => `${i + 1}. "${s.name}": ${s.count} × ${s.type} questions, ${s.marks_each} marks each${s.negative_marks ? `, -${s.negative_marks} for wrong answers` : ""}`)
     .join("\n");
   return structured<{ title: string; instructions: string; sections: Section[] }>(orgId, {
+    task: "paper",
     effort: "medium",
     format: zodOutputFormat(GeneratedPaper),
     system:
@@ -149,7 +193,7 @@ function fileBlocks(files: string[]): Anthropic.Beta.BetaContentBlockParam[] {
   });
 }
 
-export async function evaluateSheet(orgId: string, paper: { title: string; subject: string | null; sections: Section[] }, files: string[]) {
+export async function evaluateSheet(orgId: string, paper: { title: string; subject: string | null; sections: Section[] }, files: string[], task: "marking" | "recheck" = "marking") {
   if (!files.length) throw new AiError("No pages uploaded for this student.");
   const key = paper.sections.flatMap((s) => s.questions).map((q) => ({
     id: q.id, type: q.type, marks: q.marks, negative_marks: q.negative_marks, question: q.text,
@@ -159,6 +203,7 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
   }));
   const blocks = fileBlocks(files);
   return structured<import("./schemas.js").SheetEvaluation>(orgId, {
+    task,
     effort: "high",
     format: zodOutputFormat(SheetEvaluation),
     system:
@@ -189,6 +234,7 @@ export async function importPaper(orgId: string, paperFiles: string[], keyFiles:
   const qBlocks = paperBlocks.slice(0, paperFiles.length);
   const kBlocks = paperBlocks.slice(paperFiles.length);
   return structured<{ title: string; instructions: string; sections: Section[] }>(orgId, {
+    task: "paper",
     effort: "high",
     format: zodOutputFormat(GeneratedPaper),
     system:
@@ -219,6 +265,7 @@ export async function importPaper(orgId: string, paperFiles: string[], keyFiles:
 /** Names the chapter and exact sub-topic of each question of an existing paper (for papers made before sub-topics existed). */
 export async function tagSubtopics(orgId: string, paper: { subject: string | null; class_level: string | null; questions: { id: string; text: string; topic: string; solution: string }[] }) {
   return structured<import("./schemas.js").SubtopicTags>(orgId, {
+    task: "tagging",
     effort: "low",
     format: zodOutputFormat(SubtopicTags),
     system: "You are an experienced Indian school and coaching teacher. You classify exam questions by chapter and the exact concept they test.",
@@ -242,6 +289,7 @@ export async function generatePractice(orgId: string, ctx: {
   practiceCount: number; checkupCount: number;
 }) {
   return structured<import("./schemas.js").PracticePlan>(orgId, {
+    task: "practice",
     effort: "medium",
     format: zodOutputFormat(PracticePlan),
     system:
@@ -266,6 +314,7 @@ export async function generateBrief(orgId: string, ctx: {
   title: string; subject: string | null; students: number; questions: unknown[]; examples: unknown[]; mistakeTotals: Record<string, number>;
 }) {
   return structured<import("./schemas.js").ReteachBrief>(orgId, {
+    task: "brief",
     effort: "medium",
     format: zodOutputFormat(ReteachBrief),
     system:

@@ -363,7 +363,61 @@ export function Settings() {
   );
 }
 
-interface AiStatus { demo: boolean; configured: boolean; hint: string | null; model: string }
+type AiMode = "mixed" | "sonnet" | "opus";
+interface AiStatus { demo: boolean; configured: boolean; hint: string | null; mode: AiMode; models: Record<string, string | null> }
+interface AiUsage { month: string; total_usd: number; sheets_marked: number; usd_per_sheet: number | null; items: { task: string; label: string; model: string; calls: number; usd: number }[] }
+const INR = 85; // approximate rupees per US dollar, for the estimate only
+const inr = (usd: number) => `₹${(usd * INR).toLocaleString("en-IN", { maximumFractionDigits: usd * INR < 10 ? 2 : 0 })}`;
+const MODEL_NAME = (id: string | null) => (!id ? "off" : /haiku/.test(id) ? "Haiku" : /sonnet/.test(id) ? "Sonnet" : /opus/.test(id) ? "Opus" : id);
+const MODES: { id: AiMode; title: string; desc: string; cost: string }[] = [
+  { id: "mixed", title: "Mixed (recommended)", desc: "Opus reads papers and writes answer keys, Haiku marks every sheet, Sonnet re-checks doubtful answers.", cost: "≈ ₹0.5–1 per sheet" },
+  { id: "sonnet", title: "Sonnet for everything", desc: "Stronger marking on every answer. No second check.", cost: "≈ ₹5 per sheet" },
+  { id: "opus", title: "Opus for everything", desc: "Most capable model everywhere. For board pre-tests and important exams.", cost: "≈ ₹11 per sheet" },
+];
+
+/** Which models the institute uses, and this month's estimated AI bill. */
+function AiModeCard({ isAdmin, status, onChange }: { isAdmin: boolean; status: AiStatus; onChange: (s: AiStatus) => void }) {
+  const usage = useApi<AiUsage>("/settings/ai/usage");
+  const [err, setErr] = useState<string | null>(null);
+  const pick = async (mode: AiMode) => {
+    setErr(null);
+    try { onChange(await api<AiStatus>("/settings/ai/mode", { method: "PUT", body: { mode } })); } catch (e) { setErr((e as Error).message); }
+  };
+  const u = usage.data;
+  return (
+    <div className="stack" style={{ borderTop: "1px solid var(--line)", paddingTop: 14, marginTop: 4 }}>
+      <b>Marking quality and cost</b>
+      <div className="stack" style={{ gap: 8 }}>
+        {MODES.map((m) => (
+          <label key={m.id} className={`mode-opt ${status.mode === m.id ? "on" : ""}`}>
+            <input type="radio" name="ai-mode" checked={status.mode === m.id} disabled={!isAdmin || status.demo} onChange={() => pick(m.id)} />
+            <span className="grow"><b>{m.title}</b><span className="small muted" style={{ display: "block" }}>{m.desc}</span></span>
+            <span className="small" style={{ whiteSpace: "nowrap" }}>{m.cost}</span>
+          </label>
+        ))}
+      </div>
+      <div className="small muted">Now: papers → {MODEL_NAME(status.models.paper)} · marking → {MODEL_NAME(status.models.marking)} · second check → {MODEL_NAME(status.models.recheck)}{!isAdmin && " · Only an admin can change this."}</div>
+      <ErrorBox error={err} />
+      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+        <div className="row between"><b>This month's AI cost</b>{u && <span className="small muted">{new Date(u.month + "-01").toLocaleDateString("en-IN", { month: "long", year: "numeric" })}</span>}</div>
+        {!u ? <Loading /> : !u.items.length ? <p className="small muted">No AI used yet this month.</p> : (
+          <>
+            <div className="row wrap" style={{ gap: 24, margin: "10px 0" }}>
+              <div><div className="small muted">Estimated total</div><b style={{ fontSize: 22 }}>{inr(u.total_usd)}</b> <span className="small muted">(${u.total_usd.toFixed(2)})</span></div>
+              <div><div className="small muted">Sheets marked</div><b style={{ fontSize: 22 }}>{u.sheets_marked}</b></div>
+              {u.usd_per_sheet != null && <div><div className="small muted">Per sheet (incl. second checks)</div><b style={{ fontSize: 22 }}>{inr(u.usd_per_sheet)}</b></div>}
+            </div>
+            <div className="table-wrap"><table className="t">
+              <thead><tr><th>Job</th><th>Model</th><th>Requests</th><th>Cost</th></tr></thead>
+              <tbody>{u.items.map((i) => <tr key={i.task + i.model}><td className="small">{i.label}</td><td className="small">{MODEL_NAME(i.model)}</td><td className="small">{i.calls}</td><td className="small">{inr(i.usd)}</td></tr>)}</tbody>
+            </table></div>
+          </>
+        )}
+        <p className="small muted" style={{ marginTop: 8 }}>An estimate from token counts at list prices (≈ ₹{INR} per $). Your exact bill is in the Anthropic Console.</p>
+      </div>
+    </div>
+  );
+}
 function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
   const st = useApi<AiStatus>("/settings/ai");
   const [key, setKey] = useState("");
@@ -389,7 +443,7 @@ function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
         <p className="small muted">{s.configured ? "AI marking is ready." : "Ask your institute admin to add a Claude API key here."}</p>
       ) : (
         <>
-          <p className="small muted">Paste your key from console.anthropic.com → API Keys. It is checked, then stored encrypted and never shown again. Model: <code>{s.model}</code></p>
+          <p className="small muted">Paste your key from console.anthropic.com → API Keys. It is checked (it needs access to Claude Opus, Sonnet and Haiku), then stored encrypted and never shown again.</p>
           <form className="row wrap" onSubmit={(e) => { e.preventDefault(); act("save"); }}>
             <input className="input grow" type="password" autoComplete="off" spellCheck={false} placeholder={s.configured ? "Paste a new key to replace the current one" : "sk-ant-..."} value={key} onChange={(e) => setKey(e.target.value)} style={{ minWidth: 220 }} />
             <button className="btn btn-primary" disabled={!key.trim() || !!busy}>{busy === "save" ? "Checking…" : "Save key"}</button>
@@ -404,6 +458,7 @@ function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
       )}
       {msg.ok && <div className="ok-box">{msg.ok}</div>}
       {msg.err && <div className="error-box">{msg.err}</div>}
+      {s && !s.demo && <AiModeCard isAdmin={isAdmin} status={s} onChange={(n) => st.setData(n)} />}
     </div>
   );
 }

@@ -19,6 +19,8 @@ export interface QuestionEvaluation {
   steps: { step: string; max_marks: number; awarded: number; comment: string }[];
   marks_awarded: number; max_marks: number; feedback: string; confidence: "high" | "medium" | "low";
   mistake_type?: string; mistake_note?: string;
+  /** Set by the second check in mixed mode. */
+  second_check?: "agreed" | "changed" | "failed"; first_marks?: number; needs_review?: boolean; check_note?: string;
 }
 export interface SheetEvaluation {
   student_name_on_sheet: string | null; questions: QuestionEvaluation[]; overall_feedback: string; strengths: string[]; gaps: string[];

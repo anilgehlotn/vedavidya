@@ -73,7 +73,7 @@ automatically, and sheets that were being marked when the server restarted are r
 ### Testing without an API key
 
 `scripts/mock-claude.mjs` imitates the Claude API, including streaming, its size limits and random 429/529 errors.
-`scripts/e2e-api.mjs` runs 301 checks over every endpoint, including a 50-student upload and marking run, role and
+`scripts/e2e-api.mjs` runs 345 checks over every endpoint, including a 50-student upload and marking run, role and
 institute isolation, and cleanup. `scripts/e2e-institute.mjs` simulates a full institute: classes 8–12 with 20–30 students, 4 subject
 teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart.
 
@@ -133,7 +133,7 @@ Run `npm audit --omit=dev` before each release.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CLAUDE_MODEL` | `claude-opus-5-5` | Model used for generation and evaluation |
+| `CLAUDE_MODEL_STRONG` / `_MID` / `_FAST` | `claude-opus-5-5` / `claude-sonnet-5-5` / `claude-haiku-5-5` | Models behind each tier. Each institute picks Mixed (Opus writes papers and answer keys, Haiku marks, Sonnet re-checks doubtful answers), Sonnet-only or Opus-only in Settings → AI engine |
 | `JWT_SECRET` | dev value | **Required in production**. Also encrypts stored API keys, so if you change it, re-enter the key |
 | `ALLOW_SIGNUP` | `true` | Set `false` to stop strangers creating institutes from the login page |
 | `SEED_DEMO` | `true` (Docker) | Creates the public demo institute on first start |

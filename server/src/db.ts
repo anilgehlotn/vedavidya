@@ -165,3 +165,15 @@ addColumn("tests", "brief_error", "TEXT");
 }
 addColumn("tests", "subject", "TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tests_org ON tests(org_id)");
+
+// ---- Which Claude models an institute uses, and what each AI request cost (for the monthly bill) ----
+addColumn("orgs", "ai_mode", "TEXT DEFAULT 'mixed'");
+db.exec(`CREATE TABLE IF NOT EXISTS ai_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  task TEXT NOT NULL, model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_org ON ai_usage(org_id, created_at)");

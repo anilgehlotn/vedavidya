@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import { all, json, one, run, uid, UPLOAD_DIR } from "../db.js";
 import { staff, requireRole } from "../auth.js";
-import { evaluateSheet, AiError, aiProblem } from "../ai/claude.js";
+import { evaluateSheet, AiError, aiProblem, modelFor } from "../ai/claude.js";
 import { normalisePage, removeFiles, UploadError } from "../images.js";
 import { queuePracticeForTest } from "./practice.js";
 import { ensureSubtopics } from "./papers.js";
@@ -117,13 +117,15 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
   if (t.results_published)
     for (const m of all<{ id: string }>("SELECT a.id FROM attempts a WHERE a.test_id = ? AND a.score IS NOT NULL AND NOT EXISTS (SELECT 1 FROM share_tokens s WHERE s.attempt_id = a.id)", t.id))
       run("INSERT OR IGNORE INTO share_tokens (token, attempt_id) VALUES (?, ?)", crypto.randomBytes(12).toString("base64url"), m.id);
-  const attempts = all<any>(`SELECT a.id, a.status, a.score, a.max_score, a.error, a.reviewed, a.files, a.submitted_at,
+  const attempts = all<any>(`SELECT a.id, a.status, a.score, a.max_score, a.error, a.reviewed, a.files, a.submitted_at, a.evaluation,
       u.id AS student_id, u.name AS student_name, u.phone, e.parent_phone, e.roll_no, b.name AS batch_name,
       (SELECT token FROM share_tokens s WHERE s.attempt_id = a.id) AS share_token
     FROM attempts a JOIN users u ON u.id = a.student_id
     LEFT JOIN enrollments e ON e.student_id = u.id LEFT JOIN batches b ON b.id = e.batch_id
     WHERE a.test_id = ? ORDER BY b.name, CAST(e.roll_no AS INTEGER), u.name`, t.id)
-    .map((a) => ({ ...a, files: json<string[]>(a.files, []).length }));
+    .map(({ evaluation, ...a }) => ({ ...a, files: json<string[]>(a.files, []).length,
+      // Answers the teacher should look at (cleared once the sheet is reviewed).
+      checks: a.reviewed ? 0 : (json<SheetEvaluation | null>(evaluation, null)?.questions ?? []).filter((q) => (q as CheckedQ).needs_review).length }));
   const paper = paperFor(t.id);
   res.json({ ...t, paper, paper_problem: paperProblem(paper), attempts });
 });
@@ -245,6 +247,50 @@ function scoreEvaluation(ev: SheetEvaluation, questions: Question[]) {
   return ev.questions.filter((qe) => byId.has(qe.question_id)).reduce((t, qe) => t + qe.marks_awarded, 0);
 }
 
+// ---- Second check (mixed mode): the low-cost model marks every sheet; doubtful answers are marked again,
+// independently, by a stronger model. Big disagreements are flagged for the teacher. ----
+type CheckedQ = SheetEvaluation["questions"][number] & { second_check?: "agreed" | "changed" | "failed"; first_marks?: number; needs_review?: boolean; check_note?: string };
+
+/** Questions worth a second look: unsure handwriting, partial marks on longer written answers, marks that don't add up, or a total near the pass mark. */
+export function doubtfulQuestions(ev: SheetEvaluation, questions: Question[]): string[] {
+  const byId = new Map(questions.map((q) => [q.id, q]));
+  const max = questions.reduce((t, q) => t + q.marks, 0);
+  const total = ev.questions.reduce((t, q) => t + (byId.has(q.question_id) ? q.marks_awarded : 0), 0);
+  const nearPass = max > 0 && Math.abs(total / max - 0.33) <= 0.05;
+  const ids: string[] = [];
+  for (const qe of ev.questions) {
+    const q = byId.get(qe.question_id);
+    if (!q) continue;
+    const written = !isObjective(q);
+    const stepSum = qe.steps.reduce((t, st) => t + st.awarded, 0);
+    if (qe.confidence !== "high"
+      || (written && q.marks >= 4 && qe.marks_awarded > 0 && qe.marks_awarded < q.marks)
+      || (written && qe.steps.length > 0 && Math.abs(stepSum - qe.marks_awarded) > 0.01)
+      || (written && nearPass && qe.marks_awarded < q.marks)) ids.push(q.id);
+  }
+  return ids;
+}
+
+/** Merges the second marking into the first. Returns how many answers now need the teacher. */
+export function mergeSecondCheck(ev: SheetEvaluation, second: SheetEvaluation | null, ids: string[], questions: Question[]) {
+  const byId = new Map(questions.map((q) => [q.id, q]));
+  const again = new Map((second?.questions ?? []).map((q) => [q.question_id, q]));
+  ev.questions = ev.questions.map((qe0) => {
+    const qe = qe0 as CheckedQ;
+    const q = byId.get(qe.question_id);
+    if (!q || !ids.includes(qe.question_id)) return qe;
+    const b = again.get(qe.question_id) as CheckedQ | undefined;
+    if (!b) return { ...qe, second_check: "failed", needs_review: true, check_note: "The second check didn't finish. Please check this answer." } as CheckedQ;
+    const gap = Math.abs(qe.marks_awarded - b.marks_awarded);
+    if (gap <= Math.max(0.5, q.marks * 0.1)) return { ...qe, second_check: "agreed", needs_review: qe.confidence === "low" && b.confidence === "low" } as CheckedQ;
+    // They disagree: trust the stronger model, keep the first mark for the teacher to see.
+    const big = gap >= Math.max(1, q.marks * 0.25) || b.confidence === "low";
+    return { ...b, second_check: "changed", first_marks: qe.marks_awarded, needs_review: big,
+      check_note: big ? `Two AI checks disagreed (${qe.marks_awarded} vs ${b.marks_awarded} of ${q.marks}). Please check.` : "" } as CheckedQ;
+  });
+  return ev.questions.filter((q) => (q as CheckedQ).needs_review).length;
+}
+
 async function runEvaluation(attemptId: string) {
   const a = one<any>("SELECT * FROM attempts WHERE id = ?", attemptId);
   if (!a) return;
@@ -256,9 +302,21 @@ async function runEvaluation(attemptId: string) {
   run("UPDATE attempts SET status = 'evaluating', error = NULL WHERE id = ?", attemptId);
   try {
     const files = json<string[]>(a.files, []).map((f) => path.join(UPLOAD_DIR, f));
-    const ev = await evaluateSheet(t.org_id, paper!, files);
+    const ev = await evaluateSheet(t.org_id, paper!, files, "marking");
     if (!Array.isArray(ev?.questions)) throw new AiError("Claude's answer couldn't be read. Please try again.");
-    const score = scoreEvaluation(ev, questionsOf(paper!.sections));
+    const questions = questionsOf(paper!.sections);
+    scoreEvaluation(ev, questions);
+    // Unsure answers are always flagged; in mixed mode doubtful ones are also marked again by a stronger model.
+    for (const qe of ev.questions as CheckedQ[]) if (qe.confidence === "low") { qe.needs_review = true; qe.check_note = "Handwriting was hard to read. Please check."; }
+    const doubtful = modelFor(t.org_id, "recheck") ? doubtfulQuestions(ev, questions) : [];
+    if (doubtful.length) {
+      const subset = { ...paper!, sections: paper!.sections.map((sec) => ({ ...sec, questions: sec.questions.filter((q) => doubtful.includes(q.id)) })).filter((sec) => sec.questions.length) };
+      let second: SheetEvaluation | null = null;
+      try { second = await evaluateSheet(t.org_id, subset, files, "recheck"); if (second?.questions) scoreEvaluation(second, questions); }
+      catch (e) { console.error(`Second check failed for ${attemptId}:`, e instanceof AiError ? e.message : e); }
+      mergeSecondCheck(ev, second, doubtful, questions);
+    }
+    const score = scoreEvaluation(ev, questions);
     run("UPDATE attempts SET status = 'evaluated', evaluation = ?, score = ?, max_score = ?, reviewed = 0, evaluated_at = CURRENT_TIMESTAMP WHERE id = ?",
       JSON.stringify(ev), score, paper!.total_marks, attemptId);
     // A re-marked sheet gets a fresh Fix-it plan (if results are already out).

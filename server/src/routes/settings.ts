@@ -1,17 +1,18 @@
 // Settings → AI engine: each institute's admin saves its own Claude API key (stored encrypted, never returned).
 import { Router } from "express";
 import { z } from "zod";
-import { one, run } from "../db.js";
+import { all, one, run } from "../db.js";
 import { adminOnly, staff } from "../auth.js";
 import { encrypt, decrypt } from "../secrets.js";
-import { verifyKey, forgetClients, MODEL } from "../ai/claude.js";
+import { verifyKey, forgetClients, aiModeOf, AI_MODES, PRICES, type AiMode } from "../ai/claude.js";
 import { rateLimit } from "../ratelimit.js";
 
 export const settingsRoutes = Router();
 
 const status = (orgId: string) => {
   const o = one<{ is_demo: number; claude_key_enc: string | null; claude_key_hint: string | null }>("SELECT is_demo, claude_key_enc, claude_key_hint FROM orgs WHERE id = ?", orgId)!;
-  return { demo: Boolean(o.is_demo), configured: Boolean(decrypt(o.claude_key_enc)), hint: o.claude_key_hint, model: MODEL };
+  const mode = aiModeOf(orgId);
+  return { demo: Boolean(o.is_demo), configured: Boolean(decrypt(o.claude_key_enc)), hint: o.claude_key_hint, mode, models: AI_MODES[mode] };
 };
 
 settingsRoutes.get("/settings/ai", staff, (req, res) => res.json(status(req.user!.org_id)));
@@ -46,4 +47,31 @@ settingsRoutes.delete("/settings/ai", adminOnly, (req, res) => {
   run("UPDATE orgs SET claude_key_enc = NULL, claude_key_hint = NULL WHERE id = ?", req.user!.org_id);
   forgetClients();
   res.json(status(req.user!.org_id));
+});
+
+// Which models the institute uses: "mixed" (recommended), or one model for everything.
+settingsRoutes.put("/settings/ai/mode", adminOnly, (req, res) => {
+  const { mode } = z.object({ mode: z.enum(["mixed", "sonnet", "opus"]) }).parse(req.body);
+  run("UPDATE orgs SET ai_mode = ? WHERE id = ?", mode satisfies AiMode, req.user!.org_id);
+  res.json(status(req.user!.org_id));
+});
+
+const TASK_LABEL: Record<string, string> = { paper: "Reading / writing question papers", marking: "Marking answer sheets", recheck: "Second checks of doubtful answers",
+  tagging: "Naming sub-topics", practice: "Fix-it practice", brief: "Re-teach briefs" };
+const costOf = (model: string, r: { input: number; output: number; cache_read: number; cache_write: number }) => {
+  const p = PRICES[model] ?? PRICES["claude-opus-5-5"]; // unknown model: estimate high rather than low
+  return (r.input * p.in + r.output * p.out + r.cache_read * p.cacheRead + r.cache_write * p.cacheWrite) / 1e6;
+};
+
+/** This month's AI usage and estimated cost (USD), by job and model. The Anthropic Console has the exact bill. */
+settingsRoutes.get("/settings/ai/usage", staff, (req, res) => {
+  const month = typeof req.query.month === "string" && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : new Date().toISOString().slice(0, 7);
+  const rows = all<{ task: string; model: string; calls: number; input: number; output: number; cache_read: number; cache_write: number }>(`
+    SELECT task, model, count(*) calls, sum(input_tokens) input, sum(output_tokens) output, sum(cache_read_tokens) cache_read, sum(cache_write_tokens) cache_write
+    FROM ai_usage WHERE org_id = ? AND substr(created_at, 1, 7) = ? GROUP BY task, model ORDER BY task, model`, req.user!.org_id, month);
+  const items = rows.map((r) => ({ ...r, label: TASK_LABEL[r.task] ?? r.task, usd: Math.round(costOf(r.model, r) * 10000) / 10000 }));
+  const total = items.reduce((t, i) => t + i.usd, 0);
+  const sheets = items.filter((i) => i.task === "marking").reduce((t, i) => t + i.calls, 0);
+  const sheetCost = items.filter((i) => i.task === "marking" || i.task === "recheck").reduce((t, i) => t + i.usd, 0);
+  res.json({ month, items, total_usd: Math.round(total * 100) / 100, sheets_marked: sheets, usd_per_sheet: sheets ? Math.round((sheetCost / sheets) * 10000) / 10000 : null });
 });

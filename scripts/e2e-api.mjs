@@ -532,6 +532,54 @@ section("Test first, paper later (guided flow)");
   await expect("delete test without paper", 200, "DELETE", `/tests/${c}`, { token: teacher });
 }
 
+section("Mixed models: routing, second check, cost meter");
+{
+  const st = (await expect("AI status", 200, "GET", "/settings/ai", { token: admin })).data;
+  ok(st.mode === "mixed" && /opus/.test(st.models.paper) && /haiku/.test(st.models.marking) && /sonnet/.test(st.models.recheck), `mixed by default (${JSON.stringify(st.models)})`);
+  const u = (await expect("usage", 200, "GET", "/settings/ai/usage", { token: teacher })).data;
+  const keys = u.items.map((i) => `${i.task}:${i.model}`);
+  ok(keys.some((k) => /^paper:claude-opus/.test(k)), "question papers used Opus");
+  ok(keys.some((k) => /^marking:claude-haiku/.test(k)), "answer sheets marked with Haiku");
+  ok(keys.some((k) => /^recheck:claude-sonnet/.test(k)), "doubtful answers re-checked with Sonnet");
+  ok(!keys.some((k) => /^marking:claude-(opus|sonnet)/.test(k)), "no sheet marked with a pricier model in mixed mode");
+  ok(u.total_usd > 0 && u.sheets_marked >= N && u.usd_per_sheet > 0, `cost meter: $${u.total_usd}, ${u.sheets_marked} sheets, $${u.usd_per_sheet}/sheet`);
+  const ms = await (await fetch((process.env.MOCK_URL ?? "http://localhost:4999") + "/__stats")).json();
+  ok(!ms.haikuWithFallback, "Haiku requests don't send the refusal-fallback option it doesn't support");
+  // The second check leaves a trail on each re-checked answer.
+  const marked = (await call("GET", `/tests/${test}`, { token: teacher })).data.attempts.filter((a) => a.status === "evaluated");
+  let checked = 0, changed = 0, flagged = 0;
+  for (const a of marked.slice(0, 15)) {
+    const ev = (await call("GET", `/attempts/${a.id}`, { token: teacher })).data.evaluation;
+    for (const q of ev.questions) {
+      if (q.second_check) checked++;
+      if (q.second_check === "changed") { changed++; ok(typeof q.first_marks === "number", "changed answers keep the first mark"); }
+      if (q.needs_review) flagged++;
+    }
+  }
+  ok(checked > 0, `answers were second-checked (${checked} checked, ${changed} changed, ${flagged} flagged in 15 sheets)`);
+  const withChecks = marked.find((a) => a.checks > 0 && !a.reviewed);
+  if (withChecks) {
+    await expect("teacher confirms marks", 200, "PUT", `/attempts/${withChecks.id}/evaluation`, { token: teacher, body: { questions: [] } });
+    ok((await call("GET", `/tests/${test}`, { token: teacher })).data.attempts.find((a) => a.id === withChecks.id).checks === 0, "flags clear once the teacher confirms");
+  }
+  // Switching mode
+  await expect("teacher can't change mode", 403, "PUT", "/settings/ai/mode", { token: teacher, body: { mode: "opus" } });
+  await expect("bad mode -> 400", 400, "PUT", "/settings/ai/mode", { token: admin, body: { mode: "gpt" } });
+  const sw = await expect("admin switches to Sonnet", 200, "PUT", "/settings/ai/mode", { token: admin, body: { mode: "sonnet" } });
+  ok(/sonnet/.test(sw.data.models.marking) && sw.data.models.recheck === null, "Sonnet mode: Sonnet marks, no second check");
+  const target = marked[0];
+  await expect("re-mark in Sonnet mode", 200, "POST", `/tests/${test}/evaluate`, { token: teacher, body: { attempt_ids: [target.id] } });
+  for (let i = 0; i < 60; i++) {
+    const a = (await call("GET", `/tests/${test}`, { token: teacher })).data.attempts.find((x) => x.id === target.id);
+    if (a.status !== "evaluating") break;
+    await sleep(300);
+  }
+  const u2 = (await call("GET", "/settings/ai/usage", { token: admin })).data;
+  ok(u2.items.some((i) => i.task === "marking" && /sonnet/.test(i.model)), "marking now uses Sonnet");
+  await expect("back to mixed", 200, "PUT", "/settings/ai/mode", { token: admin, body: { mode: "mixed" } });
+  ok(!(await call("GET", "/settings/ai/usage", { token: otherAdmin })).data.items.length, "other institute sees no usage of ours");
+}
+
 section("Security: roles");
 {
   const staffOnly = [["GET", "/overview"], ["GET", "/students"], ["GET", "/tests"], ["GET", "/papers"], ["GET", `/tests/${test}`], ["POST", `/tests/${test}/evaluate`], ["POST", `/tests/${test}/publish`],

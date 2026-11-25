@@ -131,7 +131,7 @@ function NewTestModal({ paperId, onClose }: { paperId: string | null; onClose: (
   );
 }
 
-interface AttemptRow { phone: string | null; parent_phone: string | null; id: string; status: AttemptStatus; score: number | null; max_score: number | null; error: string | null; reviewed: number; files: number; student_id: string; student_name: string; roll_no: string | null; batch_name: string; share_token: string | null }
+interface AttemptRow { checks: number; phone: string | null; parent_phone: string | null; id: string; status: AttemptStatus; score: number | null; max_score: number | null; error: string | null; reviewed: number; files: number; student_id: string; student_name: string; roll_no: string | null; batch_name: string; share_token: string | null }
 interface TestDetailData extends TestRow { duration_min: number; paper: Paper | null; paper_problem: string | null; attempts: AttemptRow[] }
 
 function UploadCell({ a, onDone }: { a: AttemptRow; onDone: () => void }) {
@@ -225,7 +225,7 @@ export function TestDetail() {
   const nav = useNavigate();
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | AttemptStatus>("all");
+  const [filter, setFilter] = useState<"all" | "check" | AttemptStatus>("all");
   const [bulk, setBulk] = useState(false);
   const [wizard, setWizard] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -250,7 +250,9 @@ export function TestDetail() {
   const toEvaluate = d.attempts.filter((a) => a.files > 0 && (a.status === "uploaded" || a.status === "failed")).length;
   const marking = d.attempts.filter((a) => a.status === "evaluating").length;
   const submitted = d.attempts.filter((a) => a.status !== "pending" && a.status !== "in_progress").length;
-  const list = d.attempts.filter((a) => filter === "all" || a.status === filter);
+  const list = d.attempts.filter((a) => filter === "all" || (filter === "check" ? a.checks > 0 : a.status === filter));
+  const toCheck = d.attempts.reduce((t, a) => t + (a.checks || 0), 0);
+  const sheetsToCheck = d.attempts.filter((a) => a.checks > 0).length;
   const ranked = [...scored].sort((a, b) => b.score! - a.score!).map((a) => a.id);
   const total = d.paper?.total_marks;
   const offline = d.mode === "offline";
@@ -264,6 +266,7 @@ export function TestDetail() {
     } catch (e) { setErr((e as Error).message); }
   };
   const publish = async (publish: boolean) => {
+    if (publish && toCheck && !confirm(`${toCheck} answer${toCheck > 1 ? "s" : ""} on ${sheetsToCheck} sheet${sheetsToCheck > 1 ? "s" : ""} still need your check. Publish anyway?`)) return;
     const r = await api<{ practice_queued: number }>(`/tests/${d.id}/publish`, { body: { publish } });
     setMsg(publish ? `Results published. Students see them when they log in, and parent links are active.${r.practice_queued ? ` Fix-it practice is being prepared for ${r.practice_queued} student${r.practice_queued === 1 ? "" : "s"}.` : ""}` : "Results hidden from students.");
     ins.reload(true);
@@ -330,6 +333,7 @@ export function TestDetail() {
                 : <button className={`btn ${toEvaluate ? "btn-primary" : "btn-ghost"}`} disabled={!toEvaluate || DEMO} onClick={() => evaluate()}>✦ Mark {toEvaluate || ""} answer sheet{toEvaluate === 1 ? "" : "s"}</button>}
               {toEvaluate > 0 && !marking && d.paper_problem && <span className="small" style={{ color: "var(--amber)" }}>{d.paper_problem}</span>}
               {scored.length > 0 && !marking && <span className="small">{scored.length} marked · average <b>{avg}%</b>. Open any sheet to check or change marks.</span>}
+              {toCheck > 0 && <button className="btn btn-ghost btn-sm" style={{ borderColor: "var(--amber)", color: "var(--amber)" }} onClick={() => setFilter("check")}>⚠ {toCheck} answer{toCheck > 1 ? "s" : ""} need your check</button>}
             </div>
           ) : <div className="small" style={{ marginTop: 8 }}>{scored.length ? <>{scored.length} scored automatically · average <b>{avg}%</b></> : "Scored automatically when each student submits."}</div>}
         </Step>
@@ -359,9 +363,9 @@ export function TestDetail() {
       )}
       {ins.data && scored.length > 0 && <TestInsights testId={d.id} ins={ins.data} published={Boolean(d.results_published)} onReload={() => ins.reload(true)} />}
       <div className="tabs">
-        {(["all", "pending", "uploaded", "evaluating", "evaluated", "failed"] as const).map((s) => {
-          const n = s === "all" ? d.attempts.length : d.attempts.filter((a) => a.status === s).length;
-          const label = { all: "All", pending: "No sheet yet", uploaded: "Uploaded", evaluating: "Marking", evaluated: "Marked", failed: "Problem" }[s];
+        {(["all", "check", "pending", "uploaded", "evaluating", "evaluated", "failed"] as const).map((s) => {
+          const n = s === "all" ? d.attempts.length : s === "check" ? sheetsToCheck : d.attempts.filter((a) => a.status === s).length;
+          const label = { all: "All", check: "⚠ Needs checking", pending: "No sheet yet", uploaded: "Uploaded", evaluating: "Marking", evaluated: "Marked", failed: "Problem" }[s];
           return (s === "all" || n > 0) && <button key={s} className={filter === s ? "on" : ""} onClick={() => setFilter(s)}>{label} ({n})</button>;
         })}
       </div>
@@ -374,6 +378,7 @@ export function TestDetail() {
               <td><b>{a.student_name}</b><div className="small muted">Roll {a.roll_no ?? "—"}{a.files ? ` · ${a.files} page${a.files > 1 ? "s" : ""}` : ""}</div></td>
               <td className="small">{a.batch_name}</td>
               <td><StatusBadge status={a.status} />{a.reviewed ? <span className="badge blue" style={{ marginLeft: 4 }}>Reviewed</span> : null}
+                {a.checks > 0 && <span className="badge amber" style={{ marginLeft: 4 }} title="Answers the AI wasn't sure about">⚠ {a.checks} to check</span>}
                 {a.error && <div className="small" style={{ color: "var(--red)", maxWidth: 260 }}>{a.error}</div>}</td>
               <td>{a.score != null ? <><b>{a.score}</b><span className="muted">/{a.max_score}</span> <ScoreBadge value={pct(a.score, a.max_score)} /></> : "—"}</td>
               {d.results_published ? <td><FixitCell s={ins.data?.practice.by_attempt[a.id]} /></td> : null}
@@ -451,6 +456,7 @@ export function AttemptReview() {
       <PageTitle title={d.student_name} sub={<>{d.test_title} {editable && <>· <Link className="btn-link" to={`/app/tests/${d.test_id}`}>Back to test</Link></>}</>}>
         <div className="card stat" style={{ padding: "10px 18px" }}><div className="label">Total</div><div className="value" style={{ fontSize: 24 }}>{d.score}<span className="muted" style={{ fontSize: 16 }}>/{d.max_score}</span></div></div>
         {editable && dirty && <button className="btn btn-primary" onClick={save}>Save changes</button>}
+        {editable && !dirty && !d.reviewed && ev?.questions.some((q) => q.needs_review) && <button className="btn btn-primary" onClick={save}>✓ Marks look right</button>}
         {!DEMO && d.score != null && <button className="btn btn-primary no-print" onClick={() => download(`/attempts/${d.id}/report.pdf`, `${d.test_title.replace(/\W+/g, "_")}_${d.student_name.replace(/\W+/g, "_")}.pdf`).catch((e) => setSaved(e.message))}>⤓ Report card PDF</button>}
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
       </PageTitle>
@@ -499,7 +505,10 @@ export function AttemptReview() {
                   <div className="grow">
                     <div className="q-meta"><b>Q{i + 1}.</b>{q && <span className="badge">{q.topic}{q.subtopic ? ` › ${q.subtopic}` : ""}</span>}
                       {!qe.attempted && <span className="badge">Not attempted</span>}
-                      {qe.confidence === "low" && <span className="badge amber" title="Handwriting was hard to read - please check">⚠ Check</span>}
+                      {editable && qe.needs_review && !d.reviewed ? <span className="badge amber" title={qe.check_note || "Please check this answer"}>⚠ Please check</span>
+                        : qe.confidence === "low" && <span className="badge amber" title="Handwriting was hard to read - please check">⚠ Check</span>}
+                      {editable && qe.second_check === "agreed" && <span className="badge green" title="A second, stronger AI model marked this answer again and agreed">✓ Double-checked</span>}
+                      {editable && qe.second_check === "changed" && <span className="badge blue" title={`First marked ${qe.first_marks}; a second, stronger AI model gave ${qe.marks_awarded}`}>Corrected by second check (was {qe.first_marks})</span>}
                       {qe.attempted && qe.marks_awarded < qe.max_marks && qe.mistake_type && qe.mistake_type !== "none" && MISTAKES[qe.mistake_type] &&
                         <span className="badge" style={{ color: MISTAKES[qe.mistake_type].color }}>{MISTAKES[qe.mistake_type].label}</span>}</div>
                     <div className="q-text">{q?.text}</div>
@@ -522,6 +531,7 @@ export function AttemptReview() {
                     </div>))}
                   </div>
                 )}
+                {editable && qe.needs_review && !d.reviewed && qe.check_note && <div className="small" style={{ marginTop: 10, padding: "8px 12px", borderRadius: 10, background: "var(--amber-soft)", color: "var(--amber)" }}>⚠ {qe.check_note}</div>}
                 {qe.mistake_note && qe.marks_awarded < qe.max_marks && <p className="small" style={{ marginTop: 10 }}><b>Mistake:</b> {qe.mistake_note}</p>}
                 {qe.feedback && <p className="small" style={{ marginTop: 10 }}><b>Feedback:</b> {qe.feedback}</p>}
               </div>
