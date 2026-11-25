@@ -171,7 +171,7 @@ practiceRoutes.post("/practice/:id/answer", student, (req, res) => {
 
 // ---------------- Teacher side ----------------
 practiceRoutes.get("/tests/:id/insights", staff, (req, res) => {
-  const t = one<any>("SELECT t.*, p.sections FROM tests t JOIN question_papers p ON p.id = t.paper_id WHERE t.id = ? AND t.org_id = ?", req.params.id, req.user!.org_id);
+  const t = one<any>("SELECT t.*, p.sections FROM tests t LEFT JOIN question_papers p ON p.id = t.paper_id WHERE t.id = ? AND t.org_id = ?", req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
   const attempts = all<any>(`SELECT a.id, a.evaluation, a.score, a.max_score FROM attempts a WHERE a.test_id = ? AND a.status = 'evaluated'`, t.id);
   const qs = json<Section[]>(t.sections, []).flatMap((s) => s.questions);
@@ -226,7 +226,7 @@ practiceRoutes.post("/tests/:id/practice", staff, (req, res) => {
 });
 
 practiceRoutes.post("/tests/:id/brief", staff, briefLimit, (req, res) => {
-  const t = one<any>("SELECT t.*, p.sections, p.subject FROM tests t JOIN question_papers p ON p.id = t.paper_id WHERE t.id = ? AND t.org_id = ?", req.params.id, req.user!.org_id);
+  const t = one<any>("SELECT t.*, p.sections, coalesce(nullif(trim(t.subject),''), p.subject) AS subject FROM tests t JOIN question_papers p ON p.id = t.paper_id WHERE t.id = ? AND t.org_id = ?", req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
   const problem = aiProblem(req.user!.org_id);
   if (problem) return res.status(400).json({ error: problem });

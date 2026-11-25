@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, fmtDate } from "../../lib/api";
 import type { Paper, Question, Section } from "../../lib/types";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, useApi } from "../../components/ui";
@@ -103,8 +103,10 @@ const PRESETS: Record<string, { board: string; sections: SectionSpec[]; duration
 
 export function PaperGenerate() {
   const nav = useNavigate();
+  const [qs] = useSearchParams();
+  const forTest = qs.get("test");
   const ai = useApi<{ configured: boolean; demo: boolean }>("/settings/ai");
-  const [f, setF] = useState({ subject: "Physics", board: "CBSE", class_level: "Class 10", topics: "", language: "English", difficulty: "mixed", duration_min: 180, notes: "" });
+  const [f, setF] = useState({ subject: qs.get("subject") || "Physics", board: "CBSE", class_level: "Class 10", topics: "", language: "English", difficulty: "mixed", duration_min: 180, notes: "" });
   const [sections, setSections] = useState<SectionSpec[]>(PRESETS["CBSE board pattern"].sections);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -114,7 +116,12 @@ export function PaperGenerate() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setError(null);
-    try { const r = await api<{ id: string }>("/papers/generate", { body: { ...f, sections } }); nav(`/app/papers/${r.id}`); }
+    try {
+      const r = await api<{ id: string }>("/papers/generate", { body: { ...f, sections } });
+      // Opened from a test: add the new paper to that test and go back to it.
+      if (forTest) { try { await api(`/tests/${forTest}/paper`, { method: "PUT", body: { paper_id: r.id } }); return nav(`/app/tests/${forTest}`); } catch { /* e.g. online tests wait for a ready paper */ } }
+      nav(`/app/papers/${r.id}`);
+    }
     catch (err) { setError((err as Error).message); setBusy(false); }
   };
 

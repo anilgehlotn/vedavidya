@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS question_papers (
 );
 CREATE TABLE IF NOT EXISTS tests (
   id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  paper_id TEXT NOT NULL REFERENCES question_papers(id) ON DELETE CASCADE,
+  paper_id TEXT REFERENCES question_papers(id) ON DELETE CASCADE,
   title TEXT NOT NULL, mode TEXT NOT NULL CHECK (mode IN ('offline','cbt')),
   scheduled_at TEXT, duration_min INTEGER DEFAULT 60,
   results_published INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -137,3 +137,31 @@ CREATE INDEX IF NOT EXISTS idx_practice_test ON practice_sets(test_id);
 addColumn("tests", "brief", "TEXT");
 addColumn("tests", "brief_status", "TEXT");
 addColumn("tests", "brief_error", "TEXT");
+
+// ---- Tests can be created before their question paper is added (older databases had paper_id NOT NULL) ----
+{
+  const col = (db.prepare("PRAGMA table_info(tests)").all() as { name: string; notnull: number }[]).find((c) => c.name === "paper_id");
+  if (col?.notnull) {
+    const { sql } = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tests'").get() as { sql: string };
+    const newSql = sql.replace(/CREATE TABLE "?tests"?/, "CREATE TABLE tests__new").replace(/paper_id TEXT NOT NULL REFERENCES/, "paper_id TEXT REFERENCES");
+    if (newSql === sql || !newSql.includes("tests__new")) throw new Error("tests migration: unexpected schema");
+    const before = (db.prepare("SELECT count(*) n FROM tests").get() as { n: number }).n;
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.exec("BEGIN");
+      db.exec(newSql);
+      db.exec("INSERT INTO tests__new SELECT * FROM tests");
+      db.exec("DROP TABLE tests");
+      db.exec("ALTER TABLE tests__new RENAME TO tests");
+      const after = (db.prepare("SELECT count(*) n FROM tests").get() as { n: number }).n;
+      if (after !== before) throw new Error(`tests migration copied ${after}/${before} rows`);
+      const bad = db.prepare("PRAGMA foreign_key_check").all();
+      if (bad.length) throw new Error(`tests migration broke ${bad.length} references`);
+      db.exec("COMMIT");
+      console.log(`Migrated tests table (${after} tests): question paper can now be added later`);
+    } catch (e) { db.exec("ROLLBACK"); throw e; }
+    finally { db.exec("PRAGMA foreign_keys = ON"); }
+  }
+}
+addColumn("tests", "subject", "TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS idx_tests_org ON tests(org_id)");

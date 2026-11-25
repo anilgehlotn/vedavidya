@@ -30,47 +30,81 @@ const bulkUpload = multer({ storage: (upload as any).storage, limits: { fileSize
 // Express 4 doesn't catch rejected promises from async handlers.
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { fn(req, res).catch(next); };
 
-interface Paper { id: string; title: string; subject: string | null; instructions: string | null; total_marks: number; sections: Section[] }
+interface Paper { id: string; title: string; subject: string | null; instructions: string | null; total_marks: number; status: string; error: string | null; sections: Section[] }
 const paperFor = (testId: string): Paper | null => {
   const p = one<any>("SELECT p.* FROM tests t JOIN question_papers p ON p.id = t.paper_id WHERE t.id = ?", testId);
   return p ? { ...p, sections: json<Section[]>(p.sections, []) } : null;
 };
 const questionsOf = (sections: Section[]) => sections.flatMap((s) => s.questions);
 const isObjective = (q: Question) => q.type === "mcq" || q.type === "numeric";
+/** Why a test's paper can't be used for marking yet, or null when it's ready. */
+const paperProblem = (p: { status: string; sections: Section[]; total_marks: number; error?: string | null } | null) =>
+  !p ? "Add the question paper first."
+    : p.status === "generating" ? "The question paper is still being read. Try again in a minute."
+    : p.status === "failed" ? `The question paper couldn't be read${p.error ? `: ${p.error}` : ""}. Upload it again.`
+    : !questionsOf(p.sections).length || !(p.total_marks > 0) ? "The question paper has no questions yet. Add questions first." : null;
+/** Checks a paper can be used for a test of this mode; returns an error message or null. */
+function paperFitsTest(paper: any, mode: string): string | null {
+  if (!paper) return "Pick a question paper from your institute";
+  if (paper.status === "failed") return "That paper couldn't be read. Upload it again.";
+  if (paper.status === "generating") return mode === "cbt" ? "Wait for the paper to be ready before using it in an online test" : null;
+  const qs = questionsOf(json<Section[]>(paper.sections, []));
+  if (!qs.length || !(paper.total_marks > 0)) return "This paper has no questions yet. Add questions first.";
+  if (mode === "cbt" && !qs.every(isObjective)) return "Online (CBT) tests need a paper with only MCQ / numeric questions";
+  return null;
+}
 
 testRoutes.get("/tests", staff, (req, res) => {
-  res.json(all(`SELECT t.*, p.title AS paper_title, p.total_marks, p.subject,
+  res.json(all(`SELECT t.*, p.title AS paper_title, p.total_marks, p.status AS paper_status, coalesce(nullif(trim(t.subject),''), p.subject) AS subject,
       (SELECT group_concat(b.name, ', ') FROM test_batches tb JOIN batches b ON b.id = tb.batch_id WHERE tb.test_id = t.id) AS batch_names,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id) AS candidates,
-      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.status = 'evaluated') AS evaluated
-    FROM tests t JOIN question_papers p ON p.id = t.paper_id WHERE t.org_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC`, req.user!.org_id));
+      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.status = 'evaluated') AS evaluated,
+      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.files IS NOT NULL AND a.files != '[]') AS uploaded
+    FROM tests t LEFT JOIN question_papers p ON p.id = t.paper_id WHERE t.org_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC`, req.user!.org_id));
 });
 
 testRoutes.post("/tests", staff, (req, res) => {
   const b = z.object({
-    title: z.string().min(1), paper_id: z.string(), mode: z.enum(["offline", "cbt"]),
-    scheduled_at: z.string().optional(), duration_min: z.number().int().min(5).max(360).optional(),
-    batch_ids: z.array(z.string()).min(1),
+    title: z.string().trim().min(1).max(160), paper_id: z.string().max(60).nullish(), mode: z.enum(["offline", "cbt"]),
+    subject: z.string().trim().max(60).nullish(),
+    scheduled_at: z.string().max(40).nullish(), duration_min: z.number().int().min(5).max(360).optional(),
+    batch_ids: z.array(z.string().max(60)).min(1).max(50),
   }).parse(req.body);
   const org = req.user!.org_id;
-  const paper = one<any>("SELECT * FROM question_papers WHERE id = ? AND org_id = ?", b.paper_id, org);
-  if (!paper || paper.status === "generating" || paper.status === "failed") return res.status(400).json({ error: "Pick a ready question paper" });
-  const qs = questionsOf(json<Section[]>(paper.sections, []));
-  if (!qs.length || !(paper.total_marks > 0)) return res.status(400).json({ error: "This paper has no questions yet. Add questions before creating a test." });
-  if (b.mode === "cbt" && !qs.every(isObjective))
-    return res.status(400).json({ error: "Online (CBT) tests need a paper with only MCQ / numeric questions" });
+  // The question paper is optional here: teachers often create the test first and add the paper later.
+  const paper = b.paper_id ? one<any>("SELECT * FROM question_papers WHERE id = ? AND org_id = ?", b.paper_id, org) : null;
+  if (b.paper_id) { const why = paperFitsTest(paper, b.mode); if (why) return res.status(400).json({ error: why }); }
   const batchIds = [...new Set(b.batch_ids)].filter((bid) => one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", bid, org));
   if (!batchIds.length) return res.status(400).json({ error: "Pick at least one batch from your institute" });
   const id = uid("tst");
-  run("INSERT INTO tests (id, org_id, paper_id, title, mode, scheduled_at, duration_min) VALUES (?,?,?,?,?,?,?)",
-    id, org, b.paper_id, b.title, b.mode, b.scheduled_at || null, b.duration_min ?? paper.duration_min);
+  run("INSERT INTO tests (id, org_id, paper_id, title, subject, mode, scheduled_at, duration_min) VALUES (?,?,?,?,?,?,?,?)",
+    id, org, paper?.id ?? null, b.title, b.subject || paper?.subject || null, b.mode, b.scheduled_at || null, b.duration_min ?? paper?.duration_min ?? 60);
   for (const batchId of batchIds) {
     run("INSERT OR IGNORE INTO test_batches (test_id, batch_id) VALUES (?, ?)", id, batchId);
     // One attempt row per enrolled student, so the roster is ready for uploads.
     for (const s of all<{ student_id: string }>("SELECT student_id FROM enrollments WHERE batch_id = ?", batchId))
-      run("INSERT OR IGNORE INTO attempts (id, test_id, student_id, max_score) VALUES (?,?,?,?)", uid("att"), id, s.student_id, paper.total_marks);
+      run("INSERT OR IGNORE INTO attempts (id, test_id, student_id, max_score) VALUES (?,?,?,?)", uid("att"), id, s.student_id, paper?.total_marks ?? 0);
   }
   res.json({ id });
+});
+
+// Add or swap the question paper of a test (allowed until sheets have been marked).
+testRoutes.put("/tests/:id/paper", staff, (req, res) => {
+  const { paper_id } = z.object({ paper_id: z.string().max(60) }).parse(req.body);
+  const org = req.user!.org_id;
+  const t = one<any>("SELECT * FROM tests WHERE id = ? AND org_id = ?", req.params.id, org);
+  if (!t) return res.status(404).json({ error: "Test not found" });
+  const paper = one<any>("SELECT * FROM question_papers WHERE id = ? AND org_id = ?", paper_id, org);
+  const why = paperFitsTest(paper, t.mode);
+  if (why) return res.status(400).json({ error: why });
+  if (t.paper_id !== paper_id) {
+    const marked = one<{ n: number }>("SELECT count(*) n FROM attempts WHERE test_id = ? AND (status IN ('evaluating','evaluated','in_progress') OR score IS NOT NULL)", t.id)!.n;
+    if (marked) return res.status(409).json({ error: `${marked} sheet${marked > 1 ? "s are" : " is"} already marked with the current paper. Create a new test to use a different paper.` });
+  }
+  run("UPDATE tests SET paper_id = ?, subject = coalesce(nullif(trim(subject),''), ?) WHERE id = ?", paper_id, paper.subject || null, t.id);
+  if (!t.paper_id && !t.scheduled_at && paper.duration_min) run("UPDATE tests SET duration_min = ? WHERE id = ?", paper.duration_min, t.id);
+  run("UPDATE attempts SET max_score = ? WHERE test_id = ? AND score IS NULL", paper.total_marks ?? 0, t.id);
+  res.json({ ok: true });
 });
 
 testRoutes.get("/tests/:id", staff, (req, res) => {
@@ -88,7 +122,8 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
     LEFT JOIN enrollments e ON e.student_id = u.id LEFT JOIN batches b ON b.id = e.batch_id
     WHERE a.test_id = ? ORDER BY b.name, CAST(e.roll_no AS INTEGER), u.name`, t.id)
     .map((a) => ({ ...a, files: json<string[]>(a.files, []).length }));
-  res.json({ ...t, paper: paperFor(t.id), attempts });
+  const paper = paperFor(t.id);
+  res.json({ ...t, paper, paper_problem: paperProblem(paper), attempts });
 });
 
 testRoutes.delete("/tests/:id", staff, (req, res) => {
@@ -213,15 +248,17 @@ async function runEvaluation(attemptId: string) {
   if (!a) return;
   const paper = paperFor(a.test_id);
   const t = one<{ org_id: string }>("SELECT org_id FROM tests WHERE id = ?", a.test_id);
-  if (!paper || !t) return;
+  if (!t) return;
+  const problem = paperProblem(paper);
+  if (problem) { run("UPDATE attempts SET status = 'failed', error = ? WHERE id = ?", problem, attemptId); return; }
   run("UPDATE attempts SET status = 'evaluating', error = NULL WHERE id = ?", attemptId);
   try {
     const files = json<string[]>(a.files, []).map((f) => path.join(UPLOAD_DIR, f));
-    const ev = await evaluateSheet(t.org_id, paper, files);
+    const ev = await evaluateSheet(t.org_id, paper!, files);
     if (!Array.isArray(ev?.questions)) throw new AiError("Claude's answer couldn't be read. Please try again.");
-    const score = scoreEvaluation(ev, questionsOf(paper.sections));
+    const score = scoreEvaluation(ev, questionsOf(paper!.sections));
     run("UPDATE attempts SET status = 'evaluated', evaluation = ?, score = ?, max_score = ?, reviewed = 0, evaluated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      JSON.stringify(ev), score, paper.total_marks, attemptId);
+      JSON.stringify(ev), score, paper!.total_marks, attemptId);
     // A re-marked sheet gets a fresh Fix-it plan (if results are already out).
     if (one("SELECT 1 FROM practice_sets WHERE attempt_id = ?", attemptId)) {
       run("DELETE FROM practice_sets WHERE attempt_id = ?", attemptId);
@@ -251,6 +288,8 @@ function enqueue(ids: string[]) {
 testRoutes.post("/tests/:id/evaluate", staff, (req, res) => {
   const t = one("SELECT id FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
+  const paperIssue = paperProblem(paperFor(req.params.id));
+  if (paperIssue) return res.status(400).json({ error: paperIssue });
   const problem = aiProblem(req.user!.org_id);
   if (problem) return res.status(400).json({ error: problem });
   const only = z.array(z.string()).max(1000).optional().parse(req.body?.attempt_ids) ?? null;
@@ -283,7 +322,7 @@ testRoutes.put("/attempts/:id/evaluation", staff, (req, res) => {
     const qe = ev.questions.find((q) => q.question_id === e.question_id);
     if (qe) { qe.marks_awarded = e.marks_awarded; if (e.feedback !== undefined) qe.feedback = e.feedback; }
   }
-  const score = scoreEvaluation(ev, questionsOf(paperFor(a.test_id)!.sections));
+  const score = scoreEvaluation(ev, questionsOf(paperFor(a.test_id)?.sections ?? []));
   run("UPDATE attempts SET evaluation = ?, score = ?, reviewed = 1 WHERE id = ?", JSON.stringify(ev), score, a.id);
   res.json({ ok: true, score });
 });
@@ -319,10 +358,10 @@ const csvSafe = (v: unknown) => { const t = String(v ?? ""); return /^[=+\-@\t\r
 // ---------------- Student side ----------------
 testRoutes.get("/my/tests", student, (req, res) => {
   // Scores stay hidden until the teacher publishes the results.
-  res.json(all(`SELECT t.id, t.title, t.mode, t.scheduled_at, t.duration_min, t.results_published, p.subject, p.total_marks,
+  res.json(all(`SELECT t.id, t.title, t.mode, t.scheduled_at, t.duration_min, t.results_published, coalesce(nullif(trim(t.subject),''), p.subject) AS subject, p.total_marks, (t.paper_id IS NOT NULL AND p.status IN ('draft','approved')) AS paper_ready,
       a.id AS attempt_id, a.status,
       CASE WHEN t.results_published = 1 THEN a.score END AS score, CASE WHEN t.results_published = 1 THEN a.max_score END AS max_score
-    FROM attempts a JOIN tests t ON t.id = a.test_id JOIN question_papers p ON p.id = t.paper_id
+    FROM attempts a JOIN tests t ON t.id = a.test_id LEFT JOIN question_papers p ON p.id = t.paper_id
     WHERE a.student_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC`, req.user!.id));
 });
 
@@ -338,9 +377,11 @@ testRoutes.post("/cbt/:testId/start", student, (req, res) => {
   if (!a || a.mode !== "cbt") return res.status(404).json({ error: "Test not found" });
   if (a.scheduled_at && Date.parse(a.scheduled_at) > Date.now()) return res.status(400).json({ error: "This test hasn't started yet" });
   if (["uploaded", "evaluating", "evaluated"].includes(a.status)) return res.status(400).json({ error: "You've already submitted this test" });
+  const ready = paperFor(a.test_id);
+  if (paperProblem(ready)) return res.status(400).json({ error: "Your teacher hasn't added the question paper yet" });
   if (a.status === "pending") run("UPDATE attempts SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?", a.id);
   const fresh = myCbtAttempt(req.params.testId, req.user!.id);
-  const paper = paperFor(a.test_id)!;
+  const paper = ready!;
   // Strip answers and solutions before sending the paper to the student.
   const sections = paper.sections.map((s) => ({ ...s, questions: s.questions.map(({ correct_option, numeric_answer, solution, rubric, ...q }) => q) }));
   res.json({ attempt_id: a.id, title: a.title, remaining_seconds: remainingSeconds(fresh), responses: json(fresh.responses, {}), sections, instructions: paper.instructions });
@@ -364,7 +405,8 @@ testRoutes.post("/cbt/:testId/submit", student, (req, res) => {
   // After time (plus a short grace) only the last autosaved answers count.
   const late = remainingSeconds(a) <= 0 && a.started_at && Date.now() - Date.parse(a.started_at.replace(" ", "T") + "Z") > (a.duration_min * 60 + GRACE_SECONDS) * 1000;
   const responses = late || !req.body?.responses ? Responses.parse(json(a.responses, {})) : Responses.parse(req.body.responses);
-  const paper = paperFor(a.test_id)!;
+  const paper = paperFor(a.test_id);
+  if (!paper) return res.status(400).json({ error: "This test has no question paper" });
   const evQuestions = questionsOf(paper.sections).map((q) => {
     const given = responses[q.id]?.answer;
     const attempted = given !== null && given !== undefined && given !== ("" as any);

@@ -58,6 +58,7 @@ paperRoutes.post("/papers/generate", staff, aiPaperLimit, (req, res) => {
     .then((paper) => {
       run("UPDATE question_papers SET title = ?, instructions = ?, sections = ?, total_marks = ?, status = 'draft' WHERE id = ?",
         paper.title, paper.instructions, JSON.stringify(paper.sections), totalMarks(paper.sections), id);
+      syncTestMarks(id);
     })
     .catch((e) => {
       run("UPDATE question_papers SET status = 'failed', error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), id);
@@ -107,6 +108,7 @@ paperRoutes.post("/papers/import", staff, aiPaperLimit, paperUpload, async (req,
       .then((paper) => {
         run("UPDATE question_papers SET title = ?, instructions = ?, sections = ?, total_marks = ?, status = 'draft' WHERE id = ?",
           paper.title, paper.instructions, JSON.stringify(paper.sections), totalMarks(paper.sections), id);
+        syncTestMarks(id);
       })
       .catch((e) => run("UPDATE question_papers SET status = 'failed', error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), id))
       .finally(() => removeFiles(UPLOAD_DIR, [...paperFiles, ...keyFiles]));
@@ -138,6 +140,7 @@ paperRoutes.put("/papers/:id", staff, (req, res) => {
     b.title, b.subject ?? null, b.board ?? null, b.class_level ?? null, b.language ?? "English", b.duration_min, b.instructions ?? null,
     JSON.stringify(b.sections), totalMarks(b.sections), req.params.id, req.user!.org_id);
   if (!r.changes) return res.status(404).json({ error: "Paper not found" });
+  syncTestMarks(req.params.id);
   res.json({ ok: true });
 });
 
@@ -166,4 +169,10 @@ paperRoutes.delete("/papers/:id", staff, (req, res) => {
 // Generation jobs live in memory; if the server restarted mid-generation, mark them failed so users can retry.
 export function recoverPaperJobs() {
   run("UPDATE question_papers SET status = 'failed', error = 'Interrupted by a server restart. Please generate it again.' WHERE status = 'generating'");
+}
+
+/** Tests using this paper show its current total for sheets that aren't marked yet. */
+function syncTestMarks(paperId: string) {
+  run(`UPDATE attempts SET max_score = (SELECT total_marks FROM question_papers WHERE id = ?)
+       WHERE score IS NULL AND test_id IN (SELECT id FROM tests WHERE paper_id = ?)`, paperId, paperId);
 }

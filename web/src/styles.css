@@ -254,3 +254,29 @@ table.t tr.click:hover td { background: #f4fbf8; }
 .app6 .input:focus { border-color: var(--ink); box-shadow: 0 0 0 3px rgba(23, 23, 28, .08); }
 .app6 .q-card { border-radius: 20px; border: 0; background: #fff; }
 .app6 .modal { border-radius: 28px; }
+
+/* ---------- Guided test flow ---------- */
+.steps { display: grid; gap: 0; padding-top: 8px; padding-bottom: 8px; }
+.step { display: grid; grid-template-columns: 34px 1fr; gap: 14px; padding: 14px 0; position: relative; }
+.step + .step { border-top: 1px solid var(--line); }
+.step-num { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--bg-2); color: var(--muted); }
+.step.current .step-num { background: var(--ink); color: #fff; }
+.step.done .step-num { background: var(--green-soft); color: var(--green); }
+.step.todo .step-head b { color: var(--muted); }
+.step-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-height: 34px; padding-top: 6px; }
+.step-head b { font-size: 16px; }
+.step-body { min-width: 0; }
+.pick-chip { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; transition: background .15s, border-color .15s; }
+.pick-chip:hover { border-color: var(--ink); }
+.pick-chip.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+.pick-chip.on .muted { color: rgba(255, 255, 255, .7); }
+.tip-box { padding: 12px 14px; border-radius: 12px; background: var(--accent-soft); color: var(--ink); }
+.split-list { max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; }
+.split-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; cursor: pointer; }
+.split-row + .split-row { border-top: 1px solid var(--line); }
+.split-row.off { opacity: .5; }
+.split-row input { width: 18px; height: 18px; accent-color: var(--ink); flex: none; }
+.split-roll { width: 34px; text-align: center; font-weight: 700; color: var(--ink-2); flex: none; }
+.split-pages { flex: none; text-align: right; min-width: 70px; }
+.split-thumb { width: 34px; height: 44px; border-radius: 4px; object-fit: cover; background: var(--bg-2); flex: none; }
+@media (max-width: 600px) { .split-thumb { display: none; } .step { grid-template-columns: 28px 1fr; gap: 10px; } .step-num { width: 28px; height: 28px; } }

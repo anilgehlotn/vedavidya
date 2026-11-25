@@ -26,7 +26,7 @@ function topicMastery(rows: AttemptRow[]) {
 }
 
 const BASE = `SELECT a.test_id, t.title, coalesce(t.scheduled_at, t.created_at) AS date, a.score, a.max_score, a.evaluation, p.sections, a.student_id,
-  coalesce(nullif(trim(p.subject), ''), 'General') AS subject
+  coalesce(nullif(trim(t.subject), ''), nullif(trim(p.subject), ''), 'General') AS subject
   FROM attempts a JOIN tests t ON t.id = a.test_id JOIN question_papers p ON p.id = t.paper_id
   WHERE a.score IS NOT NULL AND a.max_score > 0`;
 

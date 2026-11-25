@@ -96,7 +96,7 @@ publicRoutes.post("/contact", contactLimit, (req, res) => {
 publicRoutes.get("/public/report/:token", (req, res) => {
   const row = one<any>(`
     SELECT a.*, t.title AS test_title, t.results_published, u.name AS student_name, o.name AS org_name,
-           p.sections, p.subject, p.total_marks
+           p.sections, coalesce(nullif(trim(t.subject),''), p.subject) AS subject, p.total_marks
     FROM share_tokens s JOIN attempts a ON a.id = s.attempt_id JOIN tests t ON t.id = a.test_id
     JOIN users u ON u.id = a.student_id JOIN orgs o ON o.id = t.org_id JOIN question_papers p ON p.id = t.paper_id
     WHERE s.token = ?`, req.params.token);

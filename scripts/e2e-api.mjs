@@ -443,6 +443,57 @@ section("Online (CBT) test");
   await expect("teacher can't use student CBT", 403, "POST", `/cbt/${cbt}/start`, { token: teacher, body: {} });
 }
 
+section("Test first, paper later (guided flow)");
+{
+  const r = await expect("create test without a paper", 200, "POST", "/tests", { token: teacher, body: { title: "Physics test · 3 Dec", subject: "Physics", mode: "offline", scheduled_at: new Date().toISOString(), batch_ids: [batch2, batch] } });
+  const tid = r.data.id;
+  let d = (await expect("detail without paper", 200, "GET", `/tests/${tid}`, { token: teacher })).data;
+  ok(d.paper === null && /question paper/i.test(d.paper_problem ?? ""), "detail says the paper is missing");
+  ok(d.subject === "Physics" && d.attempts.length >= N, `subject saved, roster ready (${d.subject}, ${d.attempts.length})`);
+  const row = (await call("GET", "/tests", { token: teacher })).data.find((t) => t.id === tid);
+  ok(row && row.paper_id === null && row.subject === "Physics" && row.uploaded === 0, "list shows a test without a paper");
+  ok((await call("GET", "/my/tests", { token: studentTok })).data.some((t) => t.id === tid && !t.paper_ready), "students see it before the paper is added");
+  // Sheets can be uploaded before the paper (teachers often scan right after the exam).
+  const one = new FormData(); one.append("files", new Blob([await jpeg(1000, 1400, "S1")], { type: "image/jpeg" }), "s1.jpg");
+  const a1 = d.attempts.find((a) => a.roll_no === "1");
+  await expect("upload a sheet before the paper", 200, "POST", `/attempts/${a1.id}/files?replace=1`, { token: teacher, form: one });
+  const ev = await expect("marking without a paper → 400", 400, "POST", `/tests/${tid}/evaluate`, { token: teacher, body: {} });
+  ok(/question paper/i.test(ev.data.error), "explains the paper is needed first");
+  // Upload the printed paper from the test page: it is read in the background and attached at once.
+  const form = new FormData(); form.append("paper", new Blob([await jpeg(1200, 1600, "Paper")], { type: "image/jpeg" }), "paper.jpg"); form.append("subject", "Physics");
+  const imp = await expect("import paper", 200, "POST", "/papers/import", { token: teacher, form });
+  await expect("attach paper while it's being read", 200, "PUT", `/tests/${tid}/paper`, { token: teacher, body: { paper_id: imp.data.id } });
+  d = (await call("GET", `/tests/${tid}`, { token: teacher })).data;
+  if (d.paper?.status === "generating") {
+    ok(/being read/.test(d.paper_problem ?? ""), "shows the paper is being read");
+    ok((await call("POST", `/tests/${tid}/evaluate`, { token: teacher, body: {} })).status === 400, "marking waits for the paper");
+  }
+  for (let i = 0; i < 40 && d.paper?.status === "generating"; i++) { await sleep(300); d = (await call("GET", `/tests/${tid}`, { token: teacher })).data; }
+  ok(d.paper?.status === "draft" && d.paper_problem === null, "paper ready");
+  ok(d.attempts.every((a) => a.max_score === d.paper.total_marks), `max marks follow the paper once read (${d.paper.total_marks})`);
+  await expect("other institute can't attach", 404, "PUT", `/tests/${tid}/paper`, { token: otherAdmin, body: { paper_id: imp.data.id } });
+  const foreign = (await call("POST", "/papers", { token: otherAdmin, body: { title: "Theirs", duration_min: 30, sections: [{ name: "A", instructions: "", questions: [{ id: "q1", type: "short", text: "?", options: [], correct_option: null, numeric_answer: null, marks: 2, negative_marks: 0, difficulty: "easy", topic: "T", solution: "", rubric: [{ step: "a", marks: 2 }] }] }] } })).data.id;
+  await expect("can't attach another institute's paper", 400, "PUT", `/tests/${tid}/paper`, { token: teacher, body: { paper_id: foreign } });
+  // Whole class split in the browser arrives as per-student uploads.
+  const roster = d.attempts.filter((a) => a.batch_name === "JEE 2027 A").slice(0, 6);
+  for (const a of roster) { const f = new FormData(); f.append("files", new Blob([pdf()], { type: "application/pdf" }), `Roll_${a.roll_no}.pdf`); await call("POST", `/attempts/${a.id}/files?replace=1`, { token: teacher, form: f }); }
+  const q = await expect("mark the class", 200, "POST", `/tests/${tid}/evaluate`, { token: teacher, body: {} });
+  ok(q.data.queued === 6, `6 sheets queued (roll 1 replaced by split upload) (got ${q.data.queued})`);
+  for (let i = 0; i < 80; i++) { d = (await call("GET", `/tests/${tid}`, { token: teacher })).data; if (!d.attempts.some((a) => a.status === "evaluating")) break; await sleep(400); }
+  ok(d.attempts.filter((a) => a.status === "evaluated").length === 6, "class sheets marked");
+  const swap = await expect("can't swap the paper after marking", 409, "PUT", `/tests/${tid}/paper`, { token: teacher, body: { paper_id: aiPaper.id } });
+  ok(/already marked/.test(swap.data.error), "explains why");
+  await expect("paper in use can't be deleted", 409, "DELETE", `/papers/${imp.data.id}`, { token: teacher });
+  const sub = await expect("student analytics with the new test", 200, "GET", `/analytics/student/${d.attempts.find((a) => a.status === "evaluated").student_id}`, { token: teacher });
+  ok(JSON.stringify(sub.data).includes("Physics"), "test subject used in analytics");
+  // Online tests: students can't start until a ready objective paper is added.
+  const c = (await expect("online test without paper", 200, "POST", "/tests", { token: teacher, body: { title: "Quiz", mode: "cbt", batch_ids: [batch] } })).data.id;
+  const blocked = await expect("student can't start before the paper", 400, "POST", `/cbt/${c}/start`, { token: studentTok, body: {} });
+  ok(/hasn't added/.test(blocked.data.error), "tells the student why");
+  await expect("subjective paper on online test → 400", 400, "PUT", `/tests/${c}/paper`, { token: teacher, body: { paper_id: aiPaper.id } });
+  await expect("delete test without paper", 200, "DELETE", `/tests/${c}`, { token: teacher });
+}
+
 section("Security: roles");
 {
   const staffOnly = [["GET", "/overview"], ["GET", "/students"], ["GET", "/tests"], ["GET", "/papers"], ["GET", `/tests/${test}`], ["POST", `/tests/${test}/evaluate`], ["POST", `/tests/${test}/publish`],

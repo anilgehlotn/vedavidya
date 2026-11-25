@@ -73,7 +73,7 @@ automatically, and sheets that were being marked when the server restarted are r
 ### Testing without an API key
 
 `scripts/mock-claude.mjs` imitates the Claude API, including streaming, its size limits and random 429/529 errors.
-`scripts/e2e-api.mjs` runs 249 checks over every endpoint, including a 50-student upload and marking run, role and
+`scripts/e2e-api.mjs` runs 279 checks over every endpoint, including a 50-student upload and marking run, role and
 institute isolation, and cleanup. `scripts/e2e-institute.mjs` simulates a full institute: classes 8–12 with 20–30 students, 4 subject
 teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart.
 

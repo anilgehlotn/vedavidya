@@ -6,99 +6,133 @@ import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, StatusBadge, us
 import { useAuth } from "../../lib/auth";
 import { bulkUpload, compressImage, isAllowedFile, type BulkResult } from "../../lib/upload";
 import { FixitCell, MistakeBars, MISTAKES, TestInsights, TopTip, useInsights } from "./Insights";
+import { ClassUploadWizard, PaperStep, Step } from "./TestFlow";
 
-interface TestRow { id: string; title: string; mode: "offline" | "cbt"; scheduled_at: string | null; results_published: number; paper_title: string; total_marks: number; subject: string | null; batch_names: string | null; candidates: number; evaluated: number }
+interface TestRow { id: string; title: string; mode: "offline" | "cbt"; scheduled_at: string | null; results_published: number; paper_id: string | null; paper_title: string | null; paper_status: string | null; total_marks: number | null; subject: string | null; batch_names: string | null; candidates: number; evaluated: number; uploaded: number }
+
+const SUBJECTS = ["Physics", "Chemistry", "Biology", "Mathematics", "Science", "English", "Hindi", "Social Science", "Computer Science", "Accountancy", "Economics"];
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const nice = (d: string) => new Date(d + "T00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+
+/** What the teacher should do next for a test, shown in the list. */
+function nextStep(t: TestRow): [string, string] {
+  if (t.results_published) return ["Published", "green"];
+  if (!t.paper_id) return ["Add question paper", "amber"];
+  if (t.paper_status === "generating") return ["Reading paper…", "blue"];
+  if (t.mode === "offline" && t.uploaded < t.candidates && t.evaluated === 0) return [`Upload sheets ${t.uploaded}/${t.candidates}`, "violet"];
+  if (t.mode === "offline" && t.uploaded > t.evaluated) return [`Mark ${t.uploaded - t.evaluated} sheets`, "violet"];
+  if (t.evaluated > 0) return ["Ready to publish", "violet"];
+  return [t.mode === "cbt" ? "Waiting for students" : "Upload sheets", ""];
+}
 
 export function TestList() {
   const [params, setParams] = useSearchParams();
   const tests = useApi<TestRow[]>("/tests");
-  const papers = useApi<Paper[]>("/papers");
-  const batches = useApi<{ id: string; name: string; student_count: number }[]>("/batches");
   const nav = useNavigate();
-  const creating = params.has("new");
-  const [f, setF] = useState({ title: "", paper_id: params.get("paper") ?? "", mode: "offline" as "offline" | "cbt", scheduled_at: "", duration_min: "" });
-  const [batchIds, setBatchIds] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const ready = (papers.data ?? []).filter((p) => p.status === "draft" || p.status === "approved");
-
-  useEffect(() => {
-    const p = ready.find((x) => x.id === f.paper_id);
-    if (p && !f.title) setF((cur) => ({ ...cur, title: p.title, duration_min: String(p.duration_min) }));
-  }, [f.paper_id, papers.data]);
-
-  const create = async (e: FormEvent) => {
-    e.preventDefault(); setError(null);
-    try {
-      const r = await api<{ id: string }>("/tests", { body: { ...f, duration_min: f.duration_min ? Number(f.duration_min) : undefined, scheduled_at: f.scheduled_at ? new Date(f.scheduled_at).toISOString() : undefined, batch_ids: batchIds } });
-      nav(`/app/tests/${r.id}`);
-    } catch (err) { setError((err as Error).message); }
-  };
-
   return (
     <>
-      <PageTitle title="Tests & evaluation" sub="Schedule tests, upload answer sheets and publish results">
-        <button className="btn btn-primary" onClick={() => setParams({ new: "1" })}>+ New test</button>
+      <PageTitle title="Tests & evaluation" sub="Create a test for a class, add the paper, then upload the answer sheets after the exam">
+        <button className="btn btn-primary" onClick={() => setParams({ new: "1", ...(params.get("paper") ? { paper: params.get("paper")! } : {}) })}>+ New test</button>
       </PageTitle>
       <div className="card">
         {tests.loading ? <Loading /> : tests.data?.length ? (
           <div className="table-wrap"><table className="t">
-            <thead><tr><th>Test</th><th>Batches</th><th>Date</th><th>Evaluated</th><th>Results</th></tr></thead>
-            <tbody>{tests.data.map((t) => (
-              <tr key={t.id} className="click" onClick={() => nav(`/app/tests/${t.id}`)}>
-                <td><b>{t.title}</b><div className="small muted">{t.mode === "cbt" ? "Online test" : "Handwritten"} · {t.total_marks} marks</div></td>
-                <td className="small">{t.batch_names ?? "—"}</td>
-                <td className="small">{fmtDate(t.scheduled_at)}</td>
-                <td><div className="small">{t.evaluated}/{t.candidates}</div><div className="bar" style={{ width: 90, marginTop: 4 }}><i style={{ width: `${t.candidates ? (t.evaluated / t.candidates) * 100 : 0}%` }} /></div></td>
-                <td>{t.results_published ? <span className="badge green">Published</span> : <span className="badge">Not published</span>}</td>
-              </tr>))}
+            <thead><tr><th>Test</th><th>Class</th><th>Date</th><th>Marked</th><th>Next step</th></tr></thead>
+            <tbody>{tests.data.map((t) => {
+              const [label, tone] = nextStep(t);
+              return (
+                <tr key={t.id} className="click" onClick={() => nav(`/app/tests/${t.id}`)}>
+                  <td><b>{t.title}</b><div className="small muted">{[t.subject, t.mode === "cbt" ? "Online" : "On paper", t.paper_id && t.total_marks ? `${t.total_marks} marks` : null].filter(Boolean).join(" · ")}</div></td>
+                  <td className="small">{t.batch_names ?? "—"}</td>
+                  <td className="small">{fmtDate(t.scheduled_at)}</td>
+                  <td><div className="small">{t.evaluated}/{t.candidates}</div><div className="bar" style={{ width: 90, marginTop: 4 }}><i style={{ width: `${t.candidates ? (t.evaluated / t.candidates) * 100 : 0}%` }} /></div></td>
+                  <td><span className={`badge ${tone}`}>{label}</span></td>
+                </tr>);
+            })}
             </tbody>
           </table></div>
-        ) : <Empty title="No tests yet">Create a test from a question paper, then upload sheets or let students take it online.</Empty>}
+        ) : <Empty title="No tests yet"><button className="btn btn-primary" style={{ marginTop: 10 }} onClick={() => setParams({ new: "1" })}>+ Create your first test</button></Empty>}
       </div>
-
-      {creating && (
-        <Modal title="New test" onClose={() => setParams({})}>
-          {ready.length === 0 ? <Empty title="You need a question paper first"><Link to="/app/papers/new" className="btn-link">Generate one with AI</Link></Empty> : (
-            <form className="stack" onSubmit={create}>
-              <label className="field"><span>Question paper</span>
-                <select className="input" required value={f.paper_id} onChange={(e) => setF({ ...f, paper_id: e.target.value, title: "" })}>
-                  <option value="">Select…</option>{ready.map((p) => <option key={p.id} value={p.id}>{p.title} ({p.total_marks} marks)</option>)}
-                </select>
-              </label>
-              <label className="field"><span>Test name</span><input className="input" required value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></label>
-              <div className="field"><span>How will students take it?</span>
-                <div className="grid g2">
-                  {([["offline", "On paper", "Upload scanned answer sheets for AI evaluation"], ["cbt", "Online (CBT)", "Students answer on screen; scored instantly (MCQ/numeric papers)"]] as const).map(([v, h, d]) => (
-                    <label key={v} className={`q-card ${f.mode === v ? "sel" : ""}`} style={{ cursor: "pointer", borderColor: f.mode === v ? "var(--accent)" : undefined, background: f.mode === v ? "var(--accent-soft)" : undefined }}>
-                      <input type="radio" name="mode" checked={f.mode === v} onChange={() => setF({ ...f, mode: v })} style={{ display: "none" }} />
-                      <b>{h}</b><div className="small muted">{d}</div>
-                    </label>))}
-                </div>
-              </div>
-              <div className="grid g2">
-                <label className="field"><span>Date & time</span><input className="input" type="datetime-local" value={f.scheduled_at} onChange={(e) => setF({ ...f, scheduled_at: e.target.value })} /></label>
-                <label className="field"><span>Duration (min)</span><input className="input" type="number" min={5} value={f.duration_min} onChange={(e) => setF({ ...f, duration_min: e.target.value })} /></label>
-              </div>
-              <div className="field"><span>Batches</span>
-                <div className="row wrap">{batches.data?.map((b) => (
-                  <label key={b.id} className={`badge ${batchIds.includes(b.id) ? "violet" : ""}`} style={{ cursor: "pointer", padding: "6px 12px" }}>
-                    <input type="checkbox" style={{ display: "none" }} checked={batchIds.includes(b.id)} onChange={() => setBatchIds(batchIds.includes(b.id) ? batchIds.filter((x) => x !== b.id) : [...batchIds, b.id])} />
-                    {batchIds.includes(b.id) ? "✓ " : ""}{b.name} ({b.student_count})
-                  </label>))}
-                </div>
-              </div>
-              <ErrorBox error={error} />
-              <button className="btn btn-primary" disabled={!batchIds.length}>Create test</button>
-            </form>
-          )}
-        </Modal>
-      )}
+      {params.has("new") && <NewTestModal paperId={params.get("paper")} onClose={() => setParams({})} />}
     </>
   );
 }
 
+/** Create a test in a few taps: class, subject, date. The question paper can be added afterwards. */
+function NewTestModal({ paperId, onClose }: { paperId: string | null; onClose: () => void }) {
+  const nav = useNavigate();
+  const batches = useApi<{ id: string; name: string; student_count: number }[]>("/batches");
+  const paper = useApi<Paper>(paperId ? `/papers/${paperId}` : null);
+  const [batchIds, setBatchIds] = useState<string[]>([]);
+  const [subject, setSubject] = useState("");
+  const [date, setDate] = useState(today());
+  const [mode, setMode] = useState<"offline" | "cbt">("offline");
+  const [title, setTitle] = useState("");
+  const [titleEdited, setTitleEdited] = useState(false);
+  const [more, setMore] = useState(false);
+  const [time, setTime] = useState("");
+  const [duration, setDuration] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { if (paper.data?.subject && !subject) setSubject(paper.data.subject); }, [paper.data]);
+  const autoTitle = [subject.trim() || "Test", "test", date ? `· ${nice(date)}` : ""].join(" ").replace("Test test", "Test");
+  useEffect(() => { if (!titleEdited) setTitle(paper.data?.title ?? autoTitle); }, [autoTitle, paper.data, titleEdited]);
+
+  const create = async (e: FormEvent) => {
+    e.preventDefault(); setError(null); setBusy(true);
+    try {
+      const when = date ? new Date(`${date}T${time || "09:00"}`).toISOString() : undefined;
+      const r = await api<{ id: string }>("/tests", { body: { title: title.trim() || autoTitle, subject: subject.trim() || undefined, mode, scheduled_at: when,
+        duration_min: duration ? Number(duration) : undefined, batch_ids: batchIds, paper_id: paperId || undefined } });
+      nav(`/app/tests/${r.id}`);
+    } catch (err) { setError((err as Error).message); setBusy(false); }
+  };
+  const toggle = (id: string) => setBatchIds(batchIds.includes(id) ? batchIds.filter((x) => x !== id) : [...batchIds, id]);
+
+  return (
+    <Modal title="New test" onClose={onClose}>
+      {batches.data && !batches.data.length ? <Empty title="Add a class first"><Link to="/app/batches" className="btn-link">Create a class (batch) and add students</Link></Empty> : (
+        <form className="stack" onSubmit={create}>
+          <div className="field"><span>1. Which class?</span>
+            <div className="row wrap">{batches.data?.map((b) => (
+              <button type="button" key={b.id} className={`pick-chip ${batchIds.includes(b.id) ? "on" : ""}`} onClick={() => toggle(b.id)} aria-pressed={batchIds.includes(b.id)}>
+                {batchIds.includes(b.id) ? "✓ " : ""}{b.name} <span className="muted">· {b.student_count}</span>
+              </button>))}
+            </div>
+          </div>
+          <label className="field"><span>2. Subject</span>
+            <input className="input" list="subjects" placeholder="e.g. Physics" value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={60} />
+            <datalist id="subjects">{SUBJECTS.map((s) => <option key={s} value={s} />)}</datalist>
+          </label>
+          <div className="grid g2">
+            <label className="field"><span>3. Exam date</span><input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+            <div className="field"><span>How do students answer?</span>
+              <div className="row">
+                <button type="button" className={`pick-chip ${mode === "offline" ? "on" : ""}`} onClick={() => setMode("offline")}>On paper</button>
+                <button type="button" className={`pick-chip ${mode === "cbt" ? "on" : ""}`} onClick={() => setMode("cbt")}>Online (MCQ)</button>
+              </div>
+            </div>
+          </div>
+          <label className="field"><span>Test name</span><input className="input" value={title} maxLength={160} onChange={(e) => { setTitle(e.target.value); setTitleEdited(true); }} /></label>
+          {paperId && paper.data && <div className="small">Question paper: <b>{paper.data.title}</b> ({paper.data.total_marks} marks)</div>}
+          {!more ? <button type="button" className="btn-link small" style={{ alignSelf: "flex-start" }} onClick={() => setMore(true)}>More options (time, duration)</button> : (
+            <div className="grid g2">
+              <label className="field"><span>Start time</span><input className="input" type="time" value={time} onChange={(e) => setTime(e.target.value)} /></label>
+              <label className="field"><span>Duration (min)</span><input className="input" type="number" min={5} max={360} placeholder="60" value={duration} onChange={(e) => setDuration(e.target.value)} /></label>
+            </div>
+          )}
+          <ErrorBox error={error} />
+          <button className="btn btn-primary" disabled={!batchIds.length || busy}>{busy ? "Creating…" : batchIds.length ? "Create test →" : "Choose a class to continue"}</button>
+          {!paperId && <p className="small muted" style={{ margin: 0, textAlign: "center" }}>Next you can add the question paper and, after the exam, upload the answer sheets.</p>}
+        </form>
+      )}
+    </Modal>
+  );
+}
+
 interface AttemptRow { phone: string | null; parent_phone: string | null; id: string; status: AttemptStatus; score: number | null; max_score: number | null; error: string | null; reviewed: number; files: number; student_id: string; student_name: string; roll_no: string | null; batch_name: string; share_token: string | null }
-interface TestDetailData extends TestRow { duration_min: number; paper: Paper; attempts: AttemptRow[] }
+interface TestDetailData extends TestRow { duration_min: number; paper: Paper | null; paper_problem: string | null; attempts: AttemptRow[] }
 
 function UploadCell({ a, onDone }: { a: AttemptRow; onDone: () => void }) {
   const ref = useRef<HTMLInputElement>(null);
@@ -190,16 +224,20 @@ export function TestDetail() {
   const { org, user } = useAuth();
   const nav = useNavigate();
   const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | AttemptStatus>("all");
   const [bulk, setBulk] = useState(false);
+  const [wizard, setWizard] = useState(false);
 
   const busy = t.data?.attempts.some((a) => a.status === "evaluating");
+  const reading = t.data?.paper?.status === "generating";
   const ins = useInsights(id!, Boolean(busy));
   useEffect(() => {
-    if (!busy) { setMsg((m) => (m?.startsWith("Evaluating") ? "All sheets have been marked. Review them, then publish." : m)); return; }
+    if (!busy) setMsg((m) => (m?.startsWith("Marking") ? "All sheets are marked. Check any sheet below, then publish." : m));
+    if (!busy && !reading) return;
     const i = setInterval(() => t.reload(true), 3000);
     return () => clearInterval(i);
-  }, [busy]);
+  }, [busy, reading]);
 
   if (t.loading) return <Loading />;
   if (!t.data) return <ErrorBox error={t.error} />;
@@ -207,18 +245,26 @@ export function TestDetail() {
   const scored = d.attempts.filter((a) => a.score != null);
   const avg = scored.length ? Math.round(scored.reduce((s, a) => s + pct(a.score, a.max_score)!, 0) / scored.length) : null;
   const high = scored.length ? Math.max(...scored.map((a) => pct(a.score, a.max_score)!)) : null;
+  const withSheets = d.attempts.filter((a) => a.files > 0).length;
   const toEvaluate = d.attempts.filter((a) => a.files > 0 && (a.status === "uploaded" || a.status === "failed")).length;
+  const marking = d.attempts.filter((a) => a.status === "evaluating").length;
+  const submitted = d.attempts.filter((a) => a.status !== "pending" && a.status !== "in_progress").length;
   const list = d.attempts.filter((a) => filter === "all" || a.status === filter);
   const ranked = [...scored].sort((a, b) => b.score! - a.score!).map((a) => a.id);
+  const total = d.paper?.total_marks;
+  const offline = d.mode === "offline";
 
   const evaluate = async (ids?: string[]) => {
-    const r = await api<{ queued: number }>(`/tests/${d.id}/evaluate`, { body: ids ? { attempt_ids: ids } : {} });
-    setMsg(r.queued ? `Evaluating ${r.queued} answer sheet${r.queued > 1 ? "s" : ""}…` : "Nothing to evaluate - upload sheets first.");
-    t.reload(true);
+    setErr(null);
+    try {
+      const r = await api<{ queued: number }>(`/tests/${d.id}/evaluate`, { body: ids ? { attempt_ids: ids } : {} });
+      setMsg(r.queued ? `Marking ${r.queued} answer sheet${r.queued > 1 ? "s" : ""}… you can leave this page, it keeps going.` : "Nothing to mark. Upload answer sheets first.");
+      t.reload(true);
+    } catch (e) { setErr((e as Error).message); }
   };
   const publish = async (publish: boolean) => {
     const r = await api<{ practice_queued: number }>(`/tests/${d.id}/publish`, { body: { publish } });
-    setMsg(publish ? `Results published. Students can see them and parent links are active.${r.practice_queued ? ` Fix-it practice is being prepared for ${r.practice_queued} student${r.practice_queued === 1 ? "" : "s"}.` : ""}` : "Results hidden from students.");
+    setMsg(publish ? `Results published. Students see them when they log in, and parent links are active.${r.practice_queued ? ` Fix-it practice is being prepared for ${r.practice_queued} student${r.practice_queued === 1 ? "" : "s"}.` : ""}` : "Results hidden from students.");
     ins.reload(true);
     t.reload(true);
   };
@@ -234,51 +280,98 @@ export function TestDetail() {
   };
   const copyLink = (token: string) => { navigator.clipboard?.writeText(`${location.origin}/report/${token}`); setMsg("Parent report link copied."); };
 
+  // Where the teacher is in the flow.
+  const paperDone = Boolean(d.paper && !d.paper_problem);
+  const sheetsDone = offline ? withSheets > 0 : submitted > 0;
+  const markedAll = scored.length > 0 && !marking && toEvaluate === 0;
+  const st = (done: boolean, current: boolean) => (done ? "done" : current ? "current" : "todo") as "done" | "current" | "todo";
+  const s1 = st(paperDone, true);
+  const s2 = st(offline ? withSheets > 0 && (withSheets === d.attempts.length || scored.length > 0) : submitted > 0, paperDone || !d.paper || reading || offline);
+  const s3 = st(markedAll, sheetsDone);
+  const s4 = st(Boolean(d.results_published), markedAll || scored.length > 0);
+
   return (
     <>
-      <PageTitle title={d.title} sub={<>{d.mode === "cbt" ? "Online test" : "Handwritten test"} · {d.paper.total_marks} marks · {d.duration_min} min · {fmtDateTime(d.scheduled_at)} · <Link to={`/app/papers/${d.paper.id}`} className="btn-link">View paper</Link></>}>
-        {!DEMO && <button className="btn btn-ghost" onClick={() => download(`/tests/${d.id}/results.csv`, `${d.title.replace(/\W+/g, "_")}_results.csv`).catch((e) => setMsg(e.message))}>Export CSV</button>}
-        {d.mode === "offline" && !DEMO && <button className="btn btn-ghost" onClick={() => setBulk(true)}>⇪ Bulk upload</button>}
-        {d.mode === "offline" && <button className="btn btn-ghost" disabled={!toEvaluate} onClick={() => evaluate()}>✦ Evaluate {toEvaluate || ""} new sheet{toEvaluate === 1 ? "" : "s"}</button>}
+      <PageTitle title={d.title} sub={<>{[d.subject, d.batch_names, offline ? "On paper" : "Online test", total ? `${total} marks` : null, fmtDate(d.scheduled_at)].filter(Boolean).join(" · ")}</>}>
+        {!DEMO && scored.length > 0 && <button className="btn btn-ghost" onClick={() => download(`/tests/${d.id}/results.csv`, `${d.title.replace(/\W+/g, "_")}_results.csv`).catch((e) => setErr(e.message))}>Export CSV</button>}
         {d.results_published && !DEMO ? <button className="btn btn-ghost" onClick={downloadLinks}>⤓ Report links</button> : null}
-        {d.results_published ? <button className="btn btn-ghost" onClick={() => publish(false)}>Unpublish</button>
-          : <button className="btn btn-primary" disabled={!scored.length} onClick={() => publish(true)}>Publish results</button>}
       </PageTitle>
       {msg && <div className="ok-box" style={{ marginBottom: 14 }}>{msg}</div>}
-      {bulk && <BulkUploadModal testId={d.id} batches={(d.batch_names ?? "").split(", ").filter(Boolean)} onClose={() => setBulk(false)} onDone={() => t.reload(true)} />}
-      <div className="grid g4" style={{ marginBottom: 16 }}>
-        <div className="card stat"><div className="label">Candidates</div><div className="value">{d.attempts.length}</div></div>
-        <div className="card stat"><div className="label">Evaluated</div><div className="value">{scored.length}</div></div>
-        <div className="card stat"><div className="label">Average</div><div className="value">{avg ?? "—"}{avg != null && "%"}</div></div>
-        <div className="card stat"><div className="label">Highest</div><div className="value">{high ?? "—"}{high != null && "%"}</div></div>
+      {err && <div className="error-box" style={{ marginBottom: 14 }}>{err}</div>}
+
+      <div className="card card-pad steps" style={{ marginBottom: 16 }}>
+        <PaperStep t={d} state={s1} onChange={() => { setMsg("Question paper added."); t.reload(true); }} />
+        {offline ? (
+          <Step n={2} title="Answer sheets" state={s2} hint="After the exam">
+            <div className="row wrap" style={{ marginTop: 10 }}>
+              {!DEMO && <button className={`btn ${s2 === "current" && withSheets === 0 ? "btn-primary" : "btn-ghost"}`} onClick={() => setWizard(true)}>⇪ Upload class answer sheets</button>}
+              <span className="small"><b>{withSheets}</b> of {d.attempts.length} students uploaded</span>
+              <div className="bar grow" style={{ minWidth: 80, maxWidth: 200 }}><i style={{ width: `${d.attempts.length ? (withSheets / d.attempts.length) * 100 : 0}%` }} /></div>
+            </div>
+            {!DEMO && <div className="small muted" style={{ marginTop: 8 }}>One scanned PDF in roll-number order works best. Files already named by roll number? <button className="btn-link" onClick={() => setBulk(true)}>Upload by file name</button>. One student only? Use “Upload” on their row below.</div>}
+          </Step>
+        ) : (
+          <Step n={2} title="Students take the test online" state={s2}>
+            <div className="small" style={{ marginTop: 8 }}>{d.paper ? <>Students open it from their login at the test time. <b>{submitted}</b> of {d.attempts.length} submitted.</> : "Add the question paper so students can start."}</div>
+          </Step>
+        )}
+        <Step n={3} title={offline ? "AI marking" : "Scores"} state={s3}>
+          {offline ? (
+            <div className="row wrap" style={{ marginTop: 10 }}>
+              {marking > 0 ? <><span className="spinner" /><span className="small"><b>Marking {marking} sheet{marking > 1 ? "s" : ""}…</b> {scored.length} done. You can leave this page.</span></>
+                : <button className={`btn ${toEvaluate ? "btn-primary" : "btn-ghost"}`} disabled={!toEvaluate || DEMO} onClick={() => evaluate()}>✦ Mark {toEvaluate || ""} answer sheet{toEvaluate === 1 ? "" : "s"}</button>}
+              {toEvaluate > 0 && !marking && d.paper_problem && <span className="small" style={{ color: "var(--amber)" }}>{d.paper_problem}</span>}
+              {scored.length > 0 && !marking && <span className="small">{scored.length} marked · average <b>{avg}%</b>. Open any sheet to check or change marks.</span>}
+            </div>
+          ) : <div className="small" style={{ marginTop: 8 }}>{scored.length ? <>{scored.length} scored automatically · average <b>{avg}%</b></> : "Scored automatically when each student submits."}</div>}
+        </Step>
+        <Step n={4} title="Share results" state={s4}>
+          <div className="row wrap" style={{ marginTop: 10 }}>
+            {d.results_published ? <>
+              <span className="small">Students can see their results. Send each parent their report on WhatsApp from the list below.</span>
+              {!DEMO && <button className="btn btn-ghost btn-sm" onClick={() => publish(false)}>Unpublish</button>}
+            </> : <>
+              <button className={`btn ${scored.length ? "btn-primary" : "btn-ghost"}`} disabled={!scored.length || DEMO} onClick={() => publish(true)}>Publish results</button>
+              <span className="small muted">Students see marks and feedback; each one gets personal Fix-it practice.</span>
+            </>}
+          </div>
+        </Step>
       </div>
-      {d.mode === "offline" && d.attempts.some((a) => a.status === "pending") && (
-        <div className="card card-pad small" style={{ marginBottom: 14, background: "var(--accent-soft)", borderColor: "#f0d77a" }}>
-          <b>How it works:</b> upload each student's pages from their row, or use <b>Bulk upload</b> for the whole class (files named by roll number, e.g. <code>7-1.jpg</code>), then click <b>Evaluate</b>. AI marks every question step by step using the paper's rubric. Open any sheet to review and adjust marks, then publish.
+
+      {bulk && <BulkUploadModal testId={d.id} batches={(d.batch_names ?? "").split(", ").filter(Boolean)} onClose={() => setBulk(false)} onDone={() => t.reload(true)} />}
+      {wizard && <ClassUploadWizard t={d} onClose={() => setWizard(false)} onDone={(n) => { t.reload(true); if (n) setMsg(`Answer sheets uploaded for ${n} student${n === 1 ? "" : "s"}.${d.paper_problem ? "" : " Next: click “Mark answer sheets”."}`); }} />}
+
+      {scored.length > 0 && (
+        <div className="grid g4" style={{ marginBottom: 16 }}>
+          <div className="card stat"><div className="label">Students</div><div className="value">{d.attempts.length}</div></div>
+          <div className="card stat"><div className="label">Marked</div><div className="value">{scored.length}</div></div>
+          <div className="card stat"><div className="label">Average</div><div className="value">{avg ?? "—"}{avg != null && "%"}</div></div>
+          <div className="card stat"><div className="label">Highest</div><div className="value">{high ?? "—"}{high != null && "%"}</div></div>
         </div>
       )}
-      {ins.data && <TestInsights testId={d.id} ins={ins.data} published={Boolean(d.results_published)} onReload={() => ins.reload(true)} />}
+      {ins.data && scored.length > 0 && <TestInsights testId={d.id} ins={ins.data} published={Boolean(d.results_published)} onReload={() => ins.reload(true)} />}
       <div className="tabs">
         {(["all", "pending", "uploaded", "evaluating", "evaluated", "failed"] as const).map((s) => {
           const n = s === "all" ? d.attempts.length : d.attempts.filter((a) => a.status === s).length;
-          return (s === "all" || n > 0) && <button key={s} className={filter === s ? "on" : ""} onClick={() => setFilter(s)} style={{ textTransform: "capitalize" }}>{s} ({n})</button>;
+          const label = { all: "All", pending: "No sheet yet", uploaded: "Uploaded", evaluating: "Marking", evaluated: "Marked", failed: "Problem" }[s];
+          return (s === "all" || n > 0) && <button key={s} className={filter === s ? "on" : ""} onClick={() => setFilter(s)}>{label} ({n})</button>;
         })}
       </div>
       <div className="card">
         <div className="table-wrap"><table className="t">
-          <thead><tr><th>Rank</th><th>Student</th><th>Batch</th><th>Status</th><th>Score</th>{d.results_published ? <th>Fix-it</th> : null}<th></th></tr></thead>
+          <thead><tr><th>Rank</th><th>Student</th><th>Class</th><th>Status</th><th>Score</th>{d.results_published ? <th>Fix-it</th> : null}<th></th></tr></thead>
           <tbody>{list.map((a) => (
             <tr key={a.id}>
               <td className="muted">{ranked.indexOf(a.id) >= 0 ? `#${ranked.indexOf(a.id) + 1}` : "—"}</td>
-              <td><b>{a.student_name}</b><div className="small muted">Roll {a.roll_no ?? "—"}</div></td>
+              <td><b>{a.student_name}</b><div className="small muted">Roll {a.roll_no ?? "—"}{a.files ? ` · ${a.files} page${a.files > 1 ? "s" : ""}` : ""}</div></td>
               <td className="small">{a.batch_name}</td>
               <td><StatusBadge status={a.status} />{a.reviewed ? <span className="badge blue" style={{ marginLeft: 4 }}>Reviewed</span> : null}
                 {a.error && <div className="small" style={{ color: "var(--red)", maxWidth: 260 }}>{a.error}</div>}</td>
               <td>{a.score != null ? <><b>{a.score}</b><span className="muted">/{a.max_score}</span> <ScoreBadge value={pct(a.score, a.max_score)} /></> : "—"}</td>
               {d.results_published ? <td><FixitCell s={ins.data?.practice.by_attempt[a.id]} /></td> : null}
               <td><div className="row" style={{ justifyContent: "flex-end" }}>
-                {d.mode === "offline" && a.status !== "evaluating" && <UploadCell a={a} onDone={() => t.reload(true)} />}
-                {d.mode === "offline" && a.files > 0 && a.status !== "evaluating" && <button className="btn btn-ghost btn-sm" onClick={() => { if (a.status !== "evaluated" || confirm(`Re-mark ${a.student_name}'s sheet? This uses AI credits again and replaces any marks you changed.`)) evaluate([a.id]); }}>{a.status === "evaluated" ? "Re-evaluate" : "Evaluate"}</button>}
+                {offline && a.status !== "evaluating" && !DEMO && <UploadCell a={a} onDone={() => t.reload(true)} />}
+                {offline && a.files > 0 && a.status !== "evaluating" && a.status !== "uploaded" && !DEMO && <button className="btn btn-ghost btn-sm" onClick={() => { if (a.status !== "evaluated" || confirm(`Re-mark ${a.student_name}'s sheet? This uses AI credits again and replaces any marks you changed.`)) evaluate([a.id]); }}>{a.status === "evaluated" ? "Re-mark" : "Retry"}</button>}
                 {a.score != null && <button className="btn btn-ghost btn-sm" onClick={() => nav(`/app/attempts/${a.id}`)}>Review</button>}
                 {a.share_token && d.results_published && a.score != null ? <>
                   <a className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer" title={`Send on WhatsApp${a.parent_phone || a.phone ? ` to ${a.parent_phone || a.phone}` : ""}`}
@@ -291,10 +384,10 @@ export function TestDetail() {
         </table></div>
         {!list.length && <Empty title="No students here" />}
       </div>
-      {(!d.results_published || user?.role === "admin") && (
+      {(!d.results_published || user?.role === "admin") && !DEMO && (
         <div style={{ marginTop: 20 }}><button className="btn btn-danger btn-sm" onClick={async () => {
           if (!confirm("Delete this test and all its results? This can't be undone.")) return;
-          try { await api(`/tests/${d.id}`, { method: "DELETE" }); nav("/app/tests"); } catch (e) { setMsg((e as Error).message); }
+          try { await api(`/tests/${d.id}`, { method: "DELETE" }); nav("/app/tests"); } catch (e) { setErr((e as Error).message); }
         }}>Delete test</button></div>
       )}
     </>
