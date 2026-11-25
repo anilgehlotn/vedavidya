@@ -486,6 +486,34 @@ section("Test first, paper later (guided flow)");
   await expect("paper in use can't be deleted", 409, "DELETE", `/papers/${imp.data.id}`, { token: teacher });
   const sub = await expect("student analytics with the new test", 200, "GET", `/analytics/student/${d.attempts.find((a) => a.status === "evaluated").student_id}`, { token: teacher });
   ok(JSON.stringify(sub.data).includes("Physics"), "test subject used in analytics");
+  // PDF reports
+  const getPdf = async (p, token) => { const r = await fetch(API + p, { headers: token ? { Authorization: `Bearer ${token}` } : {} }); const b = Buffer.from(await r.arrayBuffer()); return { status: r.status, type: r.headers.get("content-type"), pdf: b.subarray(0, 5).toString() === "%PDF-", size: b.length, text: b.toString("latin1") }; };
+  const cls = await getPdf(`/tests/${tid}/class-report.pdf`, teacher);
+  ok(cls.status === 200 && cls.pdf && /application\/pdf/.test(cls.type), `class report PDF (${cls.status}, ${cls.size} bytes)`);
+  const allPdf = await getPdf(`/tests/${tid}/reports.pdf`, teacher);
+  ok(allPdf.status === 200 && allPdf.pdf && allPdf.size > cls.size / 2, `all student reports PDF (${allPdf.size} bytes)`);
+  const markedA = d.attempts.find((a) => a.status === "evaluated");
+  const one_ = await getPdf(`/attempts/${markedA.id}/report.pdf`, teacher);
+  ok(one_.status === 200 && one_.pdf, "one student's report card PDF");
+  ok((await getPdf(`/attempts/${d.attempts.find((a) => a.status === "pending").id}/report.pdf`, teacher)).status === 400, "unmarked sheet has no report yet");
+  ok((await getPdf(`/tests/${tid}/class-report.pdf`, otherAdmin)).status === 404, "other institute can't download the class report");
+  ok((await getPdf(`/attempts/${markedA.id}/report.pdf`, otherAdmin)).status === 404, "other institute can't download a report card");
+  ok((await getPdf(`/tests/${tid}/class-report.pdf`, studentTok)).status === 403, "students can't download the class report");
+  ok((await getPdf(`/tests/${tid}/class-report.pdf`)).status === 401, "class report needs a login");
+  const meId = (await call("GET", "/me", { token: studentTok })).data.user?.id ?? (await call("GET", "/me", { token: studentTok })).data.id;
+  const mine = d.attempts.find((a) => a.student_id === meId && a.status === "evaluated");
+  const notMine = d.attempts.find((a) => a.student_id !== meId && a.status === "evaluated");
+  if (mine) ok((await getPdf(`/attempts/${mine.id}/report.pdf`, studentTok)).status === 403, "student can't download before results are published");
+  await expect("publish guided test", 200, "POST", `/tests/${tid}/publish`, { token: teacher, body: { publish: true, practice: false } });
+  if (mine) ok((await getPdf(`/attempts/${mine.id}/report.pdf`, studentTok)).status === 200, "student downloads own report card after publishing");
+  ok((await getPdf(`/attempts/${notMine.id}/report.pdf`, studentTok)).status === 403, "student can't download a classmate's report card");
+  const share = (await call("GET", `/tests/${tid}`, { token: teacher })).data.attempts.find((a) => a.share_token);
+  const pub = await getPdf(`/public/report/${share.share_token}/pdf`);
+  ok(pub.status === 200 && pub.pdf, "parent link has a PDF");
+  ok((await getPdf(`/public/report/not-a-token/pdf`)).status === 404, "bad parent link → 404");
+  await expect("unpublish guided test", 200, "POST", `/tests/${tid}/publish`, { token: teacher, body: { publish: false } });
+  ok((await getPdf(`/public/report/${share.share_token}/pdf`)).status === 404, "parent PDF hidden after unpublishing");
+
   // Online tests: students can't start until a ready objective paper is added.
   const c = (await expect("online test without paper", 200, "POST", "/tests", { token: teacher, body: { title: "Quiz", mode: "cbt", batch_ids: [batch] } })).data.id;
   const blocked = await expect("student can't start before the paper", 400, "POST", `/cbt/${c}/start`, { token: studentTok, body: {} });

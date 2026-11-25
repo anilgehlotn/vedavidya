@@ -15,7 +15,7 @@ export default function PublicReport() {
   const p = Math.round((d.score / d.max_score) * 100);
   return (
     <main className="site-wrap" style={{ maxWidth: 820, padding: "32px 20px 60px" }}>
-      <div className="row between" style={{ marginBottom: 24 }}><Logo /><span className="small muted">Report shared by {d.org_name}</span></div>
+      <div className="row between" style={{ marginBottom: 24 }}><Logo /><span className="row"><span className="small muted">Report shared by {d.org_name}</span><a className="btn btn-primary btn-sm" href={`/api/public/report/${token}/pdf`}>⤓ Download PDF</a></span></div>
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div className="row between wrap">
           <div><div className="eyebrow">{d.test_title} · {d.subject}</div><h1 style={{ fontSize: 30, marginTop: 6 }}>{d.student_name}</h1></div>

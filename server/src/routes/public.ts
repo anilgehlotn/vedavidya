@@ -1,3 +1,5 @@
+import { loadTestReport, pdfName, studentReportPdf } from "../reports.js";
+import { sendPdf } from "./reports.js";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -109,4 +111,15 @@ publicRoutes.get("/public/report/:token", (req, res) => {
     // Only what the report shows: question topics and marks (never the answer key or solutions).
     sections: json<any[]>(row.sections, []).map((s) => ({ name: s.name, questions: (s.questions ?? []).map((q: any) => ({ id: q.id, topic: q.topic, marks: q.marks })) })),
   });
+});
+
+// The same report as a PDF, for parents who open the shared link.
+publicRoutes.get("/public/report/:token/pdf", (req, res) => {
+  const row = one<any>(`SELECT a.id, a.test_id, t.org_id, t.results_published FROM share_tokens s JOIN attempts a ON a.id = s.attempt_id
+    JOIN tests t ON t.id = a.test_id WHERE s.token = ?`, req.params.token);
+  if (!row || !row.results_published) return res.status(404).json({ error: "This report is not available" });
+  const r = loadTestReport(row.test_id, row.org_id);
+  const s = r?.results.find((x) => x.attemptId === row.id);
+  if (!r || !s) return res.status(404).json({ error: "This report is not available" });
+  sendPdf(res, studentReportPdf(r, [row.id]), pdfName(r.test.title, s.name));
 });

@@ -228,6 +228,7 @@ export function TestDetail() {
   const [filter, setFilter] = useState<"all" | AttemptStatus>("all");
   const [bulk, setBulk] = useState(false);
   const [wizard, setWizard] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const busy = t.data?.attempts.some((a) => a.status === "evaluating");
   const reading = t.data?.paper?.status === "generating";
@@ -278,6 +279,10 @@ export function TestDetail() {
     el.download = `${d.title.replace(/\W+/g, "_")}_report_links.csv`;
     el.click();
   };
+  const pdf = async (path: string, name: string) => {
+    setErr(null); setPdfBusy(true);
+    try { await download(path, `${d.title.replace(/\W+/g, "_")}_${name}.pdf`); } catch (e) { setErr((e as Error).message); } finally { setPdfBusy(false); }
+  };
   const copyLink = (token: string) => { navigator.clipboard?.writeText(`${location.origin}/report/${token}`); setMsg("Parent report link copied."); };
 
   // Where the teacher is in the flow.
@@ -294,8 +299,11 @@ export function TestDetail() {
     <>
       <PageTitle title={d.title} sub={<>{[d.subject, d.batch_names, offline ? "On paper" : "Online test", total ? `${total} marks` : null, fmtDate(d.scheduled_at)].filter(Boolean).join(" · ")}</>}>
         {!DEMO && scored.length > 0 && <button className="btn btn-ghost" onClick={() => download(`/tests/${d.id}/results.csv`, `${d.title.replace(/\W+/g, "_")}_results.csv`).catch((e) => setErr(e.message))}>Export CSV</button>}
+        {!DEMO && scored.length > 0 && <button className="btn btn-primary" onClick={() => pdf(`/tests/${d.id}/class-report.pdf`, "class_report")}>⤓ Class report PDF</button>}
+        {!DEMO && scored.length > 0 && <button className="btn btn-ghost" onClick={() => pdf(`/tests/${d.id}/reports.pdf`, "student_reports")}>⤓ All student reports PDF</button>}
         {d.results_published && !DEMO ? <button className="btn btn-ghost" onClick={downloadLinks}>⤓ Report links</button> : null}
       </PageTitle>
+      {pdfBusy && <div className="ok-box" style={{ marginBottom: 14 }}><span className="spinner" /> Making the PDF…</div>}
       {msg && <div className="ok-box" style={{ marginBottom: 14 }}>{msg}</div>}
       {err && <div className="error-box" style={{ marginBottom: 14 }}>{err}</div>}
 
@@ -373,6 +381,7 @@ export function TestDetail() {
                 {offline && a.status !== "evaluating" && !DEMO && <UploadCell a={a} onDone={() => t.reload(true)} />}
                 {offline && a.files > 0 && a.status !== "evaluating" && a.status !== "uploaded" && !DEMO && <button className="btn btn-ghost btn-sm" onClick={() => { if (a.status !== "evaluated" || confirm(`Re-mark ${a.student_name}'s sheet? This uses AI credits again and replaces any marks you changed.`)) evaluate([a.id]); }}>{a.status === "evaluated" ? "Re-mark" : "Retry"}</button>}
                 {a.score != null && <button className="btn btn-ghost btn-sm" onClick={() => nav(`/app/attempts/${a.id}`)}>Review</button>}
+                {a.score != null && !DEMO && <button className="btn btn-ghost btn-sm" title="Download this student's report card" onClick={() => pdf(`/attempts/${a.id}/report.pdf`, `Roll_${a.roll_no ?? ""}_${a.student_name.replace(/\W+/g, "_")}`)}>PDF</button>}
                 {a.share_token && d.results_published && a.score != null ? <>
                   <a className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer" title={`Send on WhatsApp${a.parent_phone || a.phone ? ` to ${a.parent_phone || a.phone}` : ""}`}
                     href={`https://wa.me/${waNumber(a.parent_phone || a.phone)}?text=${encodeURIComponent(resultMessage(a, d.title, org?.name ?? ""))}`}>WhatsApp</a>
@@ -442,6 +451,7 @@ export function AttemptReview() {
       <PageTitle title={d.student_name} sub={<>{d.test_title} {editable && <>· <Link className="btn-link" to={`/app/tests/${d.test_id}`}>Back to test</Link></>}</>}>
         <div className="card stat" style={{ padding: "10px 18px" }}><div className="label">Total</div><div className="value" style={{ fontSize: 24 }}>{d.score}<span className="muted" style={{ fontSize: 16 }}>/{d.max_score}</span></div></div>
         {editable && dirty && <button className="btn btn-primary" onClick={save}>Save changes</button>}
+        {!DEMO && d.score != null && <button className="btn btn-primary no-print" onClick={() => download(`/attempts/${d.id}/report.pdf`, `${d.test_title.replace(/\W+/g, "_")}_${d.student_name.replace(/\W+/g, "_")}.pdf`).catch((e) => setSaved(e.message))}>⤓ Report card PDF</button>}
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
       </PageTitle>
       {saved && <div className="ok-box" style={{ marginBottom: 14 }}>{saved}</div>}

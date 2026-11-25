@@ -13,6 +13,7 @@ import { testRoutes, recoverEvaluations } from "./routes/tests.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { practiceRoutes, recoverPractice } from "./routes/practice.js";
+import { reportRoutes } from "./routes/reports.js";
 
 const PROD = process.env.NODE_ENV === "production";
 const app = express();
@@ -40,7 +41,7 @@ app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.use("/api", publicRoutes);
-app.use("/api", requireAuth, demoReadOnly, orgRoutes, paperRoutes, testRoutes, practiceRoutes, analyticsRoutes, settingsRoutes);
+app.use("/api", requireAuth, demoReadOnly, orgRoutes, paperRoutes, testRoutes, practiceRoutes, reportRoutes, analyticsRoutes, settingsRoutes);
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
 const onError: ErrorRequestHandler = (err, _req, res, _next) => {
