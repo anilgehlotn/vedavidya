@@ -16,6 +16,14 @@ Veda Vidya is an independent rebuild of the kind of product offered by acadine.a
 - **Online (CBT) tests:** timed, with a question palette, mark-for-review, autosave, auto-submit, and +/− marking.
 - **Results:** publish to students, export CSV, and share a parent report link that needs no login.
 - **Analytics:** batch score trends, topic mastery, score distribution, leaderboard, and student report cards.
+- **Mistake analysis:** every lost mark is tagged as a concept gap, careless slip, incomplete steps, presentation, or not
+  attempted, with a one-line note. Students see "where the marks went" per test and across their report card. Teachers
+  see the class breakdown, the weakest questions, and an AI **re-teach brief** (top misconceptions, an anonymised real wrong
+  answer, a 10-minute re-teach plan, and a check question).
+- **Fix-it practice:** when results are published, each student who lost marks gets 5–8 auto-marked questions aimed at
+  exactly their mistakes, with instant explanations, plus a check-up after `PRACTICE_RETEST_DAYS` (default 7) on the same
+  skills. Teachers see completion and the "test → check-up" improvement on those weak spots. This costs one extra AI call
+  per student per published test.
 - **Institute management:** centres, batches, students (bulk add with generated logins), staff, a notice board, and
   roles for admins, teachers and students.
 
@@ -65,7 +73,7 @@ automatically, and sheets that were being marked when the server restarted are r
 ### Testing without an API key
 
 `scripts/mock-claude.mjs` imitates the Claude API, including streaming, its size limits and random 429/529 errors.
-`scripts/e2e-api.mjs` runs 221 checks over every endpoint, including a 50-student upload and marking run, role and
+`scripts/e2e-api.mjs` runs 249 checks over every endpoint, including a 50-student upload and marking run, role and
 institute isolation, and cleanup. `scripts/e2e-institute.mjs` simulates a full institute: classes 8–12 with 20–30 students, 4 subject
 teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart.
 
@@ -130,6 +138,8 @@ Run `npm audit --omit=dev` before each release.
 | `ALLOW_SIGNUP` | `true` | Set `false` to stop strangers creating institutes from the login page |
 | `SEED_DEMO` | `true` (Docker) | Creates the public demo institute on first start |
 | `EVAL_CONCURRENCY` | `3` | Answer sheets evaluated in parallel |
+| `PRACTICE_CONCURRENCY` | `2` | Fix-it plans prepared in parallel |
+| `PRACTICE_RETEST_DAYS` | `7` | Days before a student's Fix-it check-up unlocks |
 | `PORT` | `4000` | API port |
 | `DATA_DIR` | `server/data` | Database and uploaded sheets |
 

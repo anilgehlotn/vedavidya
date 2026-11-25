@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDateTime, pct } from "../../lib/api";
 import type { Question } from "../../lib/types";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, useApi } from "../../components/ui";
+import { FixitList } from "./Insights";
 
 interface MyTest { id: string; title: string; mode: "cbt" | "offline"; scheduled_at: string | null; duration_min: number; results_published: number; subject: string | null; total_marks: number; attempt_id: string; status: string; score: number | null; max_score: number | null }
 
@@ -17,6 +18,7 @@ export function MyTests() {
   return (
     <>
       <PageTitle title="My tests" sub="Upcoming online tests and your results" />
+      <FixitList />
       <ErrorBox error={tests.error} />
       {live.length > 0 && (
         <div className="grid g2" style={{ marginBottom: 20 }}>

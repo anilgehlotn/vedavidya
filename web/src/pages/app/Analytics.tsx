@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { BarList, Columns, Empty, ErrorBox, LineChart, Loading, PageTitle, ScoreBadge, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
+import { MistakeBars, TopTip } from "./Insights";
 
 interface BatchData {
   batch: { id: string; name: string; centre_name: string | null; course: string | null }; student_count: number;
@@ -83,6 +84,8 @@ interface StudentData {
   trend: { test_id: string; title: string; subject: string; date: string; pct: number; class_avg: number }[];
   topics: { topic: string; pct: number }[]; gaps: string[]; average: number | null;
   subjects: { subject: string; avg: number; tests: number }[]; subject: string | null;
+  mistakes: Record<string, number>;
+  practice: { sets: number; completed: number; checkups_done: number; before_pct: number | null; after_pct: number | null };
 }
 
 export function StudentReport({ self }: { self?: boolean }) {
@@ -117,6 +120,17 @@ export function StudentReport({ self }: { self?: boolean }) {
               <LineChart labels={d.trend.map((t) => t.title)} series={[{ name: "Student", color: "#ff6a4c", values: d.trend.map((t) => t.pct) }, { name: "Class", color: "#9a96a5", values: d.trend.map((t) => t.class_avg), dashed: true }]} />
             </div>
             <div className="card card-pad"><b>Topic mastery</b><p className="small muted" style={{ marginBottom: 14 }}>Weakest first</p><BarList items={d.topics.slice(0, 8).map((t) => ({ label: t.topic, value: t.pct }))} /></div>
+          </div>
+          <div className="grid g2" style={{ marginBottom: 16 }}>
+            <div className="card card-pad"><b>Where {self ? "your" : "the"} marks go</b><p className="small muted" style={{ margin: "4px 0 14px" }}>Marks lost across all tests, by reason</p>
+              <MistakeBars data={d.mistakes} /><TopTip data={d.mistakes} /></div>
+            <div className="card card-pad"><b>Fix-it practice</b>
+              {d.practice.sets ? <div className="stack" style={{ gap: 10, marginTop: 12 }}>
+                <div className="row between small"><span>Practice sets completed</span><b>{d.practice.completed}/{d.practice.sets}</b></div>
+                <div className="row between small"><span>Check-ups done</span><b>{d.practice.checkups_done}</b></div>
+                {d.practice.after_pct !== null && <div className="row between small"><span>On weak spots: test → check-up</span><b>{d.practice.before_pct}% → <span style={{ color: (d.practice.after_pct ?? 0) >= (d.practice.before_pct ?? 0) ? "var(--green)" : "var(--red)" }}>{d.practice.after_pct}%</span></b></div>}
+              </div> : <p className="small muted" style={{ marginTop: 8 }}>Practice sets appear after results are published.</p>}
+            </div>
           </div>
           {d.gaps.length > 0 && <div className="card card-pad"><b>Focus next on</b><div className="row wrap" style={{ marginTop: 10 }}>{d.gaps.map((g) => <span key={g} className="badge red">{g}</span>)}</div></div>}
         </>

@@ -18,6 +18,7 @@ export interface QuestionEvaluation {
   question_id: string; attempted: boolean; transcription: string;
   steps: { step: string; max_marks: number; awarded: number; comment: string }[];
   marks_awarded: number; max_marks: number; feedback: string; confidence: "high" | "medium" | "low";
+  mistake_type?: string; mistake_note?: string;
 }
 export interface SheetEvaluation {
   student_name_on_sheet: string | null; questions: QuestionEvaluation[]; overall_feedback: string; strengths: string[]; gaps: string[];

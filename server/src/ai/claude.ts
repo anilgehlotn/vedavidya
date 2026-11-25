@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { one } from "../db.js";
 import { decrypt } from "../secrets.js";
-import { GeneratedPaper, SheetEvaluation, type Section } from "./schemas.js";
+import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, type Section } from "./schemas.js";
 
 export const MODEL = process.env.CLAUDE_MODEL ?? "claude-opus-5-5";
 const MAX_REQUEST_BYTES = 30 * 1024 * 1024; // API request limit is 32 MB
@@ -167,7 +167,9 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
       "Grade every question in the answer key: award step-wise partial credit strictly according to the rubric, accept valid alternative methods, " +
       "and never award more than a step's maximum. For objective questions award full marks if correct, minus negative_marks if wrong, 0 if unattempted. " +
       "If a question is not attempted, mark attempted=false with 0 marks. If handwriting is unclear, give your best reading and set confidence to low. " +
-      "marks_awarded must equal the sum of awarded step marks (or the objective result).",
+      "marks_awarded must equal the sum of awarded step marks (or the objective result). " +
+      "For every question where marks were lost, classify the main cause in mistake_type and name the exact slip in mistake_note, " +
+      "so the student knows precisely what to fix. Use mistake_type none only for full marks.",
     content: [
       ...blocks,
       {
@@ -211,5 +213,57 @@ export async function importPaper(orgId: string, paperFiles: string[], keyFiles:
           (kBlocks.length ? "Take correct answers and marking from the answer key." : "No answer key was provided: solve each question yourself."),
       },
     ],
+  });
+}
+
+export interface LostQuestion {
+  question: string; topic: string; marks: number; awarded: number; mistake_type: string; mistake_note: string;
+  missed_steps: string[]; student_wrote: string; feedback: string;
+}
+
+/** A personal Fix-it set: practice now on exactly what was lost, plus a later check-up on the same skills. */
+export async function generatePractice(orgId: string, ctx: {
+  studentFirstName: string; subject: string | null; classLevel: string | null; language: string; lost: LostQuestion[];
+  practiceCount: number; checkupCount: number;
+}) {
+  return structured<import("./schemas.js").PracticePlan>(orgId, {
+    effort: "medium",
+    format: zodOutputFormat(PracticePlan),
+    system:
+      "You are a caring, expert tutor for Indian school and coaching students. You design short, targeted practice that fixes the " +
+      "specific mistakes a student made in a test. Every question must be auto-markable (single-correct MCQ with 4 options, or numeric), " +
+      "unambiguous, correct, at the student's level, and aimed at one of the listed mistakes. Order practice from easier to harder. " +
+      "Explanations teach the exact step the student got wrong in 2-4 short sentences. Check-up questions test the same skills with new numbers " +
+      "and contexts (never repeat practice questions) so that improvement can be measured.",
+    content: [{
+      type: "text",
+      text:
+        `Student: ${ctx.studentFirstName}\nSubject: ${ctx.subject ?? "-"}\nClass: ${ctx.classLevel ?? "-"}\nWrite questions in: ${ctx.language}\n\n` +
+        `Questions where the student lost marks (JSON):\n${JSON.stringify(ctx.lost)}\n\n` +
+        `Create a Fix-it practice plan with exactly ${ctx.practiceCount} practice questions (ids p1..p${ctx.practiceCount}) and exactly ` +
+        `${ctx.checkupCount} check-up questions (ids c1..c${ctx.checkupCount}). Give more questions to the mistakes that cost the most marks.`,
+    }],
+  });
+}
+
+/** One brief per test for the teacher: the class's main misconceptions and how to re-teach them tomorrow. */
+export async function generateBrief(orgId: string, ctx: {
+  title: string; subject: string | null; students: number; questions: unknown[]; examples: unknown[]; mistakeTotals: Record<string, number>;
+}) {
+  return structured<import("./schemas.js").ReteachBrief>(orgId, {
+    effort: "medium",
+    format: zodOutputFormat(ReteachBrief),
+    system:
+      "You are an experienced head of department helping a teacher plan tomorrow's lesson after a test. Identify the 2-4 misconceptions " +
+      "that cost the class the most marks, using the per-question statistics and real (anonymised) student answers provided. " +
+      "Never include student names. Re-teach plans must be practical for a normal classroom, about 10 minutes each.",
+    content: [{
+      type: "text",
+      text:
+        `Test: ${ctx.title} (${ctx.subject ?? ""}), ${ctx.students} students marked.\n\n` +
+        `Marks lost by mistake type across the class: ${JSON.stringify(ctx.mistakeTotals)}\n\n` +
+        `Per-question results (JSON):\n${JSON.stringify(ctx.questions)}\n\n` +
+        `Sample anonymised wrong answers (JSON):\n${JSON.stringify(ctx.examples)}\n\nWrite the re-teach brief.`,
+    }],
   });
 }

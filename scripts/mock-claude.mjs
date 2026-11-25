@@ -47,6 +47,23 @@ function paperFrom(text) {
   };
 }
 
+function practiceFrom(text) {
+  stats.practice = (stats.practice ?? 0) + 1;
+  const n = Number(text.match(/exactly (\d+) practice questions/)[1]), m = Number(text.match(/exactly (\d+) check-up questions/)[1]);
+  const lost = JSON.parse(text.split("Questions where the student lost marks (JSON):\n")[1].split("\n\nCreate a Fix-it")[0]);
+  if (!Array.isArray(lost) || !lost.length || !lost[0].question) throw new Error("practice prompt missing lost questions");
+  const q = (id, i) => i % 2 ? { id, type: "numeric", text: `Compute ${i} × 6`, options: [], correct_option: null, numeric_answer: i * 6, topic: lost[0].topic, targets: lost[0].mistake_type, explanation: "Multiply step by step." }
+    : { id, type: "mcq", text: `Which is right? (${i})`, options: ["A", "B", "C", "D"], correct_option: 2, numeric_answer: null, topic: lost[0].topic, targets: lost[0].mistake_type, explanation: "C follows from the rule." };
+  return { focus: "We'll fix the steps you missed.", practice: Array.from({ length: n }, (_, i) => q(`p${i + 1}`, i + 1)), checkup: Array.from({ length: m }, (_, i) => q(`c${i + 1}`, i + 1)) };
+}
+
+function briefFrom(text) {
+  stats.brief = (stats.brief ?? 0) + 1;
+  return { summary: "The class did well on recall but lost marks on multi-step questions.",
+    misconceptions: [{ title: "Skipping working in proofs", explanation: "Students jump to the answer.", students_affected: 7, example: "x = 3 so done", reteach_plan: "Model one full proof, then pair work.", check_question: "Prove √3 is irrational." }],
+    next_steps: ["Re-test Q4 type next week"] };
+}
+
 function importedPaper(content, hasKey) {
   const pages = content.filter((b) => b.type === "image" || b.type === "document").length;
   stats.lastImport = { pages, hasKey };
@@ -66,8 +83,11 @@ function evaluationFrom(text) {
       const steps = (q.rubric ?? []).map((r) => ({ step: r.step, max_marks: r.marks, awarded: half(rnd(0, r.marks)), comment: "" }));
       const sum = steps.reduce((t, s) => t + s.awarded, 0);
       // Occasionally over-award, to prove the app clamps marks to the paper's maximum.
+      const types = ["concept", "careless", "incomplete", "presentation"];
+      const mt = sum >= q.marks ? "none" : types[Math.floor(Math.random() * types.length)];
       return { question_id: q.id, attempted: true, transcription: "x = 3", steps, marks_awarded: Math.random() < 0.1 ? q.marks + 5 : sum,
-        max_marks: q.marks, feedback: "Mock feedback", confidence: Math.random() < 0.1 ? "low" : "high" };
+        max_marks: q.marks, feedback: "Mock feedback", confidence: Math.random() < 0.1 ? "low" : "high",
+        mistake_type: mt, mistake_note: mt === "none" ? "" : `Mock ${mt} mistake` };
     }),
     overall_feedback: "Mock overall", strengths: ["Algebra"], gaps: ["Trigonometry"],
   };
@@ -127,7 +147,9 @@ http.createServer((req, res) => {
           : apiError(res, 529, "overloaded_error", "Overloaded");
       }
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
-      const out = /Create an original question paper/.test(text) ? paperFrom(text)
+      const out = /Create a Fix-it practice plan/.test(text) ? practiceFrom(text)
+        : /Write the re-teach brief/.test(text) ? briefFrom(text)
+        : /Create an original question paper/.test(text) ? paperFrom(text)
         : /Transcribe this question paper/.test(text) ? importedPaper(content, /ANSWER KEY/.test(text))
         : evaluationFrom(text);
       return setTimeout(() => streamText(res, body.model, JSON.stringify(out)), rnd(100, 600));

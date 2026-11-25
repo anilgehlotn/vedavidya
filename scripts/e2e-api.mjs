@@ -156,6 +156,7 @@ let creds;
   await expect("reset student password", 200, "POST", `/students/${one_.data.id}/reset-password`, { token: admin, body: {} });
 }
 let studentTok = await login(creds[0].username, creds[0].password);
+let logins;
 ok(Boolean(studentTok), "student logs in with generated credentials");
 
 section("Question papers");
@@ -320,7 +321,7 @@ section("Upload an existing question paper (with answer key)");
 section(`All ${N} students log in at once and open their results`);
 {
   await expect("teacher can't reset a whole batch", 403, "POST", "/students/reset-logins", { token: teacher, body: { batch_id: batch } });
-  const logins = await expect("batch logins (admin)", 200, "POST", "/students/reset-logins", { token: admin, body: { batch_id: batch } });
+  logins = await expect("batch logins (admin)", 200, "POST", "/students/reset-logins", { token: admin, body: { batch_id: batch } });
   ok(logins.data.created.length === N && logins.data.created.every((c) => c.password.length === 8), `${N} fresh 8-character passwords`);
   await expect("other institute can't reset logins", 404, "POST", "/students/reset-logins", { token: otherAdmin, body: { batch_id: batch } });
   ok((await call("GET", "/my/tests", { token: studentTok })).status === 401, "old student session ends after the reset");
@@ -348,6 +349,80 @@ section(`All ${N} students log in at once and open their results`);
   console.log(`  ${okCount}/${N} students saw their result · total ${Date.now() - t0} ms · slowest ${times.at(-1)} ms · median ${times[Math.floor(times.length / 2)]} ms`);
   ok(okCount === N, `all ${N} students logged in and saw marks + feedback (${[...new Set(results.filter((r) => r !== "ok"))].join(", ")})`);
   ok(times.at(-1) < 15000, "every student got their result within 15 s");
+}
+
+section("Mistake analysis + Fix-it practice");
+{
+  const d = (await call("GET", `/tests/${test}`, { token: teacher })).data;
+  const lostCount = d.attempts.filter((a) => a.score !== null && a.score < a.max_score).length;
+  const ins0 = await poll(() => call("GET", `/tests/${test}/insights`, { token: teacher }).then((r) => r.data), (x) => x.practice.preparing === 0, 120000);
+  ok(ins0.practice.students === lostCount && ins0.practice.failed === 0, `Fix-it created for every student who lost marks (${ins0.practice.students}/${lostCount})`);
+  const types = Object.keys(ins0.mistakes);
+  ok(types.length > 0 && types.every((t) => ["concept", "careless", "incomplete", "presentation", "not_attempted", "unclassified"].includes(t)), `class mistakes by type: ${types.join(", ")}`);
+  ok(ins0.questions.length === 10 && ins0.questions.every((q) => q.avg_pct !== null), "per-question class averages");
+  await expect("student can't see class insights", 403, "GET", `/tests/${test}/insights`, { token: studentTok });
+  await expect("other institute can't see insights", 404, "GET", `/tests/${test}/insights`, { token: otherAdmin });
+
+  // Re-teach brief
+  await expect("create re-teach brief", 200, "POST", `/tests/${test}/brief`, { token: teacher, body: {} });
+  const ins1 = await poll(() => call("GET", `/tests/${test}/insights`, { token: teacher }).then((r) => r.data), (x) => x.brief_status !== "generating", 60000);
+  ok(ins1.brief_status === "ready" && ins1.brief?.misconceptions?.length > 0, "re-teach brief ready with misconceptions");
+  await expect("student can't create a brief", 403, "POST", `/tests/${test}/brief`, { token: studentTok, body: {} });
+
+  // A student's own practice
+  const mine = (await call("GET", "/my/tests", { token: studentTok })).data.find((t) => t.id === test);
+  const myAtt = (await call("GET", `/attempts/${mine.attempt_id}`, { token: studentTok })).data;
+  ok(myAtt.evaluation.questions.every((q) => q.mistake_type), "every marked question has a mistake type");
+  ok(myAtt.evaluation.questions.every((q) => (q.marks_awarded >= q.max_marks) === (q.mistake_type === "none")), "mistake type matches the marks");
+  const sets = (await expect("my practice list", 200, "GET", "/my/practice", { token: studentTok })).data;
+  const pr = sets.find((x) => x.kind === "practice" && x.test_id === test), ck = sets.find((x) => x.kind === "checkup" && x.test_id === test);
+  if (myAtt.score < myAtt.max_score) {
+    ok(pr && pr.status === "ready" && pr.count >= 5, "practice set ready with 5+ questions");
+    ok(ck && ck.locked === true, "check-up is locked for a week");
+    await expect("locked check-up can't be opened", 403, "GET", `/practice/${ck.id}`, { token: studentTok });
+    const set = (await expect("open practice", 200, "GET", `/practice/${pr.id}`, { token: studentTok })).data;
+    ok(set.questions.every((q) => q.answer === undefined && q.explanation === undefined), "answers stay hidden until the student answers");
+    const other = await login(logins.data.created[1].username, logins.data.created[1].password);
+    await expect("another student can't open my practice", 404, "GET", `/practice/${pr.id}`, { token: other });
+    await expect("teacher can't answer student practice", 403, "POST", `/practice/${pr.id}/answer`, { token: teacher, body: { question_id: "p1", answer: 1 } });
+    let right = 0;
+    for (const [i, q] of set.questions.entries()) {
+      const wrongOnPurpose = i === 0;
+      const ans = q.type === "mcq" ? (wrongOnPurpose ? 0 : 2) : (wrongOnPurpose ? -1 : (i + 1) * 6);
+      const r = await call("POST", `/practice/${pr.id}/answer`, { token: studentTok, body: { question_id: q.id, answer: ans } });
+      if (r.status !== 200 || typeof r.data.explanation !== "string") { ok(false, `answer ${q.id}: ${r.status}`); break; }
+      if (r.data.correct) right++;
+      if (i === 0) {
+        ok(r.data.correct === false && r.data.answer !== undefined, "wrong answer shows the right one and an explanation");
+        await expect("can't answer the same question twice", 409, "POST", `/practice/${pr.id}/answer`, { token: studentTok, body: { question_id: q.id, answer: 2 } });
+        if (q.type === "mcq") await expect("option out of range → 400", 400, "POST", `/practice/${pr.id}/answer`, { token: studentTok, body: { question_id: set.questions[1].id, answer: 9 } });
+      }
+    }
+    const after = (await call("GET", `/practice/${pr.id}`, { token: studentTok })).data;
+    ok(after.status === "done" && after.score === right && right === set.questions.length - 1, `practice completed and scored ${after.score}/${after.max_score}`);
+    if (DATA_DIR) {
+      const db = new DatabaseSync(path.join(DATA_DIR, "vedavidya.db"));
+      db.prepare("UPDATE practice_sets SET available_at = '2000-01-01 00:00:00' WHERE id = ?").run(ck.id); db.close();
+      const cks = (await expect("check-up unlocks after a week", 200, "GET", `/practice/${ck.id}`, { token: studentTok })).data;
+      for (const [i, q] of cks.questions.entries()) await call("POST", `/practice/${ck.id}/answer`, { token: studentTok, body: { question_id: q.id, answer: q.type === "mcq" ? 2 : (i + 1) * 6 } });
+      const ins2 = (await call("GET", `/tests/${test}/insights`, { token: teacher })).data;
+      ok(ins2.practice.checkup_done === 1 && ins2.practice.checkup_avg === 100 && ins2.practice.baseline_avg !== null, `teacher sees improvement: ${ins2.practice.baseline_avg}% → ${ins2.practice.checkup_avg}%`);
+      const card = (await call("GET", `/analytics/student/${myAtt.student_id}`, { token: studentTok })).data;
+      ok(card.practice.completed >= 1 && card.practice.checkups_done === 1 && card.practice.after_pct === 100, "report card shows practice and check-up progress");
+      ok(Object.keys(card.mistakes).length > 0, "report card shows where marks go");
+    }
+  }
+  // Re-marking a sheet refreshes that student's practice
+  const victim = d.attempts.find((a) => a.score !== null && a.score < a.max_score && a.student_name !== "Student 1");
+  await call("POST", `/tests/${test}/evaluate`, { token: teacher, body: { attempt_ids: [victim.id] } });
+  await poll(() => call("GET", `/attempts/${victim.id}`, { token: teacher }).then((r) => r.data), (a) => a.status === "evaluated", 60000);
+  const ins3 = await poll(() => call("GET", `/tests/${test}/insights`, { token: teacher }).then((r) => r.data), (x) => x.practice.preparing === 0, 60000);
+  ok(!ins3.practice.by_attempt[victim.id] || ins3.practice.by_attempt[victim.id].practice.status !== "generating", "re-marked sheet gets a fresh plan");
+  // Unpublishing hides practice from students
+  await call("POST", `/tests/${test}/publish`, { token: teacher, body: { publish: false } });
+  ok(!(await call("GET", "/my/practice", { token: studentTok })).data.some((x) => x.test_id === test), "practice hidden while results are unpublished");
+  await call("POST", `/tests/${test}/publish`, { token: teacher, body: { publish: true } });
+  ok((await call("GET", "/my/practice", { token: studentTok })).data.some((x) => x.test_id === test), "practice back after re-publishing (not created twice)");
 }
 
 section("Online (CBT) test");

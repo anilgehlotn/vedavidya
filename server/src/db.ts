@@ -116,3 +116,24 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_tests_org ON tests(org_id)");
 
 /** Signs the user out everywhere (after a password change or reset). */
 export const bumpTokenVersion = (userId: string) => run("UPDATE users SET token_version = coalesce(token_version, 0) + 1 WHERE id = ?", userId);
+
+// ---- Fix-it practice and re-teach briefs ----
+db.exec(`
+CREATE TABLE IF NOT EXISTS practice_sets (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  test_id TEXT NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+  attempt_id TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
+  student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('practice','checkup')),
+  status TEXT NOT NULL DEFAULT 'generating' CHECK (status IN ('generating','ready','done','failed')),
+  focus TEXT, questions TEXT DEFAULT '[]', answers TEXT DEFAULT '{}',
+  score REAL, max_score REAL, baseline_pct REAL, available_at TEXT, error TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT,
+  UNIQUE (attempt_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_practice_student ON practice_sets(student_id);
+CREATE INDEX IF NOT EXISTS idx_practice_test ON practice_sets(test_id);
+`);
+addColumn("tests", "brief", "TEXT");
+addColumn("tests", "brief_status", "TEXT");
+addColumn("tests", "brief_error", "TEXT");

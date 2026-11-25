@@ -50,6 +50,10 @@ export const QuestionEvaluation = z.object({
   max_marks: z.number(),
   feedback: z.string().describe("One or two sentences of actionable feedback for the student"),
   confidence: z.enum(["high", "medium", "low"]).describe("Low when handwriting is illegible or ambiguous"),
+  mistake_type: z.enum(["none", "concept", "careless", "incomplete", "presentation", "not_attempted"]).describe(
+    "Main reason marks were lost: none (full marks), concept (misunderstood the idea/method), careless (arithmetic, sign, copying or unit slip), " +
+    "incomplete (stopped early or skipped required steps), presentation (right idea but missing working, labels, diagram or final statement), not_attempted"),
+  mistake_note: z.string().describe("One short sentence naming the exact mistake, e.g. 'Forgot to square the radius'. Empty when mistake_type is none"),
 });
 export type QuestionEvaluation = z.infer<typeof QuestionEvaluation>;
 
@@ -61,3 +65,42 @@ export const SheetEvaluation = z.object({
   gaps: z.array(z.string()).describe("Topics or skills the student should revise"),
 });
 export type SheetEvaluation = z.infer<typeof SheetEvaluation>;
+
+export const MISTAKE_TYPES = ["concept", "careless", "incomplete", "presentation", "not_attempted"] as const;
+export type MistakeType = (typeof MISTAKE_TYPES)[number] | "none";
+
+// ---- Fix-it practice ----
+export const PracticeQuestion = z.object({
+  id: z.string().describe("p1, p2, ... for practice; c1, c2, ... for the check-up"),
+  type: z.enum(["mcq", "numeric"]),
+  text: z.string(),
+  options: z.array(z.string()).describe("Exactly 4 options for mcq, empty array for numeric"),
+  correct_option: z.number().nullable().describe("0-based index for mcq, else null"),
+  numeric_answer: z.number().nullable().describe("Exact answer for numeric, else null"),
+  topic: z.string(),
+  targets: z.string().describe("Which of the student's mistakes this question fixes, in a few words"),
+  explanation: z.string().describe("Short worked explanation shown after the student answers"),
+});
+export type PracticeQuestion = z.infer<typeof PracticeQuestion>;
+
+export const PracticePlan = z.object({
+  focus: z.string().describe("Two friendly sentences to the student: what they will fix and why it matters"),
+  practice: z.array(PracticeQuestion),
+  checkup: z.array(PracticeQuestion),
+});
+export type PracticePlan = z.infer<typeof PracticePlan>;
+
+// ---- Re-teach brief for teachers ----
+export const ReteachBrief = z.object({
+  summary: z.string().describe("Two or three sentences on how the class did and the main pattern"),
+  misconceptions: z.array(z.object({
+    title: z.string(),
+    explanation: z.string().describe("What students think and why it is wrong"),
+    students_affected: z.number().describe("How many students showed this misconception"),
+    example: z.string().describe("A short, anonymised example of a real wrong answer from the class"),
+    reteach_plan: z.string().describe("A 10-minute re-teach plan for the next class"),
+    check_question: z.string().describe("One quick question to check understanding after re-teaching"),
+  })),
+  next_steps: z.array(z.string()),
+});
+export type ReteachBrief = z.infer<typeof ReteachBrief>;

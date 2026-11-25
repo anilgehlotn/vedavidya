@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { all, json, one } from "../db.js";
 import type { Section, SheetEvaluation } from "../ai/schemas.js";
+import { studentMistakeSummary } from "./practice.js";
 
 export const analyticsRoutes = Router();
 
@@ -54,6 +55,7 @@ analyticsRoutes.get("/analytics/student/:id", (req, res) => {
   });
   const gaps = rows.flatMap((r) => json<SheetEvaluation | null>(r.evaluation, null)?.gaps ?? []);
   res.json({ student, trend, topics: topicMastery(rows), gaps: [...new Set(gaps)].slice(-8), subjects: subjectsOf(allRows), subject,
+    ...studentMistakeSummary(student.id, u.role === "student"),
     average: trend.length ? Math.round(trend.reduce((t, x) => t + x.pct, 0) / trend.length) : null });
 });
 

@@ -115,8 +115,11 @@ function synthEval(sections: Section[], skill: number): SheetEvaluation {
     const steps = objective ? [] : qq.rubric.map((r) => ({ step: r.step, max_marks: r.marks, awarded: Math.round(r.marks * Math.min(1, frac + (rand() - 0.5) * 0.3) * 2) / 2, comment: "" }))
       .map((s) => ({ ...s, awarded: Math.max(0, Math.min(s.max_marks, s.awarded)) }));
     const marks = objective ? (!attempted ? 0 : correct ? qq.marks : -qq.negative_marks) : steps.reduce((t, s) => t + s.awarded, 0);
+    const types = ["concept", "careless", "incomplete", "presentation"] as const;
+    const mistake_type: SheetEvaluation["questions"][number]["mistake_type"] = !attempted ? "not_attempted" : marks >= qq.marks ? "none" : objective ? "concept" : types[Math.floor(rand() * types.length)];
     return { question_id: qq.id, attempted, transcription: "", steps, marks_awarded: marks, max_marks: qq.marks, confidence: "high" as const,
-      feedback: !attempted ? "Not attempted." : marks >= qq.marks ? "Fully correct." : `Revise ${qq.topic}.` };
+      feedback: !attempted ? "Not attempted." : marks >= qq.marks ? "Fully correct." : `Revise ${qq.topic}.`,
+      mistake_type, mistake_note: mistake_type === "none" || mistake_type === "not_attempted" ? "" : `Demo: ${mistake_type} mistake in ${qq.topic}` };
   });
   const weak = [...new Set(questions.filter((x) => x.marks_awarded < x.max_marks * 0.5).map((x) => sections.flatMap((s) => s.questions).find((qq) => qq.id === x.question_id)!.topic))];
   return { student_name_on_sheet: null, questions, overall_feedback: "Demo evaluation.", strengths: [], gaps: weak };

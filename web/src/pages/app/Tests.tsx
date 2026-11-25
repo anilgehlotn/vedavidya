@@ -5,6 +5,7 @@ import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/
 import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, StatusBadge, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
 import { bulkUpload, compressImage, isAllowedFile, type BulkResult } from "../../lib/upload";
+import { FixitCell, MistakeBars, MISTAKES, TestInsights, TopTip, useInsights } from "./Insights";
 
 interface TestRow { id: string; title: string; mode: "offline" | "cbt"; scheduled_at: string | null; results_published: number; paper_title: string; total_marks: number; subject: string | null; batch_names: string | null; candidates: number; evaluated: number }
 
@@ -193,6 +194,7 @@ export function TestDetail() {
   const [bulk, setBulk] = useState(false);
 
   const busy = t.data?.attempts.some((a) => a.status === "evaluating");
+  const ins = useInsights(id!, Boolean(busy));
   useEffect(() => {
     if (!busy) { setMsg((m) => (m?.startsWith("Evaluating") ? "All sheets have been marked. Review them, then publish." : m)); return; }
     const i = setInterval(() => t.reload(true), 3000);
@@ -215,8 +217,9 @@ export function TestDetail() {
     t.reload(true);
   };
   const publish = async (publish: boolean) => {
-    await api(`/tests/${d.id}/publish`, { body: { publish } });
-    setMsg(publish ? "Results published. Students can see them and parent links are active." : "Results hidden from students.");
+    const r = await api<{ practice_queued: number }>(`/tests/${d.id}/publish`, { body: { publish } });
+    setMsg(publish ? `Results published. Students can see them and parent links are active.${r.practice_queued ? ` Fix-it practice is being prepared for ${r.practice_queued} student${r.practice_queued === 1 ? "" : "s"}.` : ""}` : "Results hidden from students.");
+    ins.reload(true);
     t.reload(true);
   };
   const downloadLinks = () => {
@@ -254,6 +257,7 @@ export function TestDetail() {
           <b>How it works:</b> upload each student's pages from their row, or use <b>Bulk upload</b> for the whole class (files named by roll number, e.g. <code>7-1.jpg</code>), then click <b>Evaluate</b>. AI marks every question step by step using the paper's rubric. Open any sheet to review and adjust marks, then publish.
         </div>
       )}
+      {ins.data && <TestInsights testId={d.id} ins={ins.data} published={Boolean(d.results_published)} onReload={() => ins.reload(true)} />}
       <div className="tabs">
         {(["all", "pending", "uploaded", "evaluating", "evaluated", "failed"] as const).map((s) => {
           const n = s === "all" ? d.attempts.length : d.attempts.filter((a) => a.status === s).length;
@@ -262,7 +266,7 @@ export function TestDetail() {
       </div>
       <div className="card">
         <div className="table-wrap"><table className="t">
-          <thead><tr><th>Rank</th><th>Student</th><th>Batch</th><th>Status</th><th>Score</th><th></th></tr></thead>
+          <thead><tr><th>Rank</th><th>Student</th><th>Batch</th><th>Status</th><th>Score</th>{d.results_published ? <th>Fix-it</th> : null}<th></th></tr></thead>
           <tbody>{list.map((a) => (
             <tr key={a.id}>
               <td className="muted">{ranked.indexOf(a.id) >= 0 ? `#${ranked.indexOf(a.id) + 1}` : "—"}</td>
@@ -271,6 +275,7 @@ export function TestDetail() {
               <td><StatusBadge status={a.status} />{a.reviewed ? <span className="badge blue" style={{ marginLeft: 4 }}>Reviewed</span> : null}
                 {a.error && <div className="small" style={{ color: "var(--red)", maxWidth: 260 }}>{a.error}</div>}</td>
               <td>{a.score != null ? <><b>{a.score}</b><span className="muted">/{a.max_score}</span> <ScoreBadge value={pct(a.score, a.max_score)} /></> : "—"}</td>
+              {d.results_published ? <td><FixitCell s={ins.data?.practice.by_attempt[a.id]} /></td> : null}
               <td><div className="row" style={{ justifyContent: "flex-end" }}>
                 {d.mode === "offline" && a.status !== "evaluating" && <UploadCell a={a} onDone={() => t.reload(true)} />}
                 {d.mode === "offline" && a.files > 0 && a.status !== "evaluating" && <button className="btn btn-ghost btn-sm" onClick={() => { if (a.status !== "evaluated" || confirm(`Re-mark ${a.student_name}'s sheet? This uses AI credits again and replaces any marks you changed.`)) evaluate([a.id]); }}>{a.status === "evaluated" ? "Re-evaluate" : "Evaluate"}</button>}
@@ -364,6 +369,15 @@ export function AttemptReview() {
           <PagePreview attemptId={d.id} n={page} big />
         </Modal>
       )}
+      {ev && ev.questions.some((q) => q.marks_awarded < q.max_marks) && (() => {
+        const lost: Record<string, number> = {};
+        for (const q of ev.questions) {
+          const l = Math.max(0, q.max_marks - Math.max(0, q.marks_awarded)); if (!l) continue;
+          const k = !q.attempted ? "not_attempted" : q.mistake_type && q.mistake_type !== "none" ? q.mistake_type : "unclassified";
+          lost[k] = (lost[k] ?? 0) + l;
+        }
+        return <div className="card card-pad" style={{ marginBottom: 16 }}><b>Where the marks went</b><div style={{ marginTop: 12 }}><MistakeBars data={lost} /></div><TopTip data={lost} /></div>;
+      })()}
       {ev && (ev.overall_feedback || ev.gaps.length > 0) && (
         <div className="grid g2" style={{ marginBottom: 16 }}>
           {ev.overall_feedback && <div className="card card-pad"><b>Overall feedback</b><p className="muted" style={{ marginTop: 6 }}>{ev.overall_feedback}</p>
@@ -382,7 +396,9 @@ export function AttemptReview() {
                   <div className="grow">
                     <div className="q-meta"><b>Q{i + 1}.</b>{q && <span className="badge">{q.topic}</span>}
                       {!qe.attempted && <span className="badge">Not attempted</span>}
-                      {qe.confidence === "low" && <span className="badge amber" title="Handwriting was hard to read - please check">⚠ Check</span>}</div>
+                      {qe.confidence === "low" && <span className="badge amber" title="Handwriting was hard to read - please check">⚠ Check</span>}
+                      {qe.attempted && qe.marks_awarded < qe.max_marks && qe.mistake_type && qe.mistake_type !== "none" && MISTAKES[qe.mistake_type] &&
+                        <span className="badge" style={{ color: MISTAKES[qe.mistake_type].color }}>{MISTAKES[qe.mistake_type].label}</span>}</div>
                     <div className="q-text">{q?.text}</div>
                   </div>
                   <div className="row" style={{ flex: "none" }}>
@@ -403,6 +419,7 @@ export function AttemptReview() {
                     </div>))}
                   </div>
                 )}
+                {qe.mistake_note && qe.marks_awarded < qe.max_marks && <p className="small" style={{ marginTop: 10 }}><b>Mistake:</b> {qe.mistake_note}</p>}
                 {qe.feedback && <p className="small" style={{ marginTop: 10 }}><b>Feedback:</b> {qe.feedback}</p>}
               </div>
             );

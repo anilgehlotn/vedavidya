@@ -9,6 +9,7 @@ import { all, json, one, run, uid, UPLOAD_DIR } from "../db.js";
 import { staff, requireRole } from "../auth.js";
 import { evaluateSheet, AiError, aiProblem } from "../ai/claude.js";
 import { normalisePage, removeFiles, UploadError } from "../images.js";
+import { queuePracticeForTest } from "./practice.js";
 import type { Question, Section, SheetEvaluation } from "../ai/schemas.js";
 
 export const testRoutes = Router();
@@ -198,6 +199,11 @@ function scoreEvaluation(ev: SheetEvaluation, questions: Question[]) {
     if (!q) continue;
     qe.max_marks = q.marks;
     qe.marks_awarded = Math.max(-q.negative_marks, Math.min(q.marks, qe.marks_awarded));
+    // Keep the mistake label consistent with the marks.
+    const m = qe as typeof qe & { mistake_type?: string; mistake_note?: string };
+    if (!qe.attempted) m.mistake_type = "not_attempted";
+    else if (qe.marks_awarded >= q.marks) { m.mistake_type = "none"; m.mistake_note = ""; }
+    else if (!m.mistake_type || m.mistake_type === "none") m.mistake_type = "incomplete";
   }
   return ev.questions.filter((qe) => byId.has(qe.question_id)).reduce((t, qe) => t + qe.marks_awarded, 0);
 }
@@ -216,6 +222,11 @@ async function runEvaluation(attemptId: string) {
     const score = scoreEvaluation(ev, questionsOf(paper.sections));
     run("UPDATE attempts SET status = 'evaluated', evaluation = ?, score = ?, max_score = ?, reviewed = 0, evaluated_at = CURRENT_TIMESTAMP WHERE id = ?",
       JSON.stringify(ev), score, paper.total_marks, attemptId);
+    // A re-marked sheet gets a fresh Fix-it plan (if results are already out).
+    if (one("SELECT 1 FROM practice_sets WHERE attempt_id = ?", attemptId)) {
+      run("DELETE FROM practice_sets WHERE attempt_id = ?", attemptId);
+      if (one("SELECT 1 FROM tests WHERE id = ? AND results_published = 1", a.test_id)) queuePracticeForTest(a.test_id, [attemptId]);
+    }
   } catch (e) {
     run("UPDATE attempts SET status = 'failed', error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), attemptId);
   }
@@ -281,10 +292,14 @@ testRoutes.post("/tests/:id/publish", staff, (req, res) => {
   const publish = req.body?.publish !== false;
   const r = run("UPDATE tests SET results_published = ? WHERE id = ? AND org_id = ?", publish ? 1 : 0, req.params.id, req.user!.org_id);
   if (!r.changes) return res.status(404).json({ error: "Test not found" });
-  if (publish)
+  let practiceQueued = 0;
+  if (publish) {
     for (const a of all<{ id: string }>("SELECT id FROM attempts WHERE test_id = ? AND score IS NOT NULL", req.params.id))
       run("INSERT OR IGNORE INTO share_tokens (token, attempt_id) VALUES (?, ?)", crypto.randomBytes(12).toString("base64url"), a.id);
-  res.json({ ok: true });
+    // Each student who lost marks gets a personal Fix-it practice set (only once per sheet).
+    if (req.body?.practice !== false) practiceQueued = queuePracticeForTest(req.params.id);
+  }
+  res.json({ ok: true, practice_queued: practiceQueued });
 });
 
 testRoutes.get("/tests/:id/results.csv", staff, (req, res) => {
@@ -359,6 +374,8 @@ testRoutes.post("/cbt/:testId/submit", student, (req, res) => {
       question_id: q.id, attempted, transcription: attempted ? String(q.type === "mcq" ? q.options[Number(given)] ?? given : given) : "",
       steps: [], marks_awarded: marks, max_marks: q.marks, confidence: "high" as const,
       feedback: !attempted ? "Not attempted." : correct ? "Correct." : `Incorrect. ${q.solution}`,
+      mistake_type: (!attempted ? "not_attempted" : correct ? "none" : "concept") as "none" | "concept" | "not_attempted",
+      mistake_note: !attempted || correct ? "" : "Chose a wrong answer",
     };
   });
   const score = evQuestions.reduce((t, q) => t + q.marks_awarded, 0);

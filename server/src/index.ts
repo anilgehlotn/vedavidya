@@ -12,6 +12,7 @@ import { paperRoutes, recoverPaperJobs } from "./routes/papers.js";
 import { testRoutes, recoverEvaluations } from "./routes/tests.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import { settingsRoutes } from "./routes/settings.js";
+import { practiceRoutes, recoverPractice } from "./routes/practice.js";
 
 const PROD = process.env.NODE_ENV === "production";
 const app = express();
@@ -39,7 +40,7 @@ app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.use("/api", publicRoutes);
-app.use("/api", requireAuth, demoReadOnly, orgRoutes, paperRoutes, testRoutes, analyticsRoutes, settingsRoutes);
+app.use("/api", requireAuth, demoReadOnly, orgRoutes, paperRoutes, testRoutes, practiceRoutes, analyticsRoutes, settingsRoutes);
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
 const onError: ErrorRequestHandler = (err, _req, res, _next) => {
@@ -67,6 +68,7 @@ if (fs.existsSync(webDist)) {
 
 recoverPaperJobs();
 recoverEvaluations();
+recoverPractice();
 
 const port = Number(process.env.PORT ?? 4000);
 app.listen(port, () => console.log(`Veda Vidya API on http://localhost:${port}`));
