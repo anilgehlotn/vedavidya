@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /report/
+Disallow: /api/
+
+Sitemap: https://app.vedavidya.co/sitemap.xml
