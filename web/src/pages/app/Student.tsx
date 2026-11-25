@@ -1,12 +1,30 @@
 // Student-facing pages: my tests and the online (CBT) exam screen.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, fmtDateTime, pct } from "../../lib/api";
+import { api, DEMO, download, fmtDateTime, pct } from "../../lib/api";
 import type { Question } from "../../lib/types";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, useApi } from "../../components/ui";
 import { FixitList } from "./Insights";
 
 interface MyTest { id: string; title: string; mode: "cbt" | "offline"; scheduled_at: string | null; duration_min: number; results_published: number; subject: string | null; total_marks: number; attempt_id: string; status: string; score: number | null; max_score: number | null }
+
+/** Downloads the student's own report card PDF (available once results are published). */
+function ReportButton({ t }: { t: MyTest }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  if (DEMO) return null;
+  return (
+    <>
+      <button className="btn btn-primary btn-sm" disabled={busy} onClick={async () => {
+        setBusy(true); setErr(null);
+        try { await download(`/attempts/${t.attempt_id}/report.pdf`, `${t.title.replace(/\W+/g, "_")}_report.pdf`); }
+        catch (e) { setErr((e as Error).message); }
+        finally { setBusy(false); }
+      }}>{busy ? "Preparing…" : "⤓ Report"}</button>
+      {err && <div className="small" style={{ color: "var(--red)" }}>{err}</div>}
+    </>
+  );
+}
 
 export function MyTests() {
   const tests = useApi<MyTest[]>("/my/tests");
@@ -37,17 +55,19 @@ export function MyTests() {
       )}
       <div className="card">
         {done.length ? (
-          <div className="table-wrap"><table className="t">
-            <thead><tr><th>Test</th><th>Date</th><th>Score</th><th></th></tr></thead>
-            <tbody>{done.map((t) => (
-              <tr key={t.id}>
-                <td><b>{t.title}</b><div className="small muted">{t.subject}</div></td>
-                <td className="small">{fmtDateTime(t.scheduled_at)}</td>
-                <td>{t.results_published && t.score != null ? <><b>{t.score}</b>/{t.max_score} <ScoreBadge value={pct(t.score, t.max_score)} /></> : <span className="badge">{t.status === "evaluated" || t.status === "evaluating" || t.status === "uploaded" ? "Awaiting results" : "Not taken"}</span>}</td>
-                <td style={{ textAlign: "right" }}>{t.results_published && t.score != null ? <Link to={`/app/attempts/${t.attempt_id}`} className="btn btn-ghost btn-sm">View answers</Link> : null}</td>
-              </tr>))}
-            </tbody>
-          </table></div>
+          <div className="result-list">{done.map((t) => {
+            const out = t.results_published && t.score != null;
+            return (
+              <div key={t.id} className="result-row">
+                <div className="grow" style={{ minWidth: 0 }}>
+                  <b>{t.title}</b>
+                  <div className="small muted">{[t.subject, fmtDateTime(t.scheduled_at)].filter(Boolean).join(" · ")}</div>
+                </div>
+                <div className="result-score">{out ? <><b>{t.score}</b>/{t.max_score} <ScoreBadge value={pct(t.score, t.max_score)} /></> : <span className="badge">{t.status === "evaluated" || t.status === "evaluating" || t.status === "uploaded" ? "Awaiting results" : "Not taken"}</span>}</div>
+                {out && <div className="row result-actions"><ReportButton t={t} /><Link to={`/app/attempts/${t.attempt_id}`} className="btn btn-ghost btn-sm">View answers</Link></div>}
+              </div>
+            );
+          })}</div>
         ) : <Empty title="No results yet" />}
       </div>
     </>
