@@ -10,6 +10,7 @@ import { staff, requireRole } from "../auth.js";
 import { evaluateSheet, AiError, aiProblem } from "../ai/claude.js";
 import { normalisePage, removeFiles, UploadError } from "../images.js";
 import { queuePracticeForTest } from "./practice.js";
+import { ensureSubtopics } from "./papers.js";
 import type { Question, Section, SheetEvaluation } from "../ai/schemas.js";
 
 export const testRoutes = Router();
@@ -104,6 +105,7 @@ testRoutes.put("/tests/:id/paper", staff, (req, res) => {
   run("UPDATE tests SET paper_id = ?, subject = coalesce(nullif(trim(subject),''), ?) WHERE id = ?", paper_id, paper.subject || null, t.id);
   if (!t.paper_id && !t.scheduled_at && paper.duration_min) run("UPDATE tests SET duration_min = ? WHERE id = ?", paper.duration_min, t.id);
   run("UPDATE attempts SET max_score = ? WHERE test_id = ? AND score IS NULL", paper.total_marks ?? 0, t.id);
+  void ensureSubtopics(paper_id);
   res.json({ ok: true });
 });
 
@@ -298,6 +300,8 @@ testRoutes.post("/tests/:id/evaluate", staff, (req, res) => {
   const ids = all<{ id: string; files: string; status: string }>("SELECT id, files, status FROM attempts WHERE test_id = ?", req.params.id)
     .filter((a) => allowed.includes(a.status) && json<string[]>(a.files, []).length && (!only || only.includes(a.id))).map((a) => a.id);
   enqueue(ids);
+  const pid = one<{ paper_id: string }>("SELECT paper_id FROM tests WHERE id = ?", req.params.id)?.paper_id;
+  if (pid) void ensureSubtopics(pid);
   res.json({ queued: ids.length });
 });
 

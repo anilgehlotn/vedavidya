@@ -497,7 +497,7 @@ export function AttemptReview() {
               <div key={qe.question_id} className="q-card">
                 <div className="row between" style={{ alignItems: "flex-start" }}>
                   <div className="grow">
-                    <div className="q-meta"><b>Q{i + 1}.</b>{q && <span className="badge">{q.topic}</span>}
+                    <div className="q-meta"><b>Q{i + 1}.</b>{q && <span className="badge">{q.topic}{q.subtopic ? ` › ${q.subtopic}` : ""}</span>}
                       {!qe.attempted && <span className="badge">Not attempted</span>}
                       {qe.confidence === "low" && <span className="badge amber" title="Handwriting was hard to read - please check">⚠ Check</span>}
                       {qe.attempted && qe.marks_awarded < qe.max_marks && qe.mistake_type && qe.mistake_type !== "none" && MISTAKES[qe.mistake_type] &&

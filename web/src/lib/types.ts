@@ -6,7 +6,7 @@ export interface RubricStep { step: string; marks: number }
 export interface Question {
   id: string; type: "mcq" | "numeric" | "short" | "long"; text: string; options: string[];
   correct_option: number | null; numeric_answer: number | null; marks: number; negative_marks: number;
-  difficulty: "easy" | "medium" | "hard"; topic: string; solution: string; rubric: RubricStep[];
+  difficulty: "easy" | "medium" | "hard"; topic: string; subtopic?: string; solution: string; rubric: RubricStep[];
 }
 export interface Section { name: string; instructions: string; questions: Question[] }
 export interface Paper {

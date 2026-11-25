@@ -176,14 +176,14 @@ export function PaperGenerate() {
 
 const blankQuestion = (n: number): Question => ({
   id: `q${n}`, type: "short", text: "", options: [], correct_option: null, numeric_answer: null, marks: 2, negative_marks: 0,
-  difficulty: "medium", topic: "", solution: "", rubric: [{ step: "Correct answer with working", marks: 2 }],
+  difficulty: "medium", topic: "", subtopic: "", solution: "", rubric: [{ step: "Correct answer with working", marks: 2 }],
 });
 
 function QuestionView({ q, n }: { q: Question; n: number }) {
   return (
     <div className="q-card">
       <div className="q-meta">
-        <b style={{ marginRight: 4 }}>Q{n}.</b><span className="badge">{TYPE_LABEL[q.type]}</span><span className="badge">{q.topic}</span>
+        <b style={{ marginRight: 4 }}>Q{n}.</b><span className="badge">{TYPE_LABEL[q.type]}</span><span className="badge">{q.topic}{q.subtopic ? ` › ${q.subtopic}` : ""}</span>
         <span className={`badge ${q.difficulty === "hard" ? "red" : q.difficulty === "easy" ? "green" : "amber"}`}>{q.difficulty}</span>
         <span className="badge violet">{q.marks} marks{q.negative_marks ? ` · −${q.negative_marks}` : ""}</span>
       </div>
@@ -209,7 +209,8 @@ function QuestionEditor({ q, onChange, onRemove }: { q: Question; onChange: (q: 
           const type = e.target.value as Question["type"];
           set({ type, options: type === "mcq" ? (q.options.length ? q.options : ["", "", "", ""]) : [], correct_option: type === "mcq" ? q.correct_option ?? 0 : null });
         }}>{Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-        <input className="input" style={{ width: 170 }} placeholder="Topic" value={q.topic} onChange={(e) => set({ topic: e.target.value })} />
+        <input className="input" style={{ width: 150 }} placeholder="Chapter" value={q.topic} onChange={(e) => set({ topic: e.target.value })} />
+        <input className="input" style={{ width: 200 }} placeholder="Exact sub-topic" maxLength={160} value={q.subtopic ?? ""} onChange={(e) => set({ subtopic: e.target.value })} />
         <select className="input" style={{ width: 110 }} value={q.difficulty} onChange={(e) => set({ difficulty: e.target.value as Question["difficulty"] })}><option>easy</option><option>medium</option><option>hard</option></select>
         <label className="row small">Marks <input className="input" style={{ width: 70 }} type="number" step={0.5} value={q.marks} onChange={(e) => set({ marks: Number(e.target.value) })} /></label>
         <label className="row small">−ve <input className="input" style={{ width: 70 }} type="number" step={0.25} value={q.negative_marks} onChange={(e) => set({ negative_marks: Number(e.target.value) })} /></label>

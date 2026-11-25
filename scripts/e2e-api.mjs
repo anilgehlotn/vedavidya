@@ -169,6 +169,7 @@ let aiPaper;
   ok(done.status === "draft", `generated paper is draft (got ${done.status} ${done.error ?? ""})`);
   ok(done.sections?.length === 3 && done.sections.flatMap((s) => s.questions).length === 10, "paper has 3 sections / 10 questions");
   ok(done.total_marks === 5 + 9 + 10, `total marks 24 (got ${done.total_marks})`);
+  ok(done.sections.flatMap((s) => s.questions).every((q) => q.topic && q.subtopic && q.subtopic !== q.topic), "every generated question has a chapter and an exact sub-topic");
   aiPaper = done;
   await expect("approve paper", 200, "POST", `/papers/${done.id}/approve`, { token: teacher, body: {} });
   const clone = await expect("clone paper", 200, "POST", `/papers/${done.id}/clone`, { token: teacher, body: {} });
@@ -441,6 +442,15 @@ section("Online (CBT) test");
   const f = new FormData(); f.append("files", new Blob([Buffer.from("x")], { type: "image/jpeg" }), "1.jpg");
   await expect("no uploads on CBT", 400, "POST", `/tests/${cbt}/bulk-files`, { token: teacher, form: f });
   await expect("teacher can't use student CBT", 403, "POST", `/cbt/${cbt}/start`, { token: teacher, body: {} });
+  // This hand-made paper has no sub-topics: making a report fills them in once with AI.
+  ok((await call("GET", `/papers/${p.data.id}`, { token: teacher })).data.sections[0].questions.every((q) => !q.subtopic), "hand-made paper starts without sub-topics");
+  const rep = await fetch(`${API}/tests/${cbt}/class-report.pdf`, { headers: { Authorization: `Bearer ${teacher}` } });
+  ok(rep.status === 200 && (await rep.arrayBuffer()).byteLength > 1000, "class report for the online test");
+  const tagged = (await call("GET", `/papers/${p.data.id}`, { token: teacher })).data.sections[0].questions;
+  ok(tagged.every((q) => q.subtopic && q.topic === "T"), `missing sub-topics filled in, chapter kept (${tagged.map((q) => q.subtopic).join(" | ")})`);
+  const edited = { title: "MCQ", duration_min: 30, sections: [{ name: "A", instructions: "", questions: tagged.map((q, i) => (i === 0 ? { ...q, subtopic: "Teacher's own name" } : q)) }] };
+  await expect("teacher can rename a sub-topic", 200, "PUT", `/papers/${p.data.id}`, { token: teacher, body: edited });
+  ok((await call("GET", `/papers/${p.data.id}`, { token: teacher })).data.sections[0].questions[0].subtopic === "Teacher's own name", "sub-topic edit saved");
 }
 
 section("Test first, paper later (guided flow)");

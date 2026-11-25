@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { one } from "../db.js";
 import { decrypt } from "../secrets.js";
-import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, type Section } from "./schemas.js";
+import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, SubtopicTags, type Section } from "./schemas.js";
 
 export const MODEL = process.env.CLAUDE_MODEL ?? "claude-opus-5-5";
 const MAX_REQUEST_BYTES = 30 * 1024 * 1024; // API request limit is 32 MB
@@ -128,7 +128,7 @@ export async function generatePaper(orgId: string, spec: PaperSpec) {
         `Topics to cover: ${spec.topics}\nLanguage of questions: ${spec.language}\nDifficulty: ${spec.difficulty}\nDuration: ${spec.duration_min} minutes\n\n` +
         `Sections (follow exactly, in this order, with these exact counts and marks):\n${layout}\n` +
         (spec.notes ? `\nAdditional instructions from the teacher: ${spec.notes}\n` : "") +
-        `\nNumber question ids sequentially across the paper (q1, q2, ...). Spread questions across the listed topics.`,
+        `\nNumber question ids sequentially across the paper (q1, q2, ...). Spread questions across the listed topics. For every question set topic to the chapter name only, and subtopic to the exact concept the question tests (specific enough that a teacher could re-teach just that, e.g. topic "Trigonometry", subtopic "Trigonometric ratios of complementary angles").`,
     }],
   });
 }
@@ -208,11 +208,26 @@ export async function importPaper(orgId: string, paperFiles: string[], keyFiles:
           (meta.subject ? `Subject: ${meta.subject}\n` : "") + (meta.board ? `Board/Exam: ${meta.board}\n` : "") +
           (meta.class_level ? `Class: ${meta.class_level}\n` : "") + (meta.language ? `Language: ${meta.language}\n` : "") +
           (meta.notes ? `Teacher's note: ${meta.notes}\n` : "") +
-          `Number question ids sequentially (q1, q2, ...). Use type mcq for single-correct multiple choice (exactly 4 options when the paper has 4; ` +
+          `Number question ids sequentially (q1, q2, ...). For every question set topic to the chapter name only, and subtopic to the exact concept the question tests (specific enough that a teacher could re-teach just that, e.g. topic "Trigonometry", subtopic "Trigonometric ratios of complementary angles"). Use type mcq for single-correct multiple choice (exactly 4 options when the paper has 4; ` +
           `if it has a different number of options, still list them all), numeric for numerical-answer questions, short or long for written answers. ` +
           (kBlocks.length ? "Take correct answers and marking from the answer key." : "No answer key was provided: solve each question yourself."),
       },
     ],
+  });
+}
+
+/** Names the chapter and exact sub-topic of each question of an existing paper (for papers made before sub-topics existed). */
+export async function tagSubtopics(orgId: string, paper: { subject: string | null; class_level: string | null; questions: { id: string; text: string; topic: string; solution: string }[] }) {
+  return structured<import("./schemas.js").SubtopicTags>(orgId, {
+    effort: "low",
+    format: zodOutputFormat(SubtopicTags),
+    system: "You are an experienced Indian school and coaching teacher. You classify exam questions by chapter and the exact concept they test.",
+    content: [{
+      type: "text",
+      text: `Subject: ${paper.subject ?? "-"}\nClass: ${paper.class_level ?? "-"}\n\nQuestions (JSON):\n${JSON.stringify(paper.questions)}\n\n` +
+        `Name the exact sub-topic of every question, keeping each id. Keep the given topic as the chapter name unless it is clearly wrong or empty. ` +
+        `The sub-topic must be the specific concept a teacher would re-teach (not the chapter name again), in a few words. Use the same sub-topic name for questions on the same concept.`,
+    }],
   });
 }
 

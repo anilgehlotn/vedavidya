@@ -40,6 +40,7 @@ function paperFrom(text) {
           id: `q${n}`, type, text: `Mock question ${n}`, options: type === "mcq" ? ["A", "B", "C", "D"] : [],
           correct_option: type === "mcq" ? n % 4 : null, numeric_answer: type === "numeric" ? n * 2 : null,
           marks: m, negative_marks: Number(neg ?? 0), difficulty: "medium", topic: ["Algebra", "Geometry", "Trigonometry"][n % 3],
+          subtopic: ["Linear equations in two variables", "Similar triangles (BPT)", "Trigonometric identities"][n % 3],
           solution: "Mock solution", rubric: [{ step: "Method", marks: m / 2 }, { step: "Answer", marks: m / 2 }],
         };
       }),
@@ -57,6 +58,12 @@ function practiceFrom(text) {
   return { focus: "We'll fix the steps you missed.", practice: Array.from({ length: n }, (_, i) => q(`p${i + 1}`, i + 1)), checkup: Array.from({ length: m }, (_, i) => q(`c${i + 1}`, i + 1)) };
 }
 
+function tagsFrom(text) {
+  stats.tags = (stats.tags ?? 0) + 1;
+  const qs = JSON.parse(text.split("Questions (JSON):\n")[1].split("\n\nName the exact")[0]);
+  return { questions: qs.map((q, i) => ({ id: q.id, topic: q.topic || "Chapter", subtopic: `Concept ${(i % 3) + 1} of ${q.topic || "Chapter"}` })) };
+}
+
 function briefFrom(text) {
   stats.brief = (stats.brief ?? 0) + 1;
   return { summary: "The class did well on recall but lost marks on multi-step questions.",
@@ -68,7 +75,7 @@ function importedPaper(content, hasKey) {
   const pages = content.filter((b) => b.type === "image" || b.type === "document").length;
   stats.lastImport = { pages, hasKey };
   const mk = (n, type, marks) => ({ id: `q${n}`, type, text: `Printed question ${n}`, options: type === "mcq" ? ["A", "B", "C", "D"] : [],
-    correct_option: type === "mcq" ? 1 : null, numeric_answer: null, marks, negative_marks: 0, difficulty: "medium", topic: "Imported",
+    correct_option: type === "mcq" ? 1 : null, numeric_answer: null, marks, negative_marks: 0, difficulty: "medium", topic: "Imported", subtopic: n % 2 ? "Imported concept A" : "Imported concept B",
     solution: hasKey ? "From answer key" : "Solved", rubric: [{ step: "Working", marks: marks / 2 }, { step: "Answer", marks: marks / 2 }] });
   return { title: "Imported Unit Test", instructions: "All questions compulsory.", sections: [
     { name: "Section A", instructions: "", questions: [mk(1, "mcq", 1), mk(2, "mcq", 1)] },
@@ -147,7 +154,8 @@ http.createServer((req, res) => {
           : apiError(res, 529, "overloaded_error", "Overloaded");
       }
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
-      const out = /Create a Fix-it practice plan/.test(text) ? practiceFrom(text)
+      const out = /Name the exact sub-topic of every question/.test(text) ? tagsFrom(text)
+        : /Create a Fix-it practice plan/.test(text) ? practiceFrom(text)
         : /Write the re-teach brief/.test(text) ? briefFrom(text)
         : /Create an original question paper/.test(text) ? paperFrom(text)
         : /Transcribe this question paper/.test(text) ? importedPaper(content, /ANSWER KEY/.test(text))

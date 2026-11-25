@@ -16,7 +16,8 @@ export const Question = z.object({
   marks: z.number(),
   negative_marks: z.number().describe("Marks deducted for a wrong objective answer, 0 if none"),
   difficulty: z.enum(["easy", "medium", "hard"]),
-  topic: z.string().describe("Chapter or topic this question tests"),
+  topic: z.string().describe("Chapter name only, e.g. 'Trigonometry' or 'Current Electricity'"),
+  subtopic: z.string().describe("The exact sub-topic / concept within the chapter that this question tests, specific enough for a teacher to re-teach, e.g. 'Trigonometric ratios from a given ratio' or 'Equivalent resistance in parallel'"),
   solution: z.string().describe("Worked model solution"),
   rubric: z.array(RubricStep).describe("Step-wise marking scheme; step marks sum to the question marks"),
 });
@@ -28,6 +29,16 @@ export const Section = z.object({
   questions: z.array(Question),
 });
 export type Section = z.infer<typeof Section>;
+
+// Papers saved by teachers: the sub-topic is optional (older papers and hand-written questions may not have one).
+export const StoredQuestion = Question.extend({ subtopic: z.string().max(160).default("") });
+export const StoredSection = Section.extend({ questions: z.array(StoredQuestion) });
+
+/** Chapter + exact sub-topic for each question of an existing paper. */
+export const SubtopicTags = z.object({
+  questions: z.array(z.object({ id: z.string(), topic: z.string().describe("Chapter name"), subtopic: z.string().describe("Exact sub-topic / concept tested") })),
+});
+export type SubtopicTags = z.infer<typeof SubtopicTags>;
 
 export const GeneratedPaper = z.object({
   title: z.string(),

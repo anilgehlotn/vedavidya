@@ -6,14 +6,14 @@ import { rateLimit } from "../ratelimit.js";
 
 // Each AI paper costs API credits; cap how many an institute can start in a short time.
 const aiPaperLimit = rateLimit("ai-paper", 30, 60 * 60 * 1000, (r) => r.user?.org_id ?? r.ip ?? "?");
-import { generatePaper, importPaper, AiError, aiProblem, type PaperSpec } from "../ai/claude.js";
+import { generatePaper, importPaper, tagSubtopics, AiError, aiProblem, type PaperSpec } from "../ai/claude.js";
 import multer from "multer";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import { UPLOAD_DIR } from "../db.js";
 import { normalisePage, removeFiles, UploadError } from "../images.js";
-import { Section, type Section as SectionT } from "../ai/schemas.js";
+import { StoredSection as Section, type Section as SectionT } from "../ai/schemas.js";
 
 export const paperRoutes = Router();
 
@@ -175,4 +175,31 @@ export function recoverPaperJobs() {
 function syncTestMarks(paperId: string) {
   run(`UPDATE attempts SET max_score = (SELECT total_marks FROM question_papers WHERE id = ?)
        WHERE score IS NULL AND test_id IN (SELECT id FROM tests WHERE paper_id = ?)`, paperId, paperId);
+}
+
+// Papers made before sub-topics existed get them from AI once, so reports can name the exact concept to re-teach.
+const tagging = new Map<string, Promise<void>>();
+const missingSubtopics = (sections: SectionT[]) => sections.some((sec) => sec.questions.some((q) => !String((q as { subtopic?: string }).subtopic ?? "").trim()));
+export function ensureSubtopics(paperId: string): Promise<void> {
+  if (tagging.has(paperId)) return tagging.get(paperId)!;
+  const p = one<any>("SELECT id, org_id, subject, class_level, sections, status FROM question_papers WHERE id = ?", paperId);
+  if (!p || !["draft", "approved"].includes(p.status) || !missingSubtopics(json<SectionT[]>(p.sections, [])) || aiProblem(p.org_id)) return Promise.resolve();
+  const qs = json<SectionT[]>(p.sections, []).flatMap((sec) => sec.questions).map((q) => ({ id: q.id, text: q.text.slice(0, 600), topic: q.topic, solution: q.solution.slice(0, 300) }));
+  const job = tagSubtopics(p.org_id, { subject: p.subject, class_level: p.class_level, questions: qs })
+    .then((tags) => {
+      const byId = new Map((tags?.questions ?? []).map((t) => [t.id, t]));
+      // Re-read so edits made while AI was working are kept; only empty sub-topics (and empty chapters) are filled.
+      const cur = one<any>("SELECT sections FROM question_papers WHERE id = ?", paperId);
+      if (!cur) return;
+      const sections = json<SectionT[]>(cur.sections, []).map((sec) => ({ ...sec, questions: sec.questions.map((q) => {
+        const t = byId.get(q.id);
+        const sub = String((q as { subtopic?: string }).subtopic ?? "").trim();
+        return t ? { ...q, topic: q.topic?.trim() ? q.topic : t.topic.slice(0, 120), subtopic: sub || t.subtopic.slice(0, 160) } : q;
+      }) }));
+      run("UPDATE question_papers SET sections = ? WHERE id = ?", JSON.stringify(sections), paperId);
+    })
+    .catch((e) => console.error(`Sub-topic tagging failed for ${paperId}:`, e instanceof AiError ? e.message : e))
+    .finally(() => tagging.delete(paperId));
+  tagging.set(paperId, job);
+  return job;
 }
