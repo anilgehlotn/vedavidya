@@ -203,21 +203,6 @@ function table(doc: Doc, cols: Col[], rows: Cell[][], opts: { zebra?: boolean; s
   });
   doc.y += 6;
 }
-function mistakeBars(doc: Doc, lost: Record<string, number>, unit: string) {
-  const entries = Object.entries(lost).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
-  const total = entries.reduce((s, [, v]) => s + v, 0);
-  if (!total) { txt(doc, "No marks lost. Excellent work!", { color: C.green }); return; }
-  for (const [k, v] of entries) {
-    need(doc, 26);
-    const m = MISTAKES[k] ?? MISTAKES.unclassified, y = doc.y, share = Math.round((v / total) * 100);
-    txt(doc, m.label, { font: "B", size: 8.5, x: L, y, width: 150 });
-    bar(doc, L + 150, y + 3, W - 260, share, m.color, 7);
-    txt(doc, `${round1(v)} ${unit} · ${share}%`, { size: 8, color: C.ink2, x: L + W - 100, y, width: 100, align: "right" });
-    doc.y = y + 18;
-  }
-  const top = MISTAKES[entries[0][0]];
-  if (top?.tip) callout(doc, `Biggest fix: ${top.label.toLowerCase()}. ${top.tip}`, C.soft);
-}
 function callout(doc: Doc, s: string, bg: string, color = C.ink) {
   const h = hOf(doc, s, W - 20, 8.5) + 14;
   need(doc, h + 6);
@@ -250,215 +235,125 @@ function footers(doc: Doc, left: string) {
 }
 const metaLine = (r: TestReport) => [r.test.subject, r.test.batches, fmtDate(r.test.date), `${r.totalMarks} marks`].filter(Boolean).join("  ·  ");
 
-// ---------------------------------------------------------------- student report
+// ---------------------------------------------------------------- student report (simple)
+
+/** Short list of topics with a percentage, e.g. "Trigonometry 56%". */
+const topicLine = (ts: TopicScore[]) => ts.map((t) => `${t.topic} (${t.pct}%)`).join(",  ");
+const mainReasons = (lost: Record<string, number>) => {
+  const total = Object.values(lost).reduce((a, b) => a + b, 0);
+  return Object.entries(lost).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([k, v]) => `${(MISTAKES[k] ?? MISTAKES.unclassified).label} (${Math.round((v / total) * 100)}%)`);
+};
 
 function drawStudent(doc: Doc, r: TestReport, s: StudentResult) {
-  banner(doc, r.org, "Student report card", r.test.title, metaLine(r));
-  txt(doc, s.name, { font: "B", size: 18 });
+  banner(doc, r.org, "Student report", r.test.title, metaLine(r));
+  txt(doc, s.name, { font: "B", size: 17 });
   txt(doc, [s.roll ? `Roll no. ${s.roll}` : null, s.batch].filter(Boolean).join("  ·  "), { size: 9, color: C.ink2 });
-  doc.y += 10;
-  const vs = s.pct - r.classAvg;
-  tiles(doc, [
-    ["Score", `${s.score} / ${s.max}`],
-    ["Percentage", `${s.pct}%`, statusOf(s.pct).label],
-    ["Rank in class", `${s.rank} of ${r.results.length}`],
-    ["Class average", `${r.classAvg}%`, vs === 0 ? "Same as class" : `You are ${Math.abs(vs)}% ${vs > 0 ? "above" : "below"}`],
-  ]);
+  doc.y += 8;
+  tiles(doc, [["Score", `${s.score} / ${s.max}`], ["Percentage", `${s.pct}%`], ["Class average", `${r.classAvg}%`], ["Rank", `${s.rank} of ${r.results.length}`]]);
 
-  // Topics
-  heading(doc, "Topic-wise performance", `Strong: ${STRONG}% or more  ·  Needs practice: ${WEAK}–${STRONG - 1}%  ·  Weak: below ${WEAK}%`);
-  const topics = [...s.topics].sort((a, b) => a.pct - b.pct);
-  table(doc, [{ label: "Topic", width: 150 }, { label: "Marks", width: 60, align: "right" }, { label: "Your score", width: 130 }, { label: "Class", width: 55, align: "right" }, { label: "Status", width: W - 395 }],
-    topics.map((t) => { const st = statusOf(t.pct); return [{ text: t.topic, font: "B" }, `${t.got} / ${t.max}`, { text: `${t.pct}%`, bar: { pct: t.pct, color: st.color } }, `${r.topicAvg.get(t.topic) ?? 0}%`, { text: st.label, pill: { color: st.color, bg: st.bg } }]; }));
+  // 1. Topics
+  const sorted = [...s.topics].sort((a, b) => a.pct - b.pct);
+  const focus = sorted.filter((t) => t.pct < STRONG);
+  const strong = [...sorted].reverse().filter((t) => t.pct >= STRONG);
+  heading(doc, "Topics to focus on", `Below ${STRONG}% in this test. Weakest first.`);
+  if (focus.length) {
+    table(doc, [{ label: "Topic", width: 190 }, { label: "Marks", width: 70, align: "right" }, { label: "Your score", width: 150 }, { label: "Class", width: W - 410, align: "right" }],
+      focus.map((t) => [{ text: t.topic, font: "B", color: t.pct < WEAK ? C.red : C.ink }, `${t.got} / ${t.max}`, { text: `${t.pct}%`, bar: { pct: t.pct, color: statusOf(t.pct).color } }, `${r.topicAvg.get(t.topic) ?? 0}%`]));
+  } else txt(doc, "No weak topics in this test. Well done!", { color: C.green });
+  if (strong.length) { doc.y += 2; txt(doc, `Good at:  ${topicLine(strong)}`, { size: 9, color: C.green }); }
+  const reasons = mainReasons(s.lost);
+  if (reasons.length) { doc.y += 4; txt(doc, `Main reasons marks were lost:  ${reasons.join(",  ")}`, { size: 9, color: C.ink2 }); }
 
-  // Strong / weak summary
-  const weak = topics.filter((t) => t.pct < WEAK).map((t) => `${t.topic} (${t.pct}%)`);
-  const mid = topics.filter((t) => t.pct >= WEAK && t.pct < STRONG).map((t) => `${t.topic} (${t.pct}%)`);
-  const strong = [...topics].reverse().filter((t) => t.pct >= STRONG).map((t) => `${t.topic} (${t.pct}%)`);
-  const colW = (W - 10) / 2;
-  const boxH = (items: string[]) => items.reduce((h, it) => h + hOf(doc, it, colW - 32, 8.5) + 2, 0);
-  const left = [...weak, ...mid.map((m) => `${m} - practise more`), ...(s.ev.gaps ?? []).map((g) => clean(g, 120))].slice(0, 10);
-  const right = [...strong, ...(s.ev.strengths ?? []).map((g) => clean(g, 120))].slice(0, 10);
-  const h = Math.max(boxH(left.length ? left : ["-"]), boxH(right.length ? right : ["-"])) + 34;
-  need(doc, h + 10);
-  doc.y += 4;
-  const y = doc.y;
-  doc.roundedRect(L, y, colW, h, 8).fill(C.redSoft);
-  doc.roundedRect(L + colW + 10, y, colW, h, 8).fill(C.greenSoft);
-  txt(doc, "Needs work", { font: "B", size: 10, color: C.red, x: L + 12, y: y + 10, width: colW - 24 });
-  txt(doc, "Good at", { font: "B", size: 10, color: C.green, x: L + colW + 22, y: y + 10, width: colW - 24 });
-  doc.y = y + 28; bullets(doc, left.length ? left : ["Nothing major - keep it up!"], C.red, L + 12, colW - 20);
-  doc.y = y + 28; bullets(doc, right.length ? right : ["Keep practising to build a strong topic."], C.green, L + colW + 22, colW - 20);
-  doc.y = y + h + 4;
-
-  heading(doc, "Where the marks were lost", "Every lost mark is tagged with the reason");
-  mistakeBars(doc, s.lost, "marks");
-  if (s.ev.overall_feedback) { heading(doc, "Overall feedback"); txt(doc, clean(s.ev.overall_feedback, 1500), { size: 9, color: C.ink2 }); }
-
-  // Action plan
-  heading(doc, "Your action plan");
-  const plan: string[] = [];
-  for (const t of topics.filter((t) => t.pct < STRONG).slice(0, 3))
-    plan.push(`Revise ${t.topic}: you scored ${t.pct}% (class average ${r.topicAvg.get(t.topic) ?? 0}%). Re-read the chapter, then solve 5 questions on it.`);
-  const topMistake = Object.entries(s.lost).sort((a, b) => b[1] - a[1])[0];
-  if (topMistake && MISTAKES[topMistake[0]]?.tip) plan.push(`${MISTAKES[topMistake[0]].label}: ${MISTAKES[topMistake[0]].tip}`);
-  plan.push("Open your Fix-it practice in the Veda Vidya app: questions made from your own mistakes, with instant answers.");
-  bullets(doc, plan.map((p, i) => `${i + 1}.  ${p}`), C.coral, L, W, false);
-
-  // Question by question
-  doc.addPage();
-  heading(doc, "Question-by-question review", `${s.questions.length} questions  ·  ${s.score} / ${s.max} marks`);
-  for (const q of s.questions) drawQuestion(doc, q);
-}
-
-function drawQuestion(doc: Doc, q: QReview) {
-  const full = q.got >= q.max, zero = q.got <= 0;
-  const color = full ? C.green : zero ? C.red : C.amber, bg = full ? C.greenSoft : zero ? C.redSoft : C.amberSoft;
-  const text = clean(q.text, 700);
-  need(doc, 34 + Math.min(80, hOf(doc, text, W - 20, 8.5)));
-  const y = doc.y + 4;
-  doc.roundedRect(L, y, W, 22, 6).fill(C.soft);
-  txt(doc, `Q${q.no}`, { font: "B", size: 10, x: L + 10, y: y + 6, width: 40 });
-  let x = L + 44;
-  x += pill(doc, x, y + 4.5, clean(q.topic, 40), C.ink2, "#fff") + 6;
-  if (q.mistake !== "none" && MISTAKES[q.mistake]) x += pill(doc, x, y + 4.5, MISTAKES[q.mistake].label, MISTAKES[q.mistake].color, "#fff") + 6;
-  if (q.confidence === "low") pill(doc, x, y + 4.5, "Handwriting unclear - checked", C.amber, C.amberSoft);
-  doc.roundedRect(L + W - 70, y + 3, 62, 16, 8).fill(bg);
-  txt(doc, `${round1(q.got)} / ${q.max}`, { font: "B", size: 9, color, x: L + W - 70, y: y + 6, width: 62, align: "center" });
-  doc.y = y + 28;
-  txt(doc, text, { size: 8.5, x: L + 10, width: W - 20 });
-  const block = (label: string, body: string, c = C.ink2) => {
-    if (!body) return;
-    const h = hOf(doc, `${label} ${body}`, W - 20, 8.5);
-    need(doc, Math.min(h, 60) + 6);
-    doc.y += 3;
-    doc.font("B").fontSize(8.5).fillColor(C.ink).text(`${label} `, L + 10, doc.y, { width: W - 20, continued: true, lineGap: 1.5 });
-    doc.font("R").fillColor(c).text(body, { width: W - 20, lineGap: 1.5 });
-  };
-  block("Answer written:", q.attempted ? clean(q.transcription, 500) : "Not attempted");
-  if (q.steps.length) {
-    for (const st of q.steps) {
-      const line = `${clean(st.step, 160)}${st.comment ? ` - ${clean(st.comment, 200)}` : ""}`;
-      const h = hOf(doc, line, W - 90, 8);
-      need(doc, h + 4);
-      const y2 = doc.y + 2;
-      txt(doc, `•  ${line}`, { size: 8, color: C.ink2, x: L + 16, y: y2, width: W - 90 });
-      txt(doc, `${round1(st.awarded)}/${st.max_marks}`, { font: "B", size: 8, x: L + W - 60, y: y2, width: 50, align: "right", color: st.awarded >= st.max_marks ? C.green : st.awarded > 0 ? C.amber : C.red });
-      doc.y = Math.max(doc.y, y2 + h);
+  // 2. What went wrong, topic by topic
+  heading(doc, "What went wrong", "Each question where marks were lost, grouped by topic");
+  const lostQs = s.questions.filter((q) => q.got < q.max);
+  if (!lostQs.length) txt(doc, "Full marks on every question.", { color: C.green });
+  for (const t of focus.concat(strong)) {
+    const qs = lostQs.filter((q) => q.topic === t.topic);
+    if (!qs.length) continue;
+    need(doc, 60);
+    doc.y += 4;
+    txt(doc, `${t.topic}  ·  ${t.pct}%`, { font: "B", size: 10, color: t.pct < WEAK ? C.red : t.pct < STRONG ? C.amber : C.ink });
+    doc.y += 2;
+    for (const q of qs) {
+      const why = q.mistake !== "none" ? (MISTAKES[q.mistake] ?? MISTAKES.unclassified).label : "";
+      const detail = [clean(q.mistake_note, 300), clean(q.feedback, 400)].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(" ");
+      const line = `Q${q.no}  (${round1(Math.max(0, q.got))}/${q.max})  ${why ? `${why}: ` : ""}${detail || (q.attempted ? "Lost step marks." : "Not attempted.")}`;
+      bullets(doc, [line], t.pct < WEAK ? C.red : C.amber, L + 8, W - 8);
     }
   }
-  if (q.mistake_note) block("Mistake:", clean(q.mistake_note, 400), C.red);
-  block("Feedback:", clean(q.feedback, 600));
-  doc.y += 6;
+
+  // 3. Next steps
+  heading(doc, "What to do next");
+  const plan: string[] = focus.slice(0, 3).map((t) => `Revise ${t.topic}: re-read the chapter and solve 5 questions on it.`);
+  const top = Object.entries(s.lost).sort((a, b) => b[1] - a[1])[0];
+  if (top && MISTAKES[top[0]]?.tip) plan.push(MISTAKES[top[0]].tip);
+  if (s.ev.overall_feedback) plan.push(`Teacher's note: ${clean(s.ev.overall_feedback, 400)}`);
+  plan.push("Do your Fix-it practice in the Veda Vidya app - it is made from your own mistakes.");
+  bullets(doc, plan.map((p, i) => `${i + 1}.  ${p}`), C.coral, L, W, false);
 }
 
 export function studentReportPdf(r: TestReport, attemptIds: string[]): Doc {
   const list = r.results.filter((s) => attemptIds.includes(s.attemptId)).sort((a, b) => (Number(a.roll) || 1e9) - (Number(b.roll) || 1e9) || a.name.localeCompare(b.name));
   const doc = newDoc(list.length === 1 ? `${list[0].name} - ${r.test.title}` : `${r.test.title} - student reports`);
   list.forEach((s, i) => { if (i) doc.addPage(); drawStudent(doc, r, s); });
-  footers(doc, `${r.org} · ${r.test.title} · Student report card · Marked with Veda Vidya`);
+  footers(doc, `${r.org} · ${r.test.title} · Student report · Marked with Veda Vidya`);
   return doc;
 }
 
-// ---------------------------------------------------------------- class report
+// ---------------------------------------------------------------- class report (simple)
 
 export function classReportPdf(r: TestReport): Doc {
   const doc = newDoc(`${r.test.title} - class report`);
-  banner(doc, r.org, "Class performance report", r.test.title, metaLine(r));
+  banner(doc, r.org, "Class report", r.test.title, metaLine(r));
   const res = r.results, n = res.length;
   const pcts = res.map((s) => s.pct).sort((a, b) => a - b);
-  const median = n ? (n % 2 ? pcts[(n - 1) / 2] : Math.round((pcts[n / 2 - 1] + pcts[n / 2]) / 2)) : 0;
   tiles(doc, [
-    ["Students", String(n + r.unmarked.length), r.unmarked.length ? `${r.unmarked.length} not marked / absent` : "All marked"],
     ["Class average", `${r.classAvg}%`],
-    ["Median", `${median}%`],
     ["Highest", n ? `${pcts[n - 1]}%` : "-"],
     ["Lowest", n ? `${pcts[0]}%` : "-"],
+    ["Students marked", `${n} of ${n + r.unmarked.length}`],
   ]);
   if (!n) { txt(doc, "No answer sheets have been marked for this test yet.", { color: C.muted }); footers(doc, `${r.org} · ${r.test.title} · Class report`); return doc; }
-
-  // Distribution
-  heading(doc, "How the class scored");
-  const bands: [string, number, number, string][] = [["90–100%", 90, 101, C.green], ["75–89%", 75, 90, "#3aa66b"], ["50–74%", 50, 75, C.amber], ["33–49%", 33, 50, "#e08a2b"], ["Below 33%", -1, 33, C.red]];
-  for (const [label, lo, hi, color] of bands) {
-    const c = res.filter((s) => s.pct >= lo && s.pct < hi).length, y = doc.y;
-    need(doc, 18);
-    txt(doc, label, { font: "B", size: 8.5, x: L, y, width: 80 });
-    bar(doc, L + 80, y + 3, W - 170, (c / n) * 100, color, 8);
-    txt(doc, `${c} student${c === 1 ? "" : "s"}`, { size: 8.5, color: C.ink2, x: L + W - 80, y, width: 80, align: "right" });
-    doc.y = y + 17;
-  }
 
   // Topics
   const topics = [...r.topicAvg.keys()].map((topic) => {
     const scored = res.map((s) => ({ s, t: s.topics.find((x) => x.topic === topic) })).filter((x) => x.t);
     const weak = scored.filter((x) => x.t!.pct < WEAK).map((x) => x.s);
-    return { topic, avg: r.topicAvg.get(topic) ?? 0, weak, share: scored.length ? Math.round((weak.length / scored.length) * 100) : 0, max: scored[0]?.t?.max ?? 0 };
+    return { topic, avg: r.topicAvg.get(topic) ?? 0, weak, share: scored.length ? Math.round((weak.length / scored.length) * 100) : 0 };
   }).sort((a, b) => b.share - a.share || a.avg - b.avg);
-  const action = (share: number) => share >= 80 ? { label: "Re-teach: almost everyone", color: "#fff", bg: C.red }
-    : share >= 50 ? { label: "Re-teach to whole class", color: C.red, bg: C.redSoft }
-    : share >= 25 ? { label: "Small-group revision", color: C.amber, bg: C.amberSoft } : { label: "On track", color: C.green, bg: C.greenSoft };
-  heading(doc, "Topics to re-teach", `A student is weak in a topic when they score below ${WEAK}% on it. Sorted by how many students are weak.`);
-  table(doc, [{ label: "Topic", width: 150 }, { label: "Marks", width: 45, align: "right" }, { label: "Class average", width: 120 }, { label: "Weak students", width: 85, align: "right" }, { label: "Action", width: W - 400 }],
-    topics.map((t) => { const a = action(t.share); return [{ text: t.topic, font: "B" }, String(t.max), { text: `${t.avg}%`, bar: { pct: t.avg, color: statusOf(t.avg).color } }, `${t.weak.length} of ${n} (${t.share}%)`, { text: a.label, pill: { color: a.color, bg: a.bg } }]; }));
-  const reteach = topics.filter((t) => t.share >= 50);
-  callout(doc, reteach.length
-    ? `Most of the class is weak in: ${reteach.map((t) => `${t.topic} (${t.share}% of students)`).join(", ")}. Re-teach ${reteach.length > 1 ? "these topics" : "this topic"} to the whole class before moving on.`
-    : "No topic has a majority of weak students. Use small-group revision for the students listed below.", reteach.length ? C.redSoft : C.greenSoft);
+  const action = (share: number) => share >= 50 ? { label: "Re-teach to class", color: C.red, bg: C.redSoft }
+    : share >= 25 ? { label: "Revise in small group", color: C.amber, bg: C.amberSoft } : { label: "Fine", color: C.green, bg: C.greenSoft };
+  heading(doc, "Topics the class is weak in", `A student is weak in a topic below ${WEAK}%. Weakest topics first.`);
+  table(doc, [{ label: "Topic", width: 170 }, { label: "Class average", width: 140 }, { label: "Weak students", width: 95, align: "right" }, { label: "What to do", width: W - 405 }],
+    topics.map((t) => { const a = action(t.share); return [{ text: t.topic, font: "B" }, { text: `${t.avg}%`, bar: { pct: t.avg, color: statusOf(t.avg).color } }, `${t.weak.length} of ${n}`, { text: a.label, pill: { color: a.color, bg: a.bg } }]; }));
+  const most = topics.filter((t) => t.share >= 50);
+  callout(doc, most.length
+    ? `Most of the class is weak in ${most.map((t) => `${t.topic} (${t.share}% of students)`).join(", ")}. Re-teach ${most.length > 1 ? "these topics" : "this topic"} before moving on.`
+    : `No topic is weak for most of the class. ${topics[0]?.weak.length ? `${topics[0].topic} needs the most attention (${topics[0].weak.length} students).` : "The class is on track."}`,
+    most.length ? C.redSoft : C.greenSoft);
+  const reasons = (() => { const lost: Record<string, number> = {}; for (const s of res) for (const [k, v] of Object.entries(s.lost)) lost[k] = (lost[k] ?? 0) + v; return mainReasons(lost); })();
+  if (reasons.length) txt(doc, `Main reasons the class lost marks:  ${reasons.join(",  ")}`, { size: 9, color: C.ink2 });
 
-  heading(doc, "Students to support, topic by topic", "Group these students for remedial classes or extra practice");
+  heading(doc, "Who needs help in each topic");
   for (const t of topics.filter((t) => t.weak.length)) {
-    const names = t.weak.sort((a, b) => (Number(a.roll) || 1e9) - (Number(b.roll) || 1e9)).map((s) => `${s.roll ? `${s.roll}. ` : ""}${s.name} (${s.topics.find((x) => x.topic === t.topic)?.pct ?? 0}%)`).join(",  ");
-    const body = `${t.topic}  -  ${t.weak.length} student${t.weak.length === 1 ? "" : "s"}`;
-    need(doc, hOf(doc, names, W - 10, 8) + 22);
-    txt(doc, body, { font: "B", size: 9 });
-    txt(doc, names, { size: 8, color: C.ink2, x: L + 10, width: W - 10 });
-    doc.y += 5;
-  }
-
-  // Questions
-  heading(doc, "Question analysis", "Class average on each question and the most common reason marks were lost");
-  const qrows = r.questions.map((q, i) => {
-    const got = res.map((s) => s.questions[i]);
-    const avg = Math.round((got.reduce((t, x) => t + Math.max(0, x.got), 0) / (n * q.marks || 1)) * 100);
-    const attempted = Math.round((got.filter((x) => x.attempted).length / n) * 100);
-    const counts: Record<string, number> = {};
-    for (const x of got) if (x.mistake !== "none") counts[x.mistake] = (counts[x.mistake] ?? 0) + 1;
-    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-    return [{ text: `Q${i + 1}`, font: "B" as const }, clean(q.topic || "Other", 40), String(q.marks), { text: `${avg}%`, bar: { pct: avg, color: statusOf(avg).color } }, `${attempted}%`,
-      top ? `${MISTAKES[top[0]]?.label ?? "Other"} (${top[1]})` : "-"] as Cell[];
-  });
-  table(doc, [{ label: "Q", width: 32 }, { label: "Topic", width: 120 }, { label: "Marks", width: 40, align: "right" }, { label: "Class average", width: 120 }, { label: "Attempted", width: 58, align: "right" }, { label: "Most common mistake", width: W - 370 }], qrows);
-
-  heading(doc, "Why the class lost marks");
-  const lost: Record<string, number> = {};
-  for (const s of res) for (const [k, v] of Object.entries(s.lost)) lost[k] = (lost[k] ?? 0) + v;
-  mistakeBars(doc, lost, "marks");
-
-  if (r.brief) {
-    heading(doc, "Re-teach brief", "Written by AI from the class's actual answers");
-    if (r.brief.summary) txt(doc, clean(r.brief.summary, 800), { size: 9, color: C.ink2 });
-    for (const m of r.brief.misconceptions ?? []) {
-      need(doc, 90);
-      doc.y += 6;
-      txt(doc, `${clean(m.title, 120)}  (${m.students_affected} students)`, { font: "B", size: 9.5 });
-      bullets(doc, [`What students think: ${clean(m.explanation, 400)}`, `Example from the class: ${clean(m.example, 300)}`, `10-minute re-teach: ${clean(m.reteach_plan, 500)}`, `Check question: ${clean(m.check_question, 300)}`], C.coral);
-    }
-    if (r.brief.next_steps?.length) { doc.y += 4; txt(doc, "Next steps", { font: "B", size: 9.5 }); bullets(doc, r.brief.next_steps.map((x) => clean(x, 300)), C.coral); }
+    const names = t.weak.sort((a, b) => (Number(a.roll) || 1e9) - (Number(b.roll) || 1e9)).map((s) => `${s.roll ? `${s.roll}. ` : ""}${s.name}`).join(",  ");
+    need(doc, hOf(doc, names, W - 10, 8.5) + 20);
+    txt(doc, `${t.topic}  (${t.weak.length})`, { font: "B", size: 9 });
+    txt(doc, names, { size: 8.5, color: C.ink2, x: L + 10, width: W - 10 });
+    doc.y += 4;
   }
 
   // Students
-  need(doc, 160);
-  heading(doc, "Every student at a glance", `Ranked by score. Weak: below ${WEAK}% on a topic. Strong: ${STRONG}% or more. Red names scored below 40% overall.`);
-  table(doc, [{ label: "Rank", width: 34, align: "right" }, { label: "Roll", width: 34 }, { label: "Student", width: 105 }, { label: "Score", width: 52, align: "right" }, { label: "%", width: 36, align: "right" }, { label: "Weak in", width: (W - 261) * 0.58 }, { label: "Strong in", width: (W - 261) * 0.42 }],
-    res.map((s) => [String(s.rank), s.roll ?? "-", { text: s.name, font: "B", color: s.pct < 40 ? C.red : C.ink }, `${s.score}/${s.max}`, { text: `${s.pct}%`, color: statusOf(s.pct).color, font: "B" },
-      { text: s.topics.filter((t) => t.pct < WEAK).sort((a, b) => a.pct - b.pct).map((t) => t.topic).join(", ") || "-", color: C.red },
-      { text: s.topics.filter((t) => t.pct >= STRONG).sort((a, b) => b.pct - a.pct).map((t) => t.topic).join(", ") || "-", color: C.green }]), { size: 8 });
-  if (r.unmarked.length) {
-    heading(doc, "Not marked", "Absent, or the answer sheet hasn't been uploaded / marked yet");
-    txt(doc, r.unmarked.map((u) => `${u.roll ? `${u.roll}. ` : ""}${u.name}`).join(",  "), { size: 8.5, color: C.ink2 });
-  }
-  footers(doc, `${r.org} · ${r.test.title} · Class report · ${r.test.published ? "Results published" : "Results not yet published"}`);
+  need(doc, 120);
+  heading(doc, "Each student's focus topics", `Topics below ${STRONG}% for each student, weakest first. Names in red scored below 40% overall.`);
+  const byRoll = [...res].sort((a, b) => (Number(a.roll) || 1e9) - (Number(b.roll) || 1e9) || a.name.localeCompare(b.name));
+  table(doc, [{ label: "Roll", width: 36 }, { label: "Student", width: 120 }, { label: "Score", width: 55, align: "right" }, { label: "%", width: 38, align: "right" }, { label: "Focus on", width: W - 249 }],
+    byRoll.map((s) => [s.roll ?? "-", { text: s.name, font: "B", color: s.pct < 40 ? C.red : C.ink }, `${s.score}/${s.max}`, { text: `${s.pct}%`, font: "B", color: statusOf(s.pct).color },
+      s.topics.filter((t) => t.pct < STRONG).sort((a, b) => a.pct - b.pct).map((t) => `${t.topic} (${t.pct}%)`).join(", ") || "-"]), { size: 8 });
+  if (r.unmarked.length) { doc.y += 2; txt(doc, `Not marked / absent: ${r.unmarked.map((u) => `${u.roll ? `${u.roll}. ` : ""}${u.name}`).join(", ")}`, { size: 8.5, color: C.muted }); }
+  footers(doc, `${r.org} · ${r.test.title} · Class report`);
   return doc;
 }
 
