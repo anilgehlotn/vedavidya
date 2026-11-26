@@ -1,7 +1,8 @@
 import { useParams } from "react-router-dom";
 import { ErrorBox, Loading, Logo, useApi } from "../../components/ui";
 import type { Section, SheetEvaluation } from "../../lib/types";
-import { SheetView } from "../app/SheetView";
+import { lazy, Suspense } from "react";
+const SheetView = lazy(() => import("../app/SheetView").then((m) => ({ default: m.SheetView })));
 
 interface Report { org_name: string; student_name: string; test_title: string; subject: string | null; score: number; max_score: number; rank: number; evaluation: SheetEvaluation | null; sections: Section[];
   files: number; page_types: string[]; answers_hidden: boolean }
@@ -31,10 +32,10 @@ export default function PublicReport() {
         {!!d.evaluation?.gaps.length && <div className="row wrap" style={{ marginTop: 12 }}><span className="small muted">Focus areas:</span>{d.evaluation.gaps.map((g) => <span key={g} className="badge red">{g}</span>)}</div>}
       </div>
       {d.files > 0 && d.evaluation ? (
-        <SheetView pages={d.files} pageTypes={d.page_types} ev={d.evaluation} questions={d.sections.flatMap((s) => s.questions)} sections={d.sections} score={d.score} max={d.max_score}
+        <Suspense fallback={<Loading />}><SheetView pages={d.files} pageTypes={d.page_types} ev={d.evaluation} questions={d.sections.flatMap((s) => s.questions)} sections={d.sections} score={d.score} max={d.max_score}
           title={`${d.test_title} - ${d.student_name}`} answersHidden={d.answers_hidden}
           loadPage={async (n) => `/api/public/report/${token}/files/${n}`}
-          loadBlob={async (n) => { const r = await fetch(`/api/public/report/${token}/files/${n}`); if (!r.ok) throw new Error("Page unavailable"); return r.blob(); }} />
+          loadBlob={async (n) => { const r = await fetch(`/api/public/report/${token}/files/${n}`); if (!r.ok) throw new Error("Page unavailable"); return r.blob(); }} /></Suspense>
       ) : <div className="card">
         <div className="table-wrap"><table className="t">
           <thead><tr><th>#</th><th>Topic</th><th>Marks</th><th>Feedback</th></tr></thead>

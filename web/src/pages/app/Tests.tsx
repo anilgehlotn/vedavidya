@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, blobUrl, fetchBlob, csvCell, DEMO, download, fmtDate, fmtDateTime, pct } from "../../lib/api";
 import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/types";
@@ -7,7 +7,8 @@ import { useAuth } from "../../lib/auth";
 import { bulkUpload, compressImage, isAllowedFile, type BulkResult } from "../../lib/upload";
 import { FixitCell, MistakeBars, MISTAKES, TestInsights, TopTip, useInsights } from "./Insights";
 import { ClassUploadWizard, PaperStep, Step } from "./TestFlow";
-import { SheetView } from "./SheetView";
+// The corrected-sheet viewer (with maths rendering) loads only when a marked sheet is opened.
+const SheetView = lazy(() => import("./SheetView").then((m) => ({ default: m.SheetView })));
 
 interface TestRow { id: string; title: string; mode: "offline" | "cbt"; scheduled_at: string | null; results_published: number; paper_id: string | null; paper_title: string | null; paper_status: string | null; total_marks: number | null; subject: string | null; batch_names: string | null; candidates: number; evaluated: number; uploaded: number }
 
@@ -489,10 +490,10 @@ export function AttemptReview() {
       </PageTitle>
       {saved && <div className="ok-box" style={{ marginBottom: 14 }}>{saved}</div>}
       {d.files > 0 && ev && d.score != null && (
-        <SheetView pages={d.files} pageTypes={d.page_types} ev={ev} questions={questions} sections={d.paper.sections} score={d.score} max={d.max_score ?? 0}
+        <Suspense fallback={<Loading />}><SheetView pages={d.files} pageTypes={d.page_types} ev={ev} questions={questions} sections={d.paper.sections} score={d.score} max={d.max_score ?? 0}
           title={`${d.test_title} - ${d.student_name}`} answersHidden={d.paper.answers_hidden} staff={editable}
           loadPage={(n) => blobUrl(`/attempts/${d.id}/files/${n}`).then((f) => f.url)}
-          loadBlob={(n) => fetchBlob(`/attempts/${d.id}/files/${n}`)} />
+          loadBlob={(n) => fetchBlob(`/attempts/${d.id}/files/${n}`)} /></Suspense>
       )}
       {editable && d.files > 0 && !(ev && d.score != null) && (
         <div className="card card-pad no-print" style={{ marginBottom: 16 }}>

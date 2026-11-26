@@ -90,7 +90,8 @@ function evaluationFrom(text, pages = 1) {
     questions: key.map((q, i) => {
       const page = Math.floor(i / perPage) + 1, slot = i % perPage, h = 0.8 / perPage, top = 0.12 + slot * h;
       const location = { page, top, bottom: top + h * 0.8, mark_x: 0.55 + (i % 3) * 0.05, mark_y: top + h * 0.6 };
-      const steps = (q.rubric ?? []).map((r) => ({ step: r.step, max_marks: r.marks, awarded: half(rnd(0, r.marks)), comment: "" }));
+      const steps = (q.rubric ?? []).map((r) => ({ step: r.step, max_marks: r.marks, awarded: half(rnd(0, r.marks)),
+        comment: "You used $\\lambda_0 = \\frac{hc}{\\phi_0}$ with $hc \\approx 1240\\ \\text{eV nm}$, giving $\\lambda_0 = \\frac{1240}{4.65} \\approx 266$ nm. Your working and units are clear." }));
       const sum = steps.reduce((t, s) => t + s.awarded, 0);
       // Occasionally over-award, to prove the app clamps marks to the paper's maximum.
       const types = ["concept", "careless", "incomplete", "presentation"];
@@ -99,7 +100,7 @@ function evaluationFrom(text, pages = 1) {
         max_marks: q.marks, feedback: "Mock feedback", confidence: Math.random() < 0.1 ? "low" : "high",
         mistake_type: mt, mistake_note: mt === "none" ? "" : `Mock ${mt} mistake`, location };
     }),
-    overall_feedback: "Mock overall", strengths: ["Algebra"], gaps: ["Trigonometry"],
+    overall_feedback: "You handled most of the paper well.\n- Correct use of $E = \\frac{hc}{\\lambda}$ in the photoelectric questions.\n- Recheck units when converting Å to nm.", strengths: ["Algebra"], gaps: ["Trigonometry"],
   };
 }
 

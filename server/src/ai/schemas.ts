@@ -52,14 +52,14 @@ export const QuestionEvaluation = z.object({
   attempted: z.boolean(),
   transcription: z.string().describe("Faithful transcription of what the student wrote for this question"),
   steps: z.array(z.object({
-    step: z.string(),
+    step: z.string().describe("The rubric step, e.g. 'Calculation of threshold wavelength'"),
     max_marks: z.number(),
     awarded: z.number(),
-    comment: z.string(),
+    comment: z.string().describe("1-3 sentences to the student: what they wrote for this step (name the formula and values they used) and why it earned these marks. Write maths in LaTeX between $...$"),
   })),
   marks_awarded: z.number(),
   max_marks: z.number(),
-  feedback: z.string().describe("One or two sentences of actionable feedback for the student"),
+  feedback: z.string().describe("One or two sentences of actionable feedback for the student. Write maths in LaTeX between $...$"),
   confidence: z.enum(["high", "medium", "low"]).describe("Low when handwriting is illegible or ambiguous"),
   mistake_type: z.enum(["none", "concept", "careless", "incomplete", "presentation", "not_attempted"]).describe(
     "Main reason marks were lost: none (full marks), concept (misunderstood the idea/method), careless (arithmetic, sign, copying or unit slip), " +
@@ -78,7 +78,7 @@ export type QuestionEvaluation = z.infer<typeof QuestionEvaluation>;
 export const SheetEvaluation = z.object({
   student_name_on_sheet: z.string().nullable(),
   questions: z.array(QuestionEvaluation),
-  overall_feedback: z.string(),
+  overall_feedback: z.string().describe("A one-line summary, then 2-4 short bullet points (each line starting with '- ') on what the student did well and what to fix. Write maths in LaTeX between $...$"),
   strengths: z.array(z.string()),
   gaps: z.array(z.string()).describe("Topics or skills the student should revise"),
 });
