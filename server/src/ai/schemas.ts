@@ -65,6 +65,13 @@ export const QuestionEvaluation = z.object({
     "Main reason marks were lost: none (full marks), concept (misunderstood the idea/method), careless (arithmetic, sign, copying or unit slip), " +
     "incomplete (stopped early or skipped required steps), presentation (right idea but missing working, labels, diagram or final statement), not_attempted"),
   mistake_note: z.string().describe("One short sentence naming the exact mistake, e.g. 'Forgot to square the radius'. Empty when mistake_type is none"),
+  location: z.object({
+    page: z.number().describe("The 'Page N' number where this answer's final line is written; 0 if not attempted or not found"),
+    top: z.number().describe("Top edge of this answer on that page, as a fraction of the page height from the top (0 to 1)"),
+    bottom: z.number().describe("Bottom edge of this answer on that page, as a fraction of the page height (0 to 1)"),
+    mark_x: z.number().describe("Where a teacher would put the tick or cross: just to the right of the end of the final answer, as a fraction of the page width from the left (0 to 1)"),
+    mark_y: z.number().describe("Vertical position of that tick or cross, as a fraction of the page height from the top (0 to 1)"),
+  }).describe("Where the answer is on the student's pages, so the marked sheet can be drawn like a teacher's correction"),
 });
 export type QuestionEvaluation = z.infer<typeof QuestionEvaluation>;
 

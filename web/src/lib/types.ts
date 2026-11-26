@@ -21,6 +21,8 @@ export interface QuestionEvaluation {
   mistake_type?: string; mistake_note?: string;
   /** Set by the second check in mixed mode. */
   second_check?: "agreed" | "changed" | "failed"; first_marks?: number; needs_review?: boolean; check_note?: string;
+  /** Where the answer is on the pages (fractions of the page; page is 1-based, 0 = not found). */
+  location?: { page: number; top: number; bottom: number; mark_x: number; mark_y: number };
 }
 export interface SheetEvaluation {
   student_name_on_sheet: string | null; questions: QuestionEvaluation[]; overall_feedback: string; strengths: string[]; gaps: string[];

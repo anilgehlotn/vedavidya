@@ -580,6 +580,44 @@ section("Mixed models: routing, second check, cost meter");
   ok(!(await call("GET", "/settings/ai/usage", { token: otherAdmin })).data.items.length, "other institute sees no usage of ours");
 }
 
+section("Corrected answer sheet: pages, positions, access");
+{
+  const { PDFDocument } = require("pdf-lib");
+  const doc = await PDFDocument.create();
+  for (let i = 0; i < 3; i++) doc.addPage([595, 842]);
+  const three = Buffer.from(await doc.save());
+  const det = (await call("GET", `/tests/${test}`, { token: teacher })).data;
+  const target = det.attempts.find((a) => a.status === "evaluated");
+  const f = new FormData(); f.append("files", new Blob([three], { type: "application/pdf" }), "sheet.pdf");
+  const up = await expect("upload a 3-page PDF sheet", 200, "POST", `/attempts/${target.id}/files?replace=1`, { token: teacher, form: f });
+  ok(up.data.pages === 3, `PDF turned into 3 page images (got ${up.data.pages})`);
+  const at = (await call("GET", `/attempts/${target.id}`, { token: teacher })).data;
+  ok(at.page_types.length === 3 && at.page_types.every((t) => t === "image"), "every page is an image the marks can be drawn on");
+  await expect("re-mark it", 200, "POST", `/tests/${test}/evaluate`, { token: teacher, body: { attempt_ids: [target.id] } });
+  let ev = null;
+  for (let i = 0; i < 80; i++) { const x = (await call("GET", `/attempts/${target.id}`, { token: teacher })).data; if (x.status === "evaluated") { ev = x.evaluation; break; } await sleep(300); }
+  ok(ev && ev.questions.every((q) => q.location && q.location.page >= 1 && q.location.page <= 3), "every answer has a position on one of the 3 pages");
+  // Students see their own marked pages once results are published; never a classmate's.
+  const meId = (await call("GET", "/me", { token: studentTok })).data.user.id;
+  const all_ = (await call("GET", `/tests/${test}`, { token: teacher })).data.attempts;
+  const mine = all_.find((a) => a.student_id === meId && a.files > 0);
+  const other = all_.find((a) => a.student_id !== meId && a.files > 0);
+  if (mine) ok((await fetch(`${API}/attempts/${mine.id}/files/0`, { headers: { Authorization: `Bearer ${studentTok}` } })).status === 200, "student opens own marked page");
+  ok((await fetch(`${API}/attempts/${other.id}/files/0`, { headers: { Authorization: `Bearer ${studentTok}` } })).status === 404, "student can't open a classmate's page");
+  ok((await fetch(`${API}/attempts/${other.id}/files/0`, { headers: { Authorization: `Bearer ${otherAdmin}` } })).status === 404, "other institute can't open pages");
+  const share = all_.find((a) => a.share_token && a.files > 0);
+  ok((await fetch(`${API}/public/report/${share.share_token}/files/0`)).status === 200, "parent link opens the marked page");
+  // The answer key is hidden from students and parents while another unpublished test uses the same paper.
+  const pubBefore = (await call("GET", `/public/report/${share.share_token}`)).data;
+  ok(pubBefore.answers_hidden === false && pubBefore.sections.flatMap((x) => x.questions).some((q) => q.solution), "solutions shown when the paper isn't used elsewhere");
+  const reuse = (await expect("same paper, another batch (unpublished)", 200, "POST", "/tests", { token: teacher, body: { title: "Unit Test 1 - B", paper_id: aiPaper.id, mode: "offline", batch_ids: [batch2] } })).data.id;
+  const pubAfter = (await call("GET", `/public/report/${share.share_token}`)).data;
+  ok(pubAfter.answers_hidden === true && !pubAfter.sections.flatMap((x) => x.questions).some((q) => q.solution || q.correct_option != null || q.rubric.length), "answer key hidden while another batch still has to take it");
+  if (mine) ok((await call("GET", `/attempts/${mine.id}`, { token: studentTok })).data.paper.answers_hidden === true, "same rule for the student");
+  ok((await call("GET", `/attempts/${target.id}`, { token: teacher })).data.paper.sections[0].questions[0].solution, "teachers always see solutions");
+  await expect("remove the reuse test", 200, "DELETE", `/tests/${reuse}`, { token: teacher });
+}
+
 section("Security: roles");
 {
   const staffOnly = [["GET", "/overview"], ["GET", "/students"], ["GET", "/tests"], ["GET", "/papers"], ["GET", `/tests/${test}`], ["POST", `/tests/${test}/evaluate`], ["POST", `/tests/${test}/publish`],

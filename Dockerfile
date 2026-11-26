@@ -1,5 +1,7 @@
 # Veda Vidya: one container serves the website, the app and the API on $PORT.
 FROM node:22-slim
+# poppler-utils (pdftoppm) turns answer-sheet PDFs into page images, so marks can be drawn on each page.
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils && apt-get clean && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY server/package.json server/

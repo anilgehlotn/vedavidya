@@ -82,11 +82,14 @@ function importedPaper(content, hasKey) {
     { name: "Section B", instructions: "", questions: [mk(3, "short", 3), mk(4, "long", 5)] }] };
 }
 
-function evaluationFrom(text) {
+function evaluationFrom(text, pages = 1) {
   const key = JSON.parse(text.split("Answer key with rubrics (JSON):\n")[1].split("\n\nEvaluate every question")[0]);
+  const perPage = Math.max(1, Math.ceil(key.length / Math.max(1, pages)));
   return {
     student_name_on_sheet: null,
-    questions: key.map((q) => {
+    questions: key.map((q, i) => {
+      const page = Math.floor(i / perPage) + 1, slot = i % perPage, h = 0.8 / perPage, top = 0.12 + slot * h;
+      const location = { page, top, bottom: top + h * 0.8, mark_x: 0.55 + (i % 3) * 0.05, mark_y: top + h * 0.6 };
       const steps = (q.rubric ?? []).map((r) => ({ step: r.step, max_marks: r.marks, awarded: half(rnd(0, r.marks)), comment: "" }));
       const sum = steps.reduce((t, s) => t + s.awarded, 0);
       // Occasionally over-award, to prove the app clamps marks to the paper's maximum.
@@ -94,7 +97,7 @@ function evaluationFrom(text) {
       const mt = sum >= q.marks ? "none" : types[Math.floor(Math.random() * types.length)];
       return { question_id: q.id, attempted: true, transcription: "x = 3", steps, marks_awarded: Math.random() < 0.1 ? q.marks + 5 : sum,
         max_marks: q.marks, feedback: "Mock feedback", confidence: Math.random() < 0.1 ? "low" : "high",
-        mistake_type: mt, mistake_note: mt === "none" ? "" : `Mock ${mt} mistake` };
+        mistake_type: mt, mistake_note: mt === "none" ? "" : `Mock ${mt} mistake`, location };
     }),
     overall_feedback: "Mock overall", strengths: ["Algebra"], gaps: ["Trigonometry"],
   };
@@ -162,7 +165,7 @@ http.createServer((req, res) => {
         : /Write the re-teach brief/.test(text) ? briefFrom(text)
         : /Create an original question paper/.test(text) ? paperFrom(text)
         : /Transcribe this question paper/.test(text) ? importedPaper(content, /ANSWER KEY/.test(text))
-        : evaluationFrom(text);
+        : evaluationFrom(text, content.filter((b) => b.type === "image").length || 1);
       return setTimeout(() => streamText(res, body.model, JSON.stringify(out)), rnd(100, 600));
     }
     apiError(res, 404, "not_found_error", `no route ${req.method} ${url.pathname}`);

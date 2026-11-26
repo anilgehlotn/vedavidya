@@ -8,7 +8,7 @@ import { z } from "zod";
 import { all, json, one, run, uid, UPLOAD_DIR } from "../db.js";
 import { staff, requireRole } from "../auth.js";
 import { evaluateSheet, AiError, aiProblem, modelFor } from "../ai/claude.js";
-import { normalisePage, removeFiles, UploadError } from "../images.js";
+import { normaliseSheet, removeFiles, UploadError } from "../images.js";
 import { queuePracticeForTest } from "./practice.js";
 import { ensureSubtopics } from "./papers.js";
 import type { Question, Section, SheetEvaluation } from "../ai/schemas.js";
@@ -147,7 +147,7 @@ async function normaliseAll(files: Express.Multer.File[]) {
   const out: { name: string; original: string }[] = [];
   const errors: string[] = [];
   for (const f of files) {
-    try { out.push({ name: await normalisePage(UPLOAD_DIR, f.filename, f.originalname), original: f.originalname }); }
+    try { for (const name of await normaliseSheet(UPLOAD_DIR, f.filename, f.originalname)) out.push({ name, original: f.originalname }); }
     catch (e) { errors.push(e instanceof UploadError ? e.message : `${f.originalname}: upload failed`); }
   }
   return { out, errors };
@@ -223,12 +223,31 @@ testRoutes.post("/tests/:id/bulk-files", staff, bulkUpload.array("files", 400), 
   res.json({ students, pages, unmatched, ambiguous, busy, warnings });
 }));
 
-testRoutes.get("/attempts/:id/files/:n", staff, (req, res) => {
-  const a = attemptInOrg(req.params.id, req.user!.org_id);
-  const name = a && json<string[]>(a.files, [])[Number(req.params.n)];
+// One page of an answer sheet: staff of the institute, or the student once results are published.
+testRoutes.get("/attempts/:id/files/:n", (req, res) => {
+  const u = req.user!;
+  const a = one<any>("SELECT a.files, a.student_id, t.org_id, t.results_published FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ?", req.params.id);
+  if (!a || a.org_id !== u.org_id || (u.role === "student" && (a.student_id !== u.id || !a.results_published))) return res.status(404).end();
+  const name = json<string[]>(a.files, [])[Number(req.params.n)];
   if (!name) return res.status(404).end();
+  res.setHeader("Cache-Control", "private, max-age=3600");
   res.sendFile(path.join(UPLOAD_DIR, name));
 });
+
+/** Kind of each stored page, so the viewer knows which pages it can draw marks on. */
+export const pageTypes = (files: string | null) => json<string[]>(files, []).map((f) => (/\.pdf$/i.test(f) ? "pdf" : "image"));
+
+/** Answer key and solutions stay hidden from students and parents while another unpublished test still uses the same paper. */
+export function paperIsPrivate(testId: string) {
+  return Boolean(one(`SELECT 1 FROM tests t JOIN tests o ON o.paper_id = t.paper_id AND o.id != t.id AND o.results_published = 0 WHERE t.id = ?`, testId));
+}
+/** The paper as a student or parent may see it after results: question text always; answers and solutions when safe. */
+export function paperForViewer(testId: string) {
+  const p = paperFor(testId);
+  if (!p) return null;
+  const hide = paperIsPrivate(testId);
+  return { ...p, answers_hidden: hide, sections: p.sections.map((sec) => ({ ...sec, questions: sec.questions.map((q) => (hide ? { ...q, correct_option: null, numeric_answer: null, solution: "", rubric: [] } : q)) })) };
+}
 
 function scoreEvaluation(ev: SheetEvaluation, questions: Question[]) {
   // Clamp each question to its paper marks so a model slip can never exceed the maximum.
@@ -370,7 +389,8 @@ testRoutes.get("/attempts/:id", (req, res) => {
     FROM attempts a JOIN users u ON u.id = a.student_id JOIN tests t ON t.id = a.test_id WHERE a.id = ?`, req.params.id);
   if (!a || a.org_id !== u.org_id) return res.status(404).json({ error: "Not found" });
   if (u.role === "student" && (a.student_id !== u.id || !a.results_published)) return res.status(403).json({ error: "Results not published yet" });
-  res.json({ ...a, files: json<string[]>(a.files, []).length, responses: json(a.responses, {}), evaluation: json(a.evaluation, null), paper: paperFor(a.test_id) });
+  res.json({ ...a, files: json<string[]>(a.files, []).length, page_types: pageTypes(a.files), responses: json(a.responses, {}), evaluation: json(a.evaluation, null),
+    paper: u.role === "student" ? paperForViewer(a.test_id) : paperFor(a.test_id) });
 });
 
 // Teacher review: override marks on any question.
@@ -480,6 +500,7 @@ testRoutes.post("/cbt/:testId/submit", student, (req, res) => {
       feedback: !attempted ? "Not attempted." : correct ? "Correct." : `Incorrect. ${q.solution}`,
       mistake_type: (!attempted ? "not_attempted" : correct ? "none" : "concept") as "none" | "concept" | "not_attempted",
       mistake_note: !attempted || correct ? "" : "Chose a wrong answer",
+      location: { page: 0, top: 0, bottom: 0, mark_x: 0, mark_y: 0 }, // online answers have no paper
     };
   });
   const score = evQuestions.reduce((t, q) => t + q.marks_awarded, 0);

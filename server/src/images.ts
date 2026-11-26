@@ -3,6 +3,7 @@
 import sharp from "sharp";
 import fs from "node:fs";
 import path from "node:path";
+import { execFile, execFileSync } from "node:child_process";
 
 // Keep memory low on small servers: no cache, one image at a time.
 sharp.cache(false);
@@ -51,4 +52,32 @@ export async function normalisePage(dir: string, filename: string, originalName:
 
 export function removeFiles(dir: string, names: string[]) {
   for (const n of names) if (/^[\w.-]+$/.test(n)) fs.rmSync(path.join(dir, n), { force: true });
+}
+
+// Answer sheets uploaded as PDF are turned into one JPEG per page, so every page can be shown with the
+// teacher's ticks and marks drawn on it. Needs poppler's pdftoppm (installed in the Docker image);
+// without it, PDFs are kept as they are.
+const HAS_PDFTOPPM = (() => { try { execFileSync("pdftoppm", ["-v"], { stdio: "ignore" }); return true; } catch { return false; } })();
+const MAX_SHEET_PAGES = 30;
+
+/** Like normalisePage, but a PDF answer sheet becomes several page images. Returns the stored file names in page order. */
+export async function normaliseSheet(dir: string, filename: string, originalName: string): Promise<string[]> {
+  const checked = await normalisePage(dir, filename, originalName);
+  if (!checked.toLowerCase().endsWith(".pdf") || !HAS_PDFTOPPM) return [checked];
+  const full = path.join(dir, checked);
+  const prefix = checked.replace(/\.pdf$/i, "") + ".p";
+  try {
+    await new Promise<void>((ok, bad) => execFile("pdftoppm", ["-jpeg", "-jpegopt", "quality=85", "-r", "150", "-scale-to", "2000", "-l", String(MAX_SHEET_PAGES), full, path.join(dir, prefix)],
+      { timeout: 90_000 }, (err) => (err ? bad(err) : ok())));
+  } catch {
+    for (const f of fs.readdirSync(dir).filter((f) => f.startsWith(prefix))) fs.rmSync(path.join(dir, f), { force: true });
+    return [checked]; // couldn't render it; keep the PDF (Claude can still read it)
+  }
+  const pages = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith(".jpg"))
+    .sort((a, b) => Number(a.match(/-(\d+)\.jpg$/)?.[1] ?? 0) - Number(b.match(/-(\d+)\.jpg$/)?.[1] ?? 0));
+  if (!pages.length) return [checked];
+  const out: string[] = [];
+  for (const pg of pages) out.push(await normalisePage(dir, pg, `${originalName} page ${out.length + 1}`));
+  fs.rmSync(full, { force: true });
+  return out;
 }

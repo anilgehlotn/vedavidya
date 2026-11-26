@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, blobUrl, csvCell, DEMO, download, fmtDate, fmtDateTime, pct } from "../../lib/api";
+import { api, blobUrl, fetchBlob, csvCell, DEMO, download, fmtDate, fmtDateTime, pct } from "../../lib/api";
 import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/types";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, StatusBadge, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
 import { bulkUpload, compressImage, isAllowedFile, type BulkResult } from "../../lib/upload";
 import { FixitCell, MistakeBars, MISTAKES, TestInsights, TopTip, useInsights } from "./Insights";
 import { ClassUploadWizard, PaperStep, Step } from "./TestFlow";
+import { SheetView } from "./SheetView";
 
 interface TestRow { id: string; title: string; mode: "offline" | "cbt"; scheduled_at: string | null; results_published: number; paper_id: string | null; paper_title: string | null; paper_status: string | null; total_marks: number | null; subject: string | null; batch_names: string | null; candidates: number; evaluated: number; uploaded: number }
 
@@ -229,6 +230,7 @@ export function TestDetail() {
   const [bulk, setBulk] = useState(false);
   const [wizard, setWizard] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [markedBusy, setMarkedBusy] = useState<string | null>(null);
 
   const busy = t.data?.attempts.some((a) => a.status === "evaluating");
   const reading = t.data?.paper?.status === "generating";
@@ -286,6 +288,30 @@ export function TestDetail() {
     setErr(null); setPdfBusy(true);
     try { await download(path, `${d.title.replace(/\W+/g, "_")}_${name}.pdf`); } catch (e) { setErr((e as Error).message); } finally { setPdfBusy(false); }
   };
+  // Every marked student's answer sheet with the corrections drawn on, in roll order, as one PDF.
+  const downloadMarked = async () => {
+    setErr(null);
+    const list = scored.filter((a) => a.files > 0).sort((a, b) => (Number(a.roll_no) || 1e9) - (Number(b.roll_no) || 1e9) || a.student_name.localeCompare(b.student_name));
+    try {
+      const [{ markedCopyPdf }, { layoutMarks }] = await Promise.all([import("../../lib/markedCopy"), import("../../lib/marks")]);
+      const sheets = [];
+      for (const [i, a] of list.entries()) {
+        setMarkedBusy(`Preparing ${i + 1} of ${list.length}…`);
+        const at = await api<AttemptData>(`/attempts/${a.id}`);
+        const pages = await Promise.all(Array.from({ length: at.files }, async (_, n) => {
+          if (at.page_types?.[n] === "pdf") return null;
+          return fetchBlob(`/attempts/${a.id}/files/${n}`).catch(() => null);
+        }));
+        sheets.push({ pages, layout: layoutMarks(at.evaluation, at.files, at.paper.sections), total: { score: at.score ?? 0, max: at.max_score ?? 0 }, label: `Roll ${a.roll_no ?? "-"} · ${a.student_name}` });
+      }
+      setMarkedBusy("Making the PDF…");
+      const out = await markedCopyPdf(sheets, `${d.title} - marked answer sheets`);
+      const el = document.createElement("a");
+      el.href = URL.createObjectURL(out); el.download = `${d.title.replace(/\W+/g, "_")}_marked_answer_sheets.pdf`; el.click();
+      setTimeout(() => URL.revokeObjectURL(el.href), 10000);
+    } catch (e) { setErr((e as Error).message); }
+    finally { setMarkedBusy(null); }
+  };
   const copyLink = (token: string) => { navigator.clipboard?.writeText(`${location.origin}/report/${token}`); setMsg("Parent report link copied."); };
 
   // Where the teacher is in the flow.
@@ -304,6 +330,7 @@ export function TestDetail() {
         {!DEMO && scored.length > 0 && <button className="btn btn-ghost" onClick={() => download(`/tests/${d.id}/results.csv`, `${d.title.replace(/\W+/g, "_")}_results.csv`).catch((e) => setErr(e.message))}>Export CSV</button>}
         {!DEMO && scored.length > 0 && <button className="btn btn-primary" onClick={() => pdf(`/tests/${d.id}/class-report.pdf`, "class_report")}>⤓ Class report PDF</button>}
         {!DEMO && scored.length > 0 && <button className="btn btn-ghost" onClick={() => pdf(`/tests/${d.id}/reports.pdf`, "student_reports")}>⤓ All student reports PDF</button>}
+        {!DEMO && offline && scored.some((a) => a.files > 0) && <button className="btn btn-ghost" disabled={!!markedBusy} onClick={downloadMarked}>{markedBusy ?? "⤓ Marked answer sheets"}</button>}
         {d.results_published && !DEMO ? <button className="btn btn-ghost" onClick={downloadLinks}>⤓ Report links</button> : null}
       </PageTitle>
       {pdfBusy && <div className="ok-box" style={{ marginBottom: 14 }}><span className="spinner" /> Making the PDF…</div>}
@@ -410,7 +437,7 @@ export function TestDetail() {
 
 interface AttemptData {
   id: string; status: AttemptStatus; score: number | null; max_score: number | null; student_name: string; test_title: string; test_id: string;
-  files: number; evaluation: SheetEvaluation | null; paper: Paper; reviewed: number; share_token: string | null; results_published: number; mode: string;
+  files: number; page_types?: string[]; evaluation: SheetEvaluation | null; paper: Paper & { answers_hidden?: boolean }; reviewed: number; share_token: string | null; results_published: number; mode: string;
 }
 
 // Shared by teachers (editable) and students (read-only, after publishing).
@@ -461,7 +488,13 @@ export function AttemptReview() {
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
       </PageTitle>
       {saved && <div className="ok-box" style={{ marginBottom: 14 }}>{saved}</div>}
-      {editable && d.files > 0 && (
+      {d.files > 0 && ev && d.score != null && (
+        <SheetView pages={d.files} pageTypes={d.page_types} ev={ev} questions={questions} sections={d.paper.sections} score={d.score} max={d.max_score ?? 0}
+          title={`${d.test_title} - ${d.student_name}`} answersHidden={d.paper.answers_hidden} staff={editable}
+          loadPage={(n) => blobUrl(`/attempts/${d.id}/files/${n}`).then((f) => f.url)}
+          loadBlob={(n) => fetchBlob(`/attempts/${d.id}/files/${n}`)} />
+      )}
+      {editable && d.files > 0 && !(ev && d.score != null) && (
         <div className="card card-pad no-print" style={{ marginBottom: 16 }}>
           <div className="row between"><b>Answer sheet ({d.files} page{d.files > 1 ? "s" : ""})</b><span className="small muted">Click a page to enlarge</span></div>
           <div className="row" style={{ overflowX: "auto", marginTop: 10, gap: 10 }}>

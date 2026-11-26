@@ -171,7 +171,16 @@ const withLink = tdetail.attempts.filter((x) => x.share_token);
 ok(withLink.length === tdetail.attempts.filter((x) => x.score !== null).length, "every marked student has a parent link");
 const rep = await call("GET", `/public/report/${withLink[0].share_token}`);
 ok(rep.status === 200 && rep.data.student_name === withLink[0].student_name, "parent link shows the right student");
-ok(!JSON.stringify(rep.data).match(/"solution"|"rubric"|"correct_option"/), "parent link never reveals the answer key");
+// The answer key is shared only once no other unpublished test still uses the same paper.
+const paperReused = rep.data.answers_hidden;
+const keyShown = rep.data.sections.flatMap((x) => x.questions).some((q) => q.solution || (q.rubric ?? []).length || q.correct_option != null);
+ok(paperReused ? !keyShown : true, "parent link hides the answer key while the paper is still in use elsewhere");
+ok(typeof rep.data.files === "number" && Array.isArray(rep.data.page_types), "parent link includes the answer-sheet pages");
+if (rep.data.files) {
+  const pg = await fetch(API + `/public/report/${withLink[0].share_token}/files/0`);
+  ok(pg.status === 200 && /image|pdf/.test(pg.headers.get("content-type") ?? ""), "parent can open the marked pages");
+}
+ok((await fetch(API + `/public/report/not-a-token/files/0`)).status === 404, "bad link can't open pages");
 ok(withLink.every((x) => x.parent_phone), "parent phone available for WhatsApp");
 
 log("▸ Teacher safety rules");

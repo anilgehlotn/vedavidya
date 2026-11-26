@@ -201,7 +201,8 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
     correct_option: q.correct_option, numeric_answer: q.numeric_answer,
     model_solution: q.solution, rubric: q.rubric,
   }));
-  const blocks = fileBlocks(files);
+  // Number every page so the model can say where each answer is (for drawing ticks and marks on the sheet).
+  const blocks = fileBlocks(files).flatMap((b, i) => [{ type: "text" as const, text: b.type === "image" ? `Page ${i + 1}:` : `Pages from file ${i + 1} (PDF):` }, b]);
   return structured<import("./schemas.js").SheetEvaluation>(orgId, {
     task,
     effort: "high",
@@ -214,7 +215,9 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
       "If a question is not attempted, mark attempted=false with 0 marks. If handwriting is unclear, give your best reading and set confidence to low. " +
       "marks_awarded must equal the sum of awarded step marks (or the objective result). " +
       "For every question where marks were lost, classify the main cause in mistake_type and name the exact slip in mistake_note, " +
-      "so the student knows precisely what to fix. Use mistake_type none only for full marks.",
+      "so the student knows precisely what to fix. Use mistake_type none only for full marks. " +
+      "For every question also give its location on the pages: the page where the answer ends, the answer's top and bottom, " +
+      "and the point just right of the final answer where a teacher would write the tick or cross, all as fractions of that page's size.",
     content: [
       ...blocks,
       {

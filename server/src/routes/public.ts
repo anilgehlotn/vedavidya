@@ -1,9 +1,11 @@
 import { loadTestReport, pdfName, studentReportPdf } from "../reports.js";
 import { sendPdf, withSubtopics } from "./reports.js";
+import { pageTypes, paperForViewer } from "./tests.js";
+import path from "node:path";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { one, run, uid, json, all, bumpTokenVersion } from "../db.js";
+import { one, run, uid, json, all, bumpTokenVersion, UPLOAD_DIR } from "../db.js";
 import { requireAuth, signToken, type AuthUser } from "../auth.js";
 import { rateLimit } from "../ratelimit.js";
 
@@ -108,9 +110,19 @@ publicRoutes.get("/public/report/:token", (req, res) => {
   res.json({
     org_name: row.org_name, student_name: row.student_name, test_title: row.test_title, subject: row.subject,
     score: row.score, max_score: row.max_score, rank, evaluation: json(row.evaluation, null),
-    // Only what the report shows: question topics and marks (never the answer key or solutions).
-    sections: json<any[]>(row.sections, []).map((s) => ({ name: s.name, questions: (s.questions ?? []).map((q: any) => ({ id: q.id, topic: q.topic, marks: q.marks })) })),
+    files: json<string[]>(row.files, []).length, page_types: pageTypes(row.files),
+    // Questions with the student's marks; answers and solutions only once no other unpublished test uses this paper.
+    sections: paperForViewer(row.test_id)?.sections ?? [], answers_hidden: paperForViewer(row.test_id)?.answers_hidden ?? true,
   });
+});
+
+// A page of the shared answer sheet, for the parent's report link.
+publicRoutes.get("/public/report/:token/files/:n", (req, res) => {
+  const row = one<any>(`SELECT a.files, t.results_published FROM share_tokens s JOIN attempts a ON a.id = s.attempt_id JOIN tests t ON t.id = a.test_id WHERE s.token = ?`, req.params.token);
+  const name = row?.results_published ? json<string[]>(row.files, [])[Number(req.params.n)] : null;
+  if (!name) return res.status(404).end();
+  res.setHeader("Cache-Control", "private, max-age=3600");
+  res.sendFile(path.join(UPLOAD_DIR, name));
 });
 
 // The same report as a PDF, for parents who open the shared link.

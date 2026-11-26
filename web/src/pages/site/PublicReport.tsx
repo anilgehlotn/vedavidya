@@ -1,8 +1,10 @@
 import { useParams } from "react-router-dom";
 import { ErrorBox, Loading, Logo, useApi } from "../../components/ui";
 import type { Section, SheetEvaluation } from "../../lib/types";
+import { SheetView } from "../app/SheetView";
 
-interface Report { org_name: string; student_name: string; test_title: string; subject: string | null; score: number; max_score: number; rank: number; evaluation: SheetEvaluation | null; sections: Section[] }
+interface Report { org_name: string; student_name: string; test_title: string; subject: string | null; score: number; max_score: number; rank: number; evaluation: SheetEvaluation | null; sections: Section[];
+  files: number; page_types: string[]; answers_hidden: boolean }
 
 // Parent-facing report reached by a share link - no login required.
 export default function PublicReport() {
@@ -14,7 +16,7 @@ export default function PublicReport() {
   const qs = new Map(d.sections.flatMap((s) => s.questions).map((q) => [q.id, q]));
   const p = Math.round((d.score / d.max_score) * 100);
   return (
-    <main className="site-wrap" style={{ maxWidth: 820, padding: "32px 20px 60px" }}>
+    <main className="site-wrap" style={{ maxWidth: d.files && d.evaluation ? 1320 : 820, padding: "32px 20px 60px" }}>
       <div className="row between" style={{ marginBottom: 24 }}><Logo /><span className="row"><span className="small muted">Report shared by {d.org_name}</span><a className="btn btn-primary btn-sm" href={`/api/public/report/${token}/pdf`}>⤓ Download PDF</a></span></div>
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div className="row between wrap">
@@ -28,7 +30,12 @@ export default function PublicReport() {
         {d.evaluation?.overall_feedback && <p style={{ marginTop: 14, color: "var(--ink-2)" }}>{d.evaluation.overall_feedback}</p>}
         {!!d.evaluation?.gaps.length && <div className="row wrap" style={{ marginTop: 12 }}><span className="small muted">Focus areas:</span>{d.evaluation.gaps.map((g) => <span key={g} className="badge red">{g}</span>)}</div>}
       </div>
-      <div className="card">
+      {d.files > 0 && d.evaluation ? (
+        <SheetView pages={d.files} pageTypes={d.page_types} ev={d.evaluation} questions={d.sections.flatMap((s) => s.questions)} sections={d.sections} score={d.score} max={d.max_score}
+          title={`${d.test_title} - ${d.student_name}`} answersHidden={d.answers_hidden}
+          loadPage={async (n) => `/api/public/report/${token}/files/${n}`}
+          loadBlob={async (n) => { const r = await fetch(`/api/public/report/${token}/files/${n}`); if (!r.ok) throw new Error("Page unavailable"); return r.blob(); }} />
+      ) : <div className="card">
         <div className="table-wrap"><table className="t">
           <thead><tr><th>#</th><th>Topic</th><th>Marks</th><th>Feedback</th></tr></thead>
           <tbody>{d.evaluation?.questions.map((qe, i) => (
@@ -37,7 +44,7 @@ export default function PublicReport() {
               <td className="small">{qe.feedback}</td></tr>))}
           </tbody>
         </table></div>
-      </div>
+      </div>}
     </main>
   );
 }
