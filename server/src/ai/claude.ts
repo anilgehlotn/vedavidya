@@ -6,7 +6,7 @@ import path from "node:path";
 import { one, run } from "../db.js";
 import { storage } from "../lib/storage.js";
 import { decrypt } from "../secrets.js";
-import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, SubtopicTags, type Section } from "./schemas.js";
+import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, SubtopicTags, Question, type Section } from "./schemas.js";
 
 // ---- Which model does which job ----
 // "mixed" (default): the strongest model writes question papers and answer keys (one request per test, and an
@@ -290,6 +290,35 @@ export async function importPaper(orgId: string, paperFiles: string[], keyFiles:
             : "No answer key was provided: solve each question yourself."),
       },
     ],
+  });
+}
+
+export type AssistAction = "refine" | "regenerate" | "rewrite";
+/**
+ * AI help on one question in the paper editor. refine: improve the solution and marking as the teacher asks;
+ * regenerate: a fresh worked solution and marking scheme; rewrite: a new version of the question itself (same type and marks).
+ */
+export async function assistQuestion(orgId: string, ctx: { subject: string | null; class_level: string | null; board: string | null; language: string; marking_notes?: string | null;
+  question: import("./schemas.js").Question; action: AssistAction; instruction?: string | null }) {
+  const q = ctx.question;
+  const goal = ctx.action === "refine" ? "Improve the worked solution and the step-wise marking scheme of this question as the teacher asks. Keep the question itself, its options and its answer unchanged unless the teacher's request says they are wrong."
+    : ctx.action === "regenerate" ? "Write a fresh, correct worked solution and step-wise marking scheme for this question. Keep the question, its options and its answer unchanged (fix the answer only if it is wrong)."
+    : "Write a new version of this question that tests the same concept at the requested difficulty, with a correct answer, worked solution and marking scheme.";
+  return structured<import("./schemas.js").Question>(orgId, {
+    task: "paper",
+    effort: "high",
+    format: zodOutputFormat(Question),
+    system: "You are an experienced Indian school and coaching teacher who writes clear, correct questions, worked solutions and fair step-wise marking schemes. " +
+      "Write maths in LaTeX between $...$. Rubric step marks must add up exactly to the question's marks.",
+    content: [{
+      type: "text",
+      text: `Improve one question of a paper.\n${goal}\n` +
+        `Subject: ${ctx.subject ?? "-"} · Class: ${ctx.class_level ?? "-"} · Board: ${ctx.board ?? "-"} · Language: ${ctx.language}\n` +
+        (ctx.marking_notes?.trim() ? `The teacher's own marking rules (the marking scheme must follow them): ${ctx.marking_notes.trim()}\n` : "") +
+        (ctx.instruction?.trim() ? `The teacher asks: ${ctx.instruction.trim()}\n` : "") +
+        `Keep id "${q.id}", type "${q.type}", marks ${q.marks} and negative_marks ${q.negative_marks}.\n` +
+        `The question now (JSON):\n${JSON.stringify(q)}`,
+    }],
   });
 }
 

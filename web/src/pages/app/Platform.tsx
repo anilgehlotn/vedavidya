@@ -12,7 +12,7 @@ interface PlatformSettings { prices: Record<string, number>; default_prices: Rec
 const MODE_LABEL: Record<Mode, string> = { mixed: "Mixed", sonnet: "Sonnet for everything", opus: "Opus for everything" };
 interface Backup { file: string; size: number; created_at: string }
 
-const LABEL: Record<string, string> = { paper_import: "Read a question paper", paper_generate: "Generate a paper", mark_sheet: "Mark one answer sheet", practice_set: "Fix-it practice (per student)", reteach_brief: "Re-teach brief" };
+const LABEL: Record<string, string> = { paper_import: "Read a question paper", paper_generate: "Generate a paper", mark_sheet: "Mark one answer sheet", practice_set: "Fix-it practice (per student)", reteach_brief: "Re-teach brief", question_assist: "AI help on one question" };
 const fmt = (n: number) => (Math.round(n * 100) / 100).toLocaleString("en-IN");
 
 export default function Platform() {

@@ -291,6 +291,68 @@ try {
   const np = (await call("GET", `/papers/${newId}`, { token: admin })).data;
   ok(np.marking_notes.includes("Units are required") && np.course_id && np.source === "imported", "rules and course saved with the paper");
 
+  // ------------------------------------------------------------------ Paper editor
+  log("▸ Paper editor");
+  const mk = (id, text, marks, extra = {}) => ({ id, type: "short", text, options: [], correct_option: null, numeric_answer: null, marks, negative_marks: 0, difficulty: "medium", topic: "Algebra", subtopic: "", solution: "Because $x^2 = 4$, $x = 2$.", rubric: [{ step: "Uses $x^2$", marks }], ...extra });
+  const edId = (await call("POST", "/papers", { token: admin, body: { title: "Editor test", duration_min: 45, sections: [
+    { name: "Section A", instructions: "Answer all", questions: [mk("q1", "Find $x$ if $x^2 = 4$", 2), mk("q2", "Expand $(a+b)^2$", 3)] },
+    { name: "Section B", instructions: "", questions: [mk("q3", "Prove $\\sqrt{2}$ is irrational", 5, { difficulty: "hard" })] },
+  ] } })).data.id;
+  await fp.goto(BASE + `/app/papers/${edId}`);
+  ok(await visible(fp.locator(".ws-summary", { hasText: "Questions" })), "summary bar");
+  ok(/10/.test(await fp.locator(".ws-summary").innerText()) && /0\/3/.test(await fp.locator(".ws-summary").innerText()), "summary shows marks and checked count");
+  ok(await fp.locator(".q-text .katex").count() >= 3, "maths is typeset with KaTeX");
+  ok(await visible(fp.locator(".ws-switcher button", { hasText: "Section B" })), "section switcher");
+  await fp.locator(".ws-q", { hasText: "Find" }).getByRole("button", { name: "Mark as checked" }).click();
+  ok(await visible(fp.locator(".ws-q", { hasText: "Find" }).getByRole("button", { name: "Checked" })), "tick a question as checked");
+  ok(await visible(fp.locator(".ws-switcher button", { hasText: "Section A" }).getByText("1/2")), "switcher shows checked progress");
+  await fp.reload();
+  ok(await visible(fp.locator(".ws-q", { hasText: "Find" }).getByRole("button", { name: "Checked" })), "tick is saved");
+  await fp.getByRole("button", { name: /Section B/ }).first().click();
+  await sleep(500);
+  await fp.locator(".ws-section-head", { hasText: "Section A" }).click();
+  ok(!(await fp.locator(".ws-q", { hasText: "Expand" }).count()), "sections collapse");
+  await fp.locator(".ws-section-head", { hasText: "Section A" }).click();
+  ok(await visible(fp.locator(".ws-q", { hasText: "Expand" })), "and open again");
+
+  const q2 = fp.locator(".ws-q", { hasText: "Expand" });
+  await q2.getByRole("button", { name: "Solution" }).click();
+  const drawer = fp.getByRole("dialog", { name: /Question 2/ });
+  ok(await visible(drawer), "solution drawer opens");
+  await drawer.getByRole("button", { name: "✎ Edit" }).click();
+  await drawer.getByLabel(/Worked solution/).fill("$(a+b)^2 = a^2 + 2ab + b^2$");
+  ok(await visible(drawer.locator(".preview-box .katex")), "live maths preview while editing");
+  await drawer.getByRole("button", { name: "Save" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: "Q2 saved." })), "solution saved");
+  await drawer.getByRole("tab", { name: "Marking criteria" }).click();
+  await drawer.getByRole("button", { name: "✎ Edit" }).click();
+  await drawer.getByRole("button", { name: "+ Add step" }).click();
+  await drawer.getByLabel("Step 2", { exact: true }).fill("Correct middle term");
+  ok(await drawer.getByRole("button", { name: "Save" }).isDisabled(), "can't save steps that don't add up");
+  await drawer.getByLabel("Marks for step 1").fill("2");
+  await drawer.getByRole("button", { name: "Save" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: "Q2 saved." }).last()), "criteria saved");
+  ok(await visible(drawer.locator(".criteria li", { hasText: "Correct middle term" })), "new step shown");
+  await shot(fp, "p4-editor-drawer");
+  await drawer.getByRole("tab", { name: /AI assist/ }).click();
+  await drawer.getByRole("button", { name: "Add a step for units" }).click();
+  await drawer.getByRole("button", { name: "✦ Refine" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: "The AI is working on the solution." })), "refine queued");
+  ok(await visible(drawer.getByRole("button", { name: "Use this" }), 30000), "suggestion arrives");
+  ok(await visible(drawer.locator(".sug-box", { hasText: "Add a step for units" })), "suggestion follows the request");
+  await drawer.getByRole("button", { name: "Use this" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: "Q2 updated with the suggestion." })), "suggestion used");
+  await drawer.getByRole("tab", { name: "Solution" }).click();
+  ok(await visible(drawer.getByText(/Improved solution/)), "drawer shows the new solution");
+  await fp.keyboard.press("Escape");
+  ok(!(await drawer.count()), "Escape closes the drawer");
+  const cr = (await call("GET", "/credits", { token: admin })).data;
+  ok(cr.history.some((h) => h.action === "question_assist" && h.amount === -1), "AI help cost 1 credit");
+  await fp.getByRole("button", { name: "Add rules" }).click();
+  await fp.getByRole("textbox", { name: "Marking rules" }).fill("Units are required");
+  await fp.getByRole("button", { name: "Save rules" }).click();
+  ok(await visible(fp.locator(".ws-rules", { hasText: "Units are required" })), "marking rules can be added from the editor");
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();

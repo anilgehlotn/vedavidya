@@ -7,20 +7,20 @@ import { rateLimit } from "../ratelimit.js";
 
 // Each AI paper costs API credits; cap how many an institute can start in a short time.
 const aiPaperLimit = rateLimit("ai-paper", 30, 60 * 60 * 1000, (r) => r.user?.org_id ?? r.ip ?? "?");
-import { generatePaper, importPaper, tagSubtopics, aiProblem, type PaperSpec, type ImportMeta } from "../ai/claude.js";
+import { generatePaper, importPaper, tagSubtopics, aiProblem, assistQuestion, type AssistAction, type PaperSpec, type ImportMeta } from "../ai/claude.js";
 import { enqueueJob, registerJob } from "../lib/jobs.js";
 import { createDocument, processDocument } from "../lib/documents.js";
 import { FileProblem } from "../lib/files.js";
 import { takeUploads } from "./uploads.js";
 import { charge, refund } from "../lib/credits.js";
 import { inOrg, subjectInCourse } from "../lib/scope.js";
-import { StoredSection as Section, type Section as SectionT } from "../ai/schemas.js";
+import { StoredSection as Section, StoredQuestion, type Section as SectionT, type Question as QuestionT } from "../ai/schemas.js";
 
 export const paperRoutes = Router();
 
 export const totalMarks = (sections: SectionT[]) => sections.reduce((t, s) => t + s.questions.reduce((a, q) => a + q.marks, 0), 0);
 
-const serialize = (p: any) => p && { ...p, sections: json(p.sections, []) };
+const serialize = (p: any) => p && { ...p, sections: json(p.sections, []), checked_questions: json<string[]>(p.checked_questions, []) };
 
 paperRoutes.get("/papers", staff, (req, res) => {
   res.json(all<any>(`SELECT p.id, p.title, p.subject, p.board, p.class_level, p.language, p.total_marks, p.duration_min, p.status, p.error, p.created_at,
@@ -268,3 +268,133 @@ export function ensureSubtopics(paperId: string) {
   if (!p || !["draft", "approved"].includes(p.status) || !missingSubtopics(json<SectionT[]>(p.sections, [])) || aiProblem(p.org_id)) return;
   enqueueJob("tag_subtopics", { paper_id: paperId }, { orgId: p.org_id, dedupeKey: `tag:${paperId}` });
 }
+
+// ---------------- Paper editor: one question at a time ----------------
+type PaperRow = { id: string; org_id: string; status: string; sections: string; subject: string | null; class_level: string | null; board: string | null; language: string; marking_notes: string | null; checked_questions: string | null };
+const paperInOrg = (id: string, org: string) => one<PaperRow>("SELECT * FROM question_papers WHERE id = ? AND org_id = ?", id, org);
+const findQuestion = (sections: SectionT[], qid: string) => {
+  for (const sec of sections) { const i = sec.questions.findIndex((q) => q.id === qid); if (i >= 0) return { sec, i, q: sec.questions[i] }; }
+  return null;
+};
+/** Makes rubric step marks add up to the question's marks (AI or teacher slips), keeping their proportions. */
+function fitRubric(rubric: { step: string; marks: number }[], marks: number) {
+  const steps = rubric.filter((r) => r.step.trim());
+  if (!steps.length) return [{ step: "Correct answer with working", marks }];
+  const sum = steps.reduce((t, r) => t + r.marks, 0);
+  if (Math.abs(sum - marks) < 0.01) return steps;
+  const scaled = steps.map((r) => ({ ...r, marks: Math.round(((sum > 0 ? r.marks / sum : 1 / steps.length) * marks) * 2) / 2 }));
+  const diff = Math.round((marks - scaled.reduce((t, r) => t + r.marks, 0)) * 2) / 2;
+  scaled[scaled.length - 1].marks = Math.max(0, scaled[scaled.length - 1].marks + diff);
+  return scaled;
+}
+const saveSections = (paperId: string, sections: SectionT[]) => {
+  run("UPDATE question_papers SET sections = ?, total_marks = ?, status = CASE WHEN status = 'failed' THEN 'draft' ELSE status END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    JSON.stringify(sections), totalMarks(sections), paperId);
+  syncTestMarks(paperId);
+};
+
+/** Save one question (from the solution drawer). The id stays; checks the same rules as the full editor. */
+paperRoutes.put("/papers/:id/questions/:qid", staff, (req, res) => {
+  const p = paperInOrg(req.params.id, req.user!.org_id);
+  if (!p) return res.status(404).json({ error: "Paper not found" });
+  if (p.status === "generating") return res.status(409).json({ error: "The paper is still being prepared." });
+  const sections = json<SectionT[]>(p.sections, []);
+  const at = findQuestion(sections, req.params.qid);
+  if (!at) return res.status(404).json({ error: "Question not found" });
+  const q = StoredQuestion.parse({ ...req.body, id: req.params.qid });
+  if (q.type === "mcq" && (q.options.length < 2 || q.correct_option == null || q.correct_option < 0 || q.correct_option >= q.options.length))
+    return res.status(400).json({ error: "A multiple-choice question needs at least 2 options and the correct one marked." });
+  const rubricSum = q.rubric.reduce((t, r) => t + r.marks, 0);
+  if (q.rubric.length && Math.abs(rubricSum - q.marks) > 0.01) return res.status(400).json({ error: `The marking steps add up to ${rubricSum}, but the question is worth ${q.marks}. Make them match.` });
+  at.sec.questions[at.i] = q;
+  saveSections(p.id, sections);
+  res.json({ ok: true, total_marks: totalMarks(sections) });
+});
+
+/** The teacher's "checked" tick on a question. */
+paperRoutes.put("/papers/:id/checked", staff, (req, res) => {
+  const b = z.object({ question_id: z.string().max(40), checked: z.boolean() }).parse(req.body);
+  const p = paperInOrg(req.params.id, req.user!.org_id);
+  if (!p) return res.status(404).json({ error: "Paper not found" });
+  if (!findQuestion(json<SectionT[]>(p.sections, []), b.question_id)) return res.status(404).json({ error: "Question not found" });
+  const set = new Set(json<string[]>(p.checked_questions, []));
+  if (b.checked) set.add(b.question_id); else set.delete(b.question_id);
+  run("UPDATE question_papers SET checked_questions = ? WHERE id = ?", JSON.stringify([...set]), p.id);
+  res.json({ checked_questions: [...set] });
+});
+
+// AI help: queued as a job, paid with credits, and returned as a suggestion the teacher accepts or discards.
+registerJob<{ suggestion_id: string; org_id: string; charge_ref: string | null }>("question_assist", {
+  concurrency: 3,
+  run: async ({ suggestion_id, org_id }) => {
+    const sg = one<{ paper_id: string; question_id: string; action: AssistAction; instruction: string | null; status: string }>("SELECT * FROM question_suggestions WHERE id = ?", suggestion_id);
+    if (!sg || sg.status !== "queued") return;
+    const p = one<PaperRow>("SELECT * FROM question_papers WHERE id = ?", sg.paper_id);
+    const at = p && findQuestion(json<SectionT[]>(p.sections, []), sg.question_id);
+    if (!p || !at) { run("UPDATE question_suggestions SET status = 'failed', error = 'The question was removed.', updated_at = CURRENT_TIMESTAMP WHERE id = ?", suggestion_id); return; }
+    const out = await assistQuestion(org_id, { subject: p.subject, class_level: p.class_level, board: p.board, language: p.language, marking_notes: p.marking_notes, question: at.q as QuestionT, action: sg.action, instruction: sg.instruction });
+    // Keep what must not change, whatever the model returned.
+    const fixed = { ...out, id: at.q.id, type: at.q.type, marks: at.q.marks, negative_marks: at.q.negative_marks, rubric: fitRubric(out.rubric ?? [], at.q.marks) };
+    run("UPDATE question_suggestions SET status = 'ready', result = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", JSON.stringify(fixed), suggestion_id);
+  },
+  onFail: ({ suggestion_id, org_id, charge_ref }, msg) => {
+    run("UPDATE question_suggestions SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", msg, suggestion_id);
+    refund(org_id, charge_ref, "Refund: AI help on a question didn't finish");
+  },
+});
+paperRoutes.post("/papers/:id/questions/:qid/assist", staff, aiPaperLimit, (req, res) => {
+  const b = z.object({ action: z.enum(["refine", "regenerate", "rewrite"]), instruction: z.string().trim().max(1000).optional() }).parse(req.body);
+  if (b.action === "refine" && !b.instruction) return res.status(400).json({ error: "Say what to change, e.g. \"show the unit conversion step\"." });
+  const org = req.user!.org_id;
+  const p = paperInOrg(req.params.id, org);
+  if (!p) return res.status(404).json({ error: "Paper not found" });
+  if (p.status === "generating") return res.status(409).json({ error: "The paper is still being prepared." });
+  if (!findQuestion(json<SectionT[]>(p.sections, []), req.params.qid)) return res.status(404).json({ error: "Question not found" });
+  if (one("SELECT 1 FROM question_suggestions WHERE paper_id = ? AND question_id = ? AND status = 'queued'", p.id, req.params.qid))
+    return res.status(409).json({ error: "The AI is already working on this question." });
+  const problem = aiProblem(org);
+  if (problem) return res.status(400).json({ error: problem });
+  const id = uid("sug");
+  const chargeRef = charge(org, "question_assist", `assist:${id}`, { userId: req.user!.id });
+  run("INSERT INTO question_suggestions (id, org_id, paper_id, question_id, action, instruction, created_by) VALUES (?,?,?,?,?,?,?)",
+    id, org, p.id, req.params.qid, b.action, b.instruction ?? null, req.user!.id);
+  enqueueJob("question_assist", { suggestion_id: id, org_id: org, charge_ref: chargeRef }, { orgId: org, dedupeKey: `assist:${id}` });
+  res.json({ id });
+});
+/** Suggestions still waiting for the teacher (or still being written), newest first. */
+paperRoutes.get("/papers/:id/suggestions", staff, (req, res) => {
+  if (!paperInOrg(req.params.id, req.user!.org_id)) return res.status(404).json({ error: "Paper not found" });
+  res.json(all<any>(`SELECT id, question_id, action, instruction, status, result, error, created_at FROM question_suggestions
+    WHERE paper_id = ? AND status IN ('queued','ready','failed') ORDER BY created_at DESC`, req.params.id).map((r) => ({ ...r, result: json(r.result, null) })));
+});
+paperRoutes.post("/papers/:id/suggestions/:sid/:verb", staff, (req, res) => {
+  const verb = req.params.verb;
+  if (verb !== "apply" && verb !== "discard") return res.status(404).json({ error: "Not found" });
+  const p = paperInOrg(req.params.id, req.user!.org_id);
+  const sg = p && one<{ id: string; question_id: string; action: AssistAction; status: string; result: string | null }>("SELECT * FROM question_suggestions WHERE id = ? AND paper_id = ?", req.params.sid, p.id);
+  if (!p || !sg) return res.status(404).json({ error: "Suggestion not found" });
+  if (verb === "discard") {
+    run("UPDATE question_suggestions SET status = 'discarded', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('ready','failed')", sg.id);
+    return res.json({ ok: true });
+  }
+  if (sg.status !== "ready") return res.status(409).json({ error: sg.status === "queued" ? "The suggestion isn't ready yet." : "This suggestion can't be used." });
+  const sections = json<SectionT[]>(p.sections, []);
+  const at = findQuestion(sections, sg.question_id);
+  if (!at) return res.status(404).json({ error: "The question was removed." });
+  const r = json<QuestionT>(sg.result, null as never);
+  const cur = at.q;
+  const next = sg.action === "rewrite"
+    ? { ...cur, text: r.text, options: cur.type === "mcq" ? r.options : [], correct_option: cur.type === "mcq" ? r.correct_option : null, numeric_answer: cur.type === "numeric" ? r.numeric_answer : null,
+        difficulty: r.difficulty, subtopic: r.subtopic || cur.subtopic, solution: r.solution, rubric: fitRubric(r.rubric, cur.marks) }
+    : { ...cur, solution: r.solution, rubric: fitRubric(r.rubric, cur.marks),
+        // A fresh solution may correct a wrong objective answer.
+        correct_option: cur.type === "mcq" && r.correct_option != null && r.correct_option < cur.options.length ? r.correct_option : cur.correct_option,
+        numeric_answer: cur.type === "numeric" && r.numeric_answer != null ? r.numeric_answer : cur.numeric_answer };
+  at.sec.questions[at.i] = StoredQuestion.parse(next);
+  saveSections(p.id, sections);
+  // A changed question needs checking again.
+  const checked = json<string[]>(p.checked_questions, []).filter((x) => x !== sg.question_id);
+  run("UPDATE question_papers SET checked_questions = ? WHERE id = ?", JSON.stringify(checked), p.id);
+  run("UPDATE question_suggestions SET status = 'applied', updated_at = CURRENT_TIMESTAMP WHERE id = ?", sg.id);
+  res.json({ ok: true, question: at.sec.questions[at.i] });
+});

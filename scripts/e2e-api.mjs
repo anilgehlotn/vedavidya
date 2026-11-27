@@ -981,6 +981,45 @@ section("Import with my own marking rules, course, subject and folder");
   await call("DELETE", `/batches/${rb}`, { token: admin });
 }
 
+section("Paper editor: one question, checked ticks, AI suggestions");
+{
+  const pid = (await expect("paper for the editor", 200, "POST", "/papers", { token: teacher, body: { title: "Editor paper", duration_min: 30, sections: [{ name: "A", instructions: "", questions: [
+    { id: "q1", type: "short", text: "Solve $2x = 6$", options: [], correct_option: null, numeric_answer: null, marks: 3, negative_marks: 0, difficulty: "easy", topic: "Algebra", subtopic: "Linear equations", solution: "x = 3", rubric: [{ step: "Divide", marks: 3 }] },
+    { id: "q2", type: "mcq", text: "Pick 2", options: ["1", "2", "3", "4"], correct_option: 1, numeric_answer: null, marks: 1, negative_marks: 0, difficulty: "easy", topic: "Numbers", subtopic: "", solution: "2", rubric: [] },
+  ] }] } })).data.id;
+  const q1 = (await call("GET", `/papers/${pid}`, { token: teacher })).data.sections[0].questions[0];
+  await expect("rubric must add up", 400, "PUT", `/papers/${pid}/questions/q1`, { token: teacher, body: { ...q1, rubric: [{ step: "a", marks: 1 }] } });
+  await expect("mcq needs a correct option", 400, "PUT", `/papers/${pid}/questions/q2`, { token: teacher, body: { ...q1, id: "q2", type: "mcq", options: ["a", "b"], correct_option: 5 } });
+  await expect("save one question", 200, "PUT", `/papers/${pid}/questions/q1`, { token: teacher, body: { ...q1, id: "ignored", solution: "Divide by 2: $x = 3$", rubric: [{ step: "Divide both sides", marks: 2 }, { step: "Answer", marks: 1 }] } });
+  let pp = (await call("GET", `/papers/${pid}`, { token: teacher })).data;
+  ok(pp.sections[0].questions[0].id === "q1" && pp.sections[0].questions[0].rubric.length === 2 && pp.sections[0].questions[0].solution.startsWith("Divide"), "question saved, id kept");
+  await expect("unknown question", 404, "PUT", `/papers/${pid}/questions/q9`, { token: teacher, body: q1 });
+  await expect("another institute can't edit", 404, "PUT", `/papers/${pid}/questions/q1`, { token: otherAdmin, body: q1 });
+  const ck = await expect("tick checked", 200, "PUT", `/papers/${pid}/checked`, { token: teacher, body: { question_id: "q1", checked: true } });
+  ok(ck.data.checked_questions.join() === "q1" && (await call("GET", `/papers/${pid}`, { token: teacher })).data.checked_questions.join() === "q1", "checked tick stored");
+  await expect("can't tick a missing question", 404, "PUT", `/papers/${pid}/checked`, { token: teacher, body: { question_id: "zz", checked: true } });
+  // AI suggestions (the mock returns a rubric 1 mark too many; the app fixes it).
+  await expect("refine needs an instruction", 400, "POST", `/papers/${pid}/questions/q1/assist`, { token: teacher, body: { action: "refine" } });
+  const s1 = await expect("ask AI to refine", 200, "POST", `/papers/${pid}/questions/q1/assist`, { token: teacher, body: { action: "refine", instruction: "show units" } });
+  await expect("one request at a time per question", 409, "POST", `/papers/${pid}/questions/q1/assist`, { token: teacher, body: { action: "regenerate" } });
+  const ready = await poll(() => call("GET", `/papers/${pid}/suggestions`, { token: teacher }).then((x) => x.data.find((y) => y.id === s1.data.id)), (x) => x && x.status !== "queued");
+  ok(ready.status === "ready" && /show units/.test(ready.result.solution) && ready.result.rubric.reduce((t, r) => t + r.marks, 0) === 3 && ready.result.id === "q1", `suggestion ready with a rubric that adds up (${JSON.stringify(ready.result?.rubric)})`);
+  ok((await call("GET", `/papers/${pid}`, { token: teacher })).data.sections[0].questions[0].solution.startsWith("Divide"), "nothing changes before the teacher accepts");
+  await expect("apply", 200, "POST", `/papers/${pid}/suggestions/${s1.data.id}/apply`, { token: teacher, body: {} });
+  pp = (await call("GET", `/papers/${pid}`, { token: teacher })).data;
+  ok(/show units/.test(pp.sections[0].questions[0].solution) && pp.sections[0].questions[0].text === "Solve $2x = 6$" && pp.total_marks === 4, "refined solution used, question and marks unchanged");
+  ok(!pp.checked_questions.includes("q1"), "a changed question needs checking again");
+  await expect("can't apply twice", 409, "POST", `/papers/${pid}/suggestions/${s1.data.id}/apply`, { token: teacher, body: {} });
+  const s2 = (await expect("ask AI to rewrite", 200, "POST", `/papers/${pid}/questions/q2/assist`, { token: teacher, body: { action: "rewrite" } })).data.id;
+  const r2 = await poll(() => call("GET", `/papers/${pid}/suggestions`, { token: teacher }).then((x) => x.data.find((y) => y.id === s2)), (x) => x && x.status !== "queued");
+  ok(r2.status === "ready" && r2.result.text.startsWith("Rewritten") && r2.result.type === "mcq" && r2.result.marks === 1, "rewrite keeps type and marks");
+  await expect("discard", 200, "POST", `/papers/${pid}/suggestions/${s2}/discard`, { token: teacher, body: {} });
+  ok(!(await call("GET", `/papers/${pid}/suggestions`, { token: teacher })).data.some((x) => x.id === s2), "discarded suggestions disappear");
+  ok((await call("GET", `/papers/${pid}`, { token: teacher })).data.sections[0].questions[1].text === "Pick 2", "discarding changes nothing");
+  await expect("another institute can't see suggestions", 404, "GET", `/papers/${pid}/suggestions`, { token: otherAdmin });
+  await expect("another institute can't ask the AI", 404, "POST", `/papers/${pid}/questions/q1/assist`, { token: otherAdmin, body: { action: "regenerate" } });
+}
+
 section("Onboarding: spreadsheet import with preview, invite links");
 {
   const ob = (await expect("onboarding batch", 200, "POST", "/batches", { token: admin, body: { name: `Onboard ${Date.now()}` } })).data.id;

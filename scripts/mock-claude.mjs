@@ -105,6 +105,16 @@ function evaluationFrom(text, pages = 1) {
   };
 }
 
+function assistFrom(text) {
+  const q = JSON.parse(text.split("The question now (JSON):\n")[1]);
+  const rewrite = /Write a new version of this question/.test(text);
+  const asked = (text.match(/The teacher asks: (.*)/) ?? [])[1] ?? "";
+  // Deliberately off by 1 mark so the app has to fix the rubric total.
+  return { ...q, text: rewrite ? `Rewritten: ${q.text}` : q.text, difficulty: rewrite ? "hard" : q.difficulty,
+    solution: `${rewrite ? "New" : "Improved"} solution${asked ? ` (${asked})` : ""}: $x = 3$ because $2x = 6$.`,
+    rubric: [{ step: "Writes the equation", marks: q.marks / 2 }, { step: "Solves for x", marks: q.marks / 2 + 1 }] };
+}
+
 function streamText(res, model, text) {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", "request-id": "req_mock" });
   const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -169,7 +179,8 @@ http.createServer((req, res) => {
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
       recent.push({ model: body.model, system: String(body.system ?? "").slice(0, 2000), text: text.slice(0, 20000) });
       if (recent.length > 30) recent.shift();
-      const out = /Name the exact sub-topic of every question/.test(text) ? tagsFrom(text)
+      const out = /Improve one question of a paper/.test(text) ? assistFrom(text)
+        : /Name the exact sub-topic of every question/.test(text) ? tagsFrom(text)
         : /Create a Fix-it practice plan/.test(text) ? practiceFrom(text)
         : /Write the re-teach brief/.test(text) ? briefFrom(text)
         : /Create an original question paper/.test(text) ? paperFrom(text)

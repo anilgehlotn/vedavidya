@@ -4,7 +4,7 @@ import { api, fmtDate } from "../../lib/api";
 import type { Paper, Question, Section } from "../../lib/types";
 import { Empty, ErrorBox, ErrorState, Loading, Modal, PageSkeleton, PageTitle, SkeletonTable, useApi } from "../../components/ui";
 import { useRun, useToast } from "../../components/toast";
-import { ImportPaperForm } from "./PaperImport";
+import { PaperWorkspace, type FullPaper } from "./PaperEditor";
 
 const STATUS: Record<Paper["status"], [string, string]> = { generating: ["Generating", "amber"], draft: ["Draft", ""], approved: ["Approved", "green"], failed: ["Failed", "red"] };
 const TYPE_LABEL: Record<Question["type"], string> = { mcq: "MCQ", numeric: "Numerical", short: "Short answer", long: "Long answer" };
@@ -101,26 +101,6 @@ const blankQuestion = (n: number): Question => ({
   id: `q${n}`, type: "short", text: "", options: [], correct_option: null, numeric_answer: null, marks: 2, negative_marks: 0,
   difficulty: "medium", topic: "", subtopic: "", solution: "", rubric: [{ step: "Correct answer with working", marks: 2 }],
 });
-
-function QuestionView({ q, n }: { q: Question; n: number }) {
-  return (
-    <div className="q-card">
-      <div className="q-meta">
-        <b style={{ marginRight: 4 }}>Q{n}.</b><span className="badge">{TYPE_LABEL[q.type]}</span><span className="badge">{q.topic}{q.subtopic ? ` › ${q.subtopic}` : ""}</span>
-        <span className={`badge ${q.difficulty === "hard" ? "red" : q.difficulty === "easy" ? "green" : "amber"}`}>{q.difficulty}</span>
-        <span className="badge violet">{q.marks} marks{q.negative_marks ? ` · −${q.negative_marks}` : ""}</span>
-      </div>
-      <div className="q-text">{q.text}</div>
-      {q.type === "mcq" && <div className="opts">{q.options.map((o, i) => <div key={i} className={`opt ${i === q.correct_option ? "correct" : ""}`}><b>{String.fromCharCode(65 + i)}.</b>{o}</div>)}</div>}
-      <details className="solution no-print">
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Answer, solution & marking scheme</summary>
-        {q.type === "numeric" && <p style={{ marginTop: 8 }}><b>Answer:</b> {q.numeric_answer}</p>}
-        <p style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{q.solution}</p>
-        {q.rubric.length > 0 && <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>{q.rubric.map((r, i) => <li key={i}>{r.step} - <b>{r.marks}</b></li>)}</ul>}
-      </details>
-    </div>
-  );
-}
 
 function QuestionEditor({ q, onChange, onRemove }: { q: Question; onChange: (q: Question) => void; onRemove: () => void }) {
   const set = (patch: Partial<Question>) => onChange({ ...q, ...patch });
@@ -239,27 +219,19 @@ export function PaperDetail() {
     );
   }
 
-  let n = 0;
   return (
     <>
       <PageTitle title={p.title} sub={<>{[p.subject, p.board, p.class_level, p.language].filter(Boolean).join(" · ")} · <b>{p.total_marks} marks</b> · {p.duration_min} min</>}>
         <span className={`badge ${STATUS[p.status][1]}`}>{STATUS[p.status][0]}</span>
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
         <button className="btn btn-ghost no-print" onClick={async () => { const r = await run(() => api<{ id: string }>(`/papers/${p.id}/clone`, { body: {} }), "Copy made. You're now looking at the copy."); if (r) nav(`/app/papers/${r.id}`); }}>Duplicate</button>
-        <button className="btn btn-ghost no-print" onClick={() => setEdit(true)}>Edit</button>
+        <button className="btn btn-ghost no-print" onClick={() => setEdit(true)}>Edit paper</button>
         <button className="btn btn-danger no-print" onClick={async () => { if (confirm("Delete this paper?")) { if (await run(() => api(`/papers/${p.id}`, { method: "DELETE" }), `"${p.title}" was deleted.`)) nav("/app/papers"); } }}>Delete</button>
         {p.status === "draft" && <button className="btn btn-primary no-print" onClick={async () => { if (await run(() => api(`/papers/${p.id}/approve`, { body: {} }), "Paper approved. It can now be used in tests.")) paper.reload(); }}>Approve</button>}
         {p.status !== "failed" && <Link to={`/app/tests?new=1&paper=${p.id}`} className="btn btn-primary no-print">Use in a test →</Link>}
       </PageTitle>
       {p.status === "failed" && <div className="error-box" style={{ marginBottom: 16 }}>Generation failed: {p.error} <Link to="/app/papers/new" className="btn-link">Try again</Link></div>}
-      {p.instructions && <div className="card card-pad" style={{ marginBottom: 16 }}><b>Instructions</b><p className="muted" style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{p.instructions}</p></div>}
-      {p.sections.map((s) => (
-        <div key={s.name} style={{ marginBottom: 24 }}>
-          <h3 style={{ fontSize: 18 }}>{s.name}</h3>
-          {s.instructions && <p className="muted small" style={{ margin: "4px 0 10px" }}>{s.instructions}</p>}
-          {s.questions.map((q) => <QuestionView key={q.id} q={q} n={++n} />)}
-        </div>
-      ))}
+      {p.status !== "failed" && <PaperWorkspace p={p as FullPaper} onChanged={() => paper.reload(true)} />}
     </>
   );
 }

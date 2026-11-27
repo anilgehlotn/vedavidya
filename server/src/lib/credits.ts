@@ -7,7 +7,7 @@
 import { all, one, run } from "../db.js";
 import { PermanentError } from "./jobs.js";
 
-export type CreditAction = "paper_import" | "paper_generate" | "mark_sheet" | "practice_set" | "reteach_brief";
+export type CreditAction = "paper_import" | "paper_generate" | "mark_sheet" | "practice_set" | "reteach_brief" | "question_assist";
 
 /** Default prices in credits (the platform owner can change them). Roughly 1 credit ≈ ₹1 of AI cost. */
 export const DEFAULT_PRICES: Record<CreditAction, number> = {
@@ -16,10 +16,11 @@ export const DEFAULT_PRICES: Record<CreditAction, number> = {
   mark_sheet: 1,      // marking one answer sheet (second check included); +1 for every 8 pages beyond the first 8
   practice_set: 1,    // one student's Fix-it practice + check-up
   reteach_brief: 3,   // the class re-teach brief
+  question_assist: 1, // AI help on one question in the paper editor (refine / new solution / rewrite)
 };
 export const ACTION_LABEL: Record<CreditAction, string> = {
   paper_import: "Reading a question paper", paper_generate: "Generating a question paper", mark_sheet: "Marking an answer sheet",
-  practice_set: "Fix-it practice for a student", reteach_brief: "Re-teach brief",
+  practice_set: "Fix-it practice for a student", reteach_brief: "Re-teach brief", question_assist: "AI help on a question",
 };
 export const DEFAULT_MONTHLY_FREE = 300;
 

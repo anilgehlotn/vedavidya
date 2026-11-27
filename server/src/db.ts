@@ -320,3 +320,17 @@ CREATE TABLE IF NOT EXISTS invite_links (
 CREATE INDEX IF NOT EXISTS idx_invites_org ON invite_links(org_id, created_at);
 `);
 addColumn("question_papers", "marking_notes", "TEXT"); // the teacher's own marking rules, used when writing rubrics and when marking
+
+// ---- Phase 4: paper editor (teacher's "checked" ticks, AI suggestions for one question) ----
+addColumn("question_papers", "checked_questions", "TEXT"); // JSON list of question ids the teacher has checked
+db.exec(`
+CREATE TABLE IF NOT EXISTS question_suggestions (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  paper_id TEXT NOT NULL REFERENCES question_papers(id) ON DELETE CASCADE, question_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('refine','regenerate','rewrite')), instruction TEXT,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','ready','failed','applied','discarded')),
+  result TEXT, error TEXT, created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_suggestions_paper ON question_suggestions(paper_id, created_at);
+`);
