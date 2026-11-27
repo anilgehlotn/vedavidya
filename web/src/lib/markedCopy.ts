@@ -53,6 +53,13 @@ export async function markedCopyPdf(sheets: MarkedSheet[], title: string): Promi
       if (m.kind === "cross") page.drawSvgPath(CROSS, { x: p.x, y: p.y + 9 * s * 1.1, scale: s * 1.1, borderColor: red, borderWidth: 2.4 });
       else page.drawSvgPath(TICK, { x: p.x, y: p.y + 10 * s * (m.kind === "half" ? 0.8 : 1.1), scale: s * (m.kind === "half" ? 0.8 : 1.1), borderColor: red, borderWidth: 2.4 });
     }
+    for (const n of layout[i]?.notes ?? []) {
+      const a = at(n.x, n.y + n.h), size = 9.5 * s;
+      page.drawLine({ start: a, end: { x: a.x + n.w * W, y: a.y }, thickness: 1.4, color: red, opacity: 0.8 });
+      // Standard PDF fonts only have Latin letters: keep ASCII, swap the rest for close equivalents.
+      const txt = n.text.replace(/\$/g, "").replace(/[−–—]/g, "-").replace(/[^\x20-\x7E]/g, "?");
+      page.drawText(txt, { x: Math.min(a.x, W - font.widthOfTextAtSize(txt, size) - 6), y: a.y - size - 2, size, font, color: red });
+    }
     for (const c of layout[i]?.circles ?? []) {
       const p = at(c.x, c.y), r = 15 * s, size = 13 * s;
       page.drawEllipse({ x: p.x, y: p.y, xScale: r, yScale: r * 0.92, borderColor: red, borderWidth: 1.8 });

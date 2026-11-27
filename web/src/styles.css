@@ -688,3 +688,10 @@ body:not(:has(.shell)) .toasts { left: 16px; }
 @media (max-width: 600px) { .viewer-page { height: 52vh; } .viewer-img { max-height: 52vh; } }
 .map-head .input.map-assign { width: 220px; flex: none; }
 @media (max-width: 600px) { .map-head .input.map-assign { width: 100%; } }
+
+/* Teacher-style correction notes from AI marking (D6 annotations) */
+.mk-note { position: absolute; border-bottom: 2px solid rgba(224, 69, 43, .75); pointer-events: none; }
+.mk-note-partial { border-bottom-style: dashed; }
+.mk-note-note { border-bottom-color: rgba(224, 69, 43, .45); }
+.mk-note-text { position: absolute; left: 0; white-space: nowrap; font-family: var(--hand); color: var(--red); font-size: max(11px, 1.9cqw); line-height: 1.1; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
+.sheet-pages.plain .mk-note { display: none; }

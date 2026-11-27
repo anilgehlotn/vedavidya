@@ -72,6 +72,17 @@ export const QuestionEvaluation = z.object({
     mark_x: z.number().describe("Where a teacher would put the tick or cross: just to the right of the end of the final answer, as a fraction of the page width from the left (0 to 1)"),
     mark_y: z.number().describe("Vertical position of that tick or cross, as a fraction of the page height from the top (0 to 1)"),
   }).describe("Where the answer is on the student's pages, so the marked sheet can be drawn like a teacher's correction"),
+  annotations: z.array(z.object({
+    page: z.number().describe("The 'Page N' number the note belongs on"),
+    bbox: z.object({
+      x: z.number().describe("Left edge of the marked area, fraction of page width (0 to 1)"),
+      y: z.number().describe("Top edge, fraction of page height (0 to 1)"),
+      w: z.number().describe("Width, fraction of page width"),
+      h: z.number().describe("Height, fraction of page height"),
+    }).describe("The exact part of the student's working the note is about"),
+    text: z.string().describe("A teacher's short margin note, at most 8 words, e.g. 'Sign error: should be −3' or 'Units missing'. Maths in LaTeX between $...$"),
+    mark: z.enum(["tick", "cross", "partial", "note"]).describe("tick = correct step, cross = wrong, partial = partly right, note = comment only"),
+  })).describe("Up to 4 short corrections written where they happen on the sheet; empty if the answer is fully correct or not attempted"),
 });
 export type QuestionEvaluation = z.infer<typeof QuestionEvaluation>;
 

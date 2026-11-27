@@ -23,6 +23,11 @@ export interface QuestionEvaluation {
   second_check?: "agreed" | "changed" | "failed"; first_marks?: number; needs_review?: boolean; check_note?: string;
   /** Where the answer is on the pages (fractions of the page; page is 1-based, 0 = not found). */
   location?: { page: number; top: number; bottom: number; mark_x: number; mark_y: number };
+  /** Short teacher-style notes placed where the mistake is (fractions of the page). */
+  annotations?: { page: number; bbox: { x: number; y: number; w: number; h: number }; text: string; mark: "tick" | "cross" | "partial" | "note" }[];
+  /** D6 shape (same data as steps): name, awarded, max, reason. */
+  criteria?: { name: string; awarded: number; max: number; reason: string }[];
+  total?: number;
 }
 export interface SheetEvaluation {
   student_name_on_sheet: string | null; questions: QuestionEvaluation[]; overall_feedback: string; strengths: string[]; gaps: string[];

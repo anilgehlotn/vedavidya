@@ -211,7 +211,12 @@ async function fileBlocks(keys: string[]): Promise<Anthropic.Beta.BetaContentBlo
   return out;
 }
 
-export async function evaluateSheet(orgId: string, paper: { title: string; subject: string | null; sections: Section[]; marking_notes?: string | null }, files: string[], task: "marking" | "recheck" = "marking") {
+/**
+ * Marks one student's sheet. With `part`, these files are only some pages of a longer sheet (chunked grading):
+ * pages keep their real numbers, and questions whose answers aren't on these pages come back as not attempted.
+ */
+export async function evaluateSheet(orgId: string, paper: { title: string; subject: string | null; sections: Section[]; marking_notes?: string | null }, files: string[],
+  task: "marking" | "recheck" = "marking", part?: { first: number; total: number }) {
   if (!files.length) throw new AiError("No pages uploaded for this student.");
   const key = paper.sections.flatMap((s) => s.questions).map((q) => ({
     id: q.id, type: q.type, marks: q.marks, negative_marks: q.negative_marks, question: q.text,
@@ -220,7 +225,8 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
     model_solution: q.solution, rubric: q.rubric,
   }));
   // Number every page so the model can say where each answer is (for drawing ticks and marks on the sheet).
-  const blocks = (await fileBlocks(files)).flatMap((b, i) => [{ type: "text" as const, text: b.type === "image" ? `Page ${i + 1}:` : `Pages from file ${i + 1} (PDF):` }, b]);
+  const first = part?.first ?? 1;
+  const blocks = (await fileBlocks(files)).flatMap((b, i) => [{ type: "text" as const, text: b.type === "image" ? `Page ${first + i}:` : `Pages from file ${first + i} (PDF):` }, b]);
   return structured<import("./schemas.js").SheetEvaluation>(orgId, {
     task,
     effort: "high",
@@ -242,6 +248,9 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
         type: "text",
         text: `These pages are one student's answer sheet for "${paper.title}" (${paper.subject ?? ""}).\n\nAnswer key with rubrics (JSON):\n${JSON.stringify(key)}\n\n` +
           (paper.marking_notes?.trim() ? `The teacher's own marking rules (follow them; they override general habits but never the rubric's maximum marks):\n${paper.marking_notes.trim()}\n\n` : "") +
+          (part ? `These are pages ${first}–${first + files.length - 1} of the student's ${part.total}-page sheet; the other pages are marked separately. ` +
+            `Grade only answers written on these pages; for a question whose answer is not on these pages, set attempted=false, 0 marks and empty annotations. ` +
+            `If an answer starts or ends outside these pages, grade the part you can see and set confidence to low.\n\n` : "") +
           `Evaluate every question in the answer key, in order.`,
       },
     ],

@@ -7,7 +7,9 @@ export type MarkKind = "tick" | "half" | "cross";
 export interface Mark { qid: string; kind: MarkKind; x: number; y: number }
 export interface Circle { qid: string; text: string; x: number; y: number }
 export interface Box { qid: string; top: number; bottom: number }
-export interface PageMarks { marks: Mark[]; circles: Circle[]; boxes: Box[] }
+/** A short correction note (red margin text) and the bit of working it refers to (underlined). */
+export interface Note { qid: string; text: string; x: number; y: number; w: number; h: number; kind: "tick" | "cross" | "partial" | "note" }
+export interface PageMarks { marks: Mark[]; circles: Circle[]; boxes: Box[]; notes: Note[] }
 
 const clamp = (v: unknown, lo: number, hi: number, dflt: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
 export const fmtMarks = (n: number) => (Math.round(n * 2) / 2).toString();
@@ -22,8 +24,14 @@ export function layoutMarks(ev: SheetEvaluation | null, pageCount: number, secti
       for (const q of sec.questions) objectiveSection.set(q.id, `s${i}`);
   });
   const groups = new Map<string, { page: number; ys: number[]; xs: number[]; total: number; first: string }>();
-  const pages: PageMarks[] = Array.from({ length: pageCount }, () => ({ marks: [], circles: [], boxes: [] }));
+  const pages: PageMarks[] = Array.from({ length: pageCount }, () => ({ marks: [], circles: [], boxes: [], notes: [] }));
   for (const q of ev?.questions ?? []) {
+    for (const a of q.attempted ? q.annotations ?? [] : []) {
+      const pg = Math.round(a.page) - 1;
+      if (pg < 0 || pg >= pageCount || !a.text?.trim() || a.mark === "tick") continue;
+      pages[pg].notes.push({ qid: q.question_id, text: a.text.trim().slice(0, 60), kind: a.mark,
+        x: clamp(a.bbox?.x, 0, 0.95, 0.1), y: clamp(a.bbox?.y, 0, 0.97, 0.5), w: clamp(a.bbox?.w, 0.02, 1, 0.3), h: clamp(a.bbox?.h, 0.005, 0.5, 0.03) });
+    }
     const loc = q.location;
     const page = Math.round(loc?.page ?? 0) - 1;
     if (!loc || page < 0 || page >= pageCount || !q.attempted) continue;

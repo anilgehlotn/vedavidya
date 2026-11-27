@@ -1033,6 +1033,50 @@ section("Class scan: AI finds each student, teacher reviews, approves and marks"
   await call("DELETE", `/batches/${cb}`, { token: admin });
 }
 
+section("AI grading (D6): strict shape, long sheets in chunks, doubtful sheets re-checked");
+{
+  const MOCK = process.env.MOCK_URL ?? "http://localhost:4999";
+  const gb = (await call("POST", "/batches", { token: admin, body: { name: `Grading ${Date.now()}` } })).data.id;
+  await call("POST", "/students/bulk", { token: admin, body: { batch_id: gb, csv: "Long Sheet,1\nShort Sheet,2\nDoubt Sheet,3" } });
+  const gt = (await expect("grading test", 200, "POST", "/tests", { token: teacher, body: { title: "Grading test", paper_id: aiPaper.id, mode: "offline", batch_ids: [gb] } })).data.id;
+  const ga = (await call("GET", `/tests/${gt}`, { token: teacher })).data.attempts;
+  const [aLong, aShort, aDoubt] = ["Long Sheet", "Short Sheet", "Doubt Sheet"].map((n) => ga.find((a) => a.student_name === n).id);
+  const pagesOf = async (n, tag) => uploadAll(API, teacher, await Promise.all(Array.from({ length: n }, async (_, i) => [`${tag}-${i + 1}.jpg`, await jpeg(500, 700, `${tag} ${i + 1}`)])), "student_sheet");
+  await call("POST", `/attempts/${aLong}/files`, { token: teacher, body: { upload_ids: await pagesOf(14, "long") } });
+  await call("POST", `/attempts/${aShort}/files`, { token: teacher, body: { upload_ids: await pagesOf(2, "short") } });
+  await waitProcessed(API, teacher, gt);
+  await expect("mark long and short sheets", 200, "POST", `/tests/${gt}/evaluate`, { token: teacher, body: { attempt_ids: [aLong, aShort] } });
+  await poll(() => call("GET", `/tests/${gt}`, { token: teacher }).then((x) => x.data), (d) => d.attempts.filter((a) => a.id === aLong || a.id === aShort).every((a) => a.status === "evaluated" || a.status === "failed"));
+  const long = (await call("GET", `/attempts/${aLong}`, { token: teacher })).data;
+  const short = (await call("GET", `/attempts/${aShort}`, { token: teacher })).data;
+  ok(long.evaluation.meta.grading === "chunked" && long.evaluation.meta.pages === 14, `a 14-page sheet is marked in chunks (${long.evaluation.meta.grading})`);
+  ok(short.evaluation.meta.grading === "whole", "a short sheet is marked in one request");
+  const recent = await (await fetch(`${MOCK}/__recent`)).json();
+  ok(recent.some((r) => /These are pages 1–8 of the student's 14-page sheet/.test(r.text)) && recent.some((r) => /These are pages 8–14 of the student's 14-page sheet/.test(r.text)), "chunks overlap by a page and keep real page numbers");
+  ok(long.evaluation.questions.every((q) => q.location.page >= 0 && q.location.page <= 14), "positions use the sheet's real page numbers");
+  const q0 = short.evaluation.questions.find((q) => q.criteria?.length);
+  ok(q0 && q0.criteria.every((c) => typeof c.name === "string" && typeof c.awarded === "number" && typeof c.max === "number" && typeof c.reason === "string") && q0.total === q0.marks_awarded,
+    "every question has criteria [{name, awarded, max, reason}] and total");
+  ok(short.evaluation.questions.every((q) => Array.isArray(q.annotations) && q.annotations.every((a) => a.page >= 1 && a.bbox && a.bbox.x >= 0 && a.bbox.x <= 1 && a.text && ["tick", "cross", "partial", "note"].includes(a.mark))), "annotations [{page, bbox, text, mark}] are clean");
+  ok(short.evaluation.questions.every((q) => ["high", "medium", "low"].includes(q.confidence)) && typeof short.evaluation.questions[0].feedback === "string", "confidence and feedback per question");
+  // Mostly low confidence: marked again in smaller chunks, the surer result kept.
+  await call("POST", `/attempts/${aDoubt}/files`, { token: teacher, body: { upload_ids: await pagesOf(4, "doubt") } });
+  await waitProcessed(API, teacher, gt);
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ lowConfidence: true }) });
+  await expect("mark a hard-to-read sheet", 200, "POST", `/tests/${gt}/evaluate`, { token: teacher, body: { attempt_ids: [aDoubt] } });
+  await poll(() => call("GET", `/attempts/${aDoubt}`, { token: teacher }).then((x) => x.data), (a) => a.status === "evaluated" || a.status === "failed");
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ lowConfidence: false }) });
+  const doubt = (await call("GET", `/attempts/${aDoubt}`, { token: teacher })).data;
+  ok(doubt.evaluation.meta.grading === "whole+chunked", `low confidence triggers chunked re-marking (${doubt.evaluation.meta.grading})`);
+  ok(doubt.evaluation.questions.filter((q) => q.confidence === "high").length > doubt.evaluation.questions.length / 2, "surer answers from the re-marking are kept");
+  // Older evaluations get the D6 fields when read.
+  const old = (await call("GET", `/attempts/${detail.attempts[3].id}`, { token: teacher })).data;
+  ok(old.evaluation.questions.every((q) => Array.isArray(q.criteria) && typeof q.total === "number" && Array.isArray(q.annotations)), "older marked sheets also come back in the D6 shape");
+  await call("DELETE", `/tests/${gt}`, { token: admin });
+  for (const st of (await call("GET", `/students?batch_id=${gb}`, { token: admin })).data) await call("DELETE", `/students/${st.id}`, { token: admin });
+  await call("DELETE", `/batches/${gb}`, { token: admin });
+}
+
 section("Manage tests: stats and results summary");
 {
   const st = await expect("test stats", 200, "GET", "/tests/stats", { token: teacher });

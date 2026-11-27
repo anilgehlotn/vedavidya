@@ -85,11 +85,14 @@ function importedPaper(content, hasKey) {
 
 function evaluationFrom(text, pages = 1) {
   const key = JSON.parse(text.split("Answer key with rubrics (JSON):\n")[1].split("\n\n")[0]);
+  const labels = [...text.matchAll(/^Page (\d+):$/gm)].map((m) => Number(m[1]));
+  const pageNo = (k) => labels[k] ?? k + 1;
+  const part = /These are pages \d+/.test(text);
   const perPage = Math.max(1, Math.ceil(key.length / Math.max(1, pages)));
   return {
     student_name_on_sheet: null,
     questions: key.map((q, i) => {
-      const page = Math.floor(i / perPage) + 1, slot = i % perPage, h = 0.8 / perPage, top = 0.12 + slot * h;
+      const page = pageNo(Math.floor(i / perPage)), slot = i % perPage, h = 0.8 / perPage, top = 0.12 + slot * h;
       const location = { page, top, bottom: top + h * 0.8, mark_x: 0.55 + (i % 3) * 0.05, mark_y: top + h * 0.6 };
       const steps = (q.rubric ?? []).map((r) => ({ step: r.step, max_marks: r.marks, awarded: half(rnd(0, r.marks)),
         comment: "You used $\\lambda_0 = \\frac{hc}{\\phi_0}$ with $hc \\approx 1240\\ \\text{eV nm}$, giving $\\lambda_0 = \\frac{1240}{4.65} \\approx 266$ nm. Your working and units are clear." }));
@@ -98,8 +101,9 @@ function evaluationFrom(text, pages = 1) {
       const types = ["concept", "careless", "incomplete", "presentation"];
       const mt = sum >= q.marks ? "none" : types[Math.floor(Math.random() * types.length)];
       return { question_id: q.id, attempted: true, transcription: "x = 3", steps, marks_awarded: Math.random() < 0.1 ? q.marks + 5 : sum,
-        max_marks: q.marks, feedback: "Mock feedback", confidence: Math.random() < 0.1 ? "low" : "high",
-        mistake_type: mt, mistake_note: mt === "none" ? "" : `Mock ${mt} mistake`, location };
+        max_marks: q.marks, feedback: "Mock feedback", confidence: mode.lowConfidence && !part ? "low" : Math.random() < 0.1 ? "low" : "high",
+        mistake_type: mt, mistake_note: mt === "none" ? "" : `Mock ${mt} mistake`, location,
+        annotations: mt === "none" ? [] : [{ page, bbox: { x: 0.12, y: top, w: 0.5, h: h * 0.4 }, text: "Units missing", mark: "cross" }] };
     }),
     overall_feedback: "You handled most of the paper well.\n- Correct use of $E = \\frac{hc}{\\lambda}$ in the photoelectric questions.\n- Recheck units when converting Å to nm.", strengths: ["Algebra"], gaps: ["Trigonometry"],
   };

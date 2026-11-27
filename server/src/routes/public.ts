@@ -1,6 +1,6 @@
 import { loadTestReport, pdfName, studentReportPdf } from "../reports.js";
 import { sendPdf, withSubtopics } from "./reports.js";
-import { pageTypes, paperForViewer } from "./tests.js";
+import { pageTypes, paperForViewer, withD6 } from "./tests.js";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -151,7 +151,7 @@ publicRoutes.get("/public/report/:token", (req, res) => {
     .findIndex((r) => r.student_id === row.student_id) + 1;
   res.json({
     org_name: row.org_name, student_name: row.student_name, test_title: row.test_title, subject: row.subject,
-    score: row.score, max_score: row.max_score, rank, evaluation: json(row.evaluation, null),
+    score: row.score, max_score: row.max_score, rank, evaluation: withD6(json<{ questions: unknown[] } | null>(row.evaluation, null)),
     files: json<string[]>(row.files, []).length, page_types: pageTypes(row.files),
     // Questions with the student's marks; answers and solutions only once no other unpublished test uses this paper.
     sections: paperForViewer(row.test_id)?.sections ?? [], answers_hidden: paperForViewer(row.test_id)?.answers_hidden ?? true,

@@ -619,6 +619,57 @@ export function mergeSecondCheck(ev: SheetEvaluation, second: SheetEvaluation | 
   return ev.questions.filter((q) => (q as CheckedQ).needs_review).length;
 }
 
+// ---- D6 grading: chunks for long or doubtful sheets, and the strict per-question shape ----
+const WHOLE_SHEET_PAGES = 12, CHUNK_PAGES = 8;
+const CONF = { low: 0, medium: 1, high: 2 } as const;
+/** Marks a sheet in chunks of `size` pages (each overlapping the next by one page, so answers crossing a break are seen whole once). */
+async function gradeInChunks(orgId: string, paper: Paper, files: string[], size: number): Promise<SheetEvaluation> {
+  const parts: SheetEvaluation[] = [];
+  for (let start = 0; start < files.length; start += Math.max(1, size - 1)) {
+    const slice = files.slice(start, start + size);
+    const part = await evaluateSheet(orgId, paper, slice, "marking", { first: start + 1, total: files.length });
+    if (!Array.isArray(part?.questions)) throw new AiError("Claude's answer couldn't be read. Please try again.", true);
+    parts.push(part);
+    if (start + size >= files.length) break;
+  }
+  return mergeParts(parts);
+}
+/** Per question: the attempted answer with the highest confidence (then most marks). Different marks in two parts → teacher checks. */
+function mergeParts(parts: SheetEvaluation[]): SheetEvaluation {
+  const ids = parts[0].questions.map((q) => q.question_id);
+  const questions = ids.map((id) => {
+    const cands = parts.map((p) => p.questions.find((q) => q.question_id === id)).filter(Boolean) as SheetEvaluation["questions"];
+    const tried = cands.filter((q) => q.attempted);
+    if (!tried.length) return cands[0];
+    const best = [...tried].sort((a, b) => CONF[b.confidence] - CONF[a.confidence] || b.marks_awarded - a.marks_awarded)[0];
+    const spread = Math.max(...tried.map((q) => q.marks_awarded)) - Math.min(...tried.map((q) => q.marks_awarded));
+    if (tried.length > 1 && spread > Math.max(0.5, best.max_marks * 0.1))
+      return { ...best, needs_review: true, check_note: "This answer runs across several pages and was marked differently on them. Please check." } as typeof best;
+    return best;
+  });
+  const main = [...parts].sort((a, b) => b.questions.filter((q) => q.attempted).length - a.questions.filter((q) => q.attempted).length)[0];
+  return { ...main, questions, strengths: [...new Set(parts.flatMap((p) => p.strengths))], gaps: [...new Set(parts.flatMap((p) => p.gaps))] };
+}
+/** Keeps, for each question, whichever of two markings is surer. */
+function preferSurer(whole: SheetEvaluation, chunked: SheetEvaluation): SheetEvaluation {
+  return { ...whole, questions: whole.questions.map((q) => {
+    const c = chunked.questions.find((x) => x.question_id === q.question_id);
+    return c && c.attempted && CONF[c.confidence] > CONF[q.confidence] ? c : q;
+  }) };
+}
+/** The strict D6 fields on every question: criteria [{name, awarded, max, reason}], total, plus annotations. Safe to call on old evaluations. */
+export function withD6<T extends { questions: unknown[] } | null>(ev: T): T {
+  if (!ev) return ev;
+  for (const raw of ev.questions as (SheetEvaluation["questions"][number] & { criteria?: unknown; total?: number })[]) {
+    raw.criteria = (raw.steps ?? []).map((st) => ({ name: st.step, awarded: st.awarded, max: st.max_marks, reason: st.comment }));
+    raw.total = raw.marks_awarded;
+    raw.annotations = (raw.annotations ?? []).filter((a) => a && a.page > 0 && a.text)
+      .map((a) => ({ ...a, bbox: { x: clamp01(a.bbox?.x), y: clamp01(a.bbox?.y), w: clamp01(a.bbox?.w), h: clamp01(a.bbox?.h) } })).slice(0, 6);
+  }
+  return ev;
+}
+const clamp01 = (v: unknown) => Math.min(1, Math.max(0, Number(v) || 0));
+
 async function runEvaluation(attemptId: string) {
   const a = one<any>("SELECT * FROM attempts WHERE id = ?", attemptId);
   if (!a) return;
@@ -631,7 +682,19 @@ async function runEvaluation(attemptId: string) {
   if (!files.length) throw new PermanentError("No pages uploaded for this student.");
   run("UPDATE attempts SET status = 'evaluating' WHERE id = ?", attemptId);
   {
-    const ev = await evaluateSheet(t.org_id, paper!, files, "marking");
+    // D6: one request per sheet; long sheets (over 12 pages) are marked in chunks, and a sheet whose answers come
+    // back mostly low-confidence is marked again in smaller chunks, keeping the surer result for each question.
+    let ev: SheetEvaluation, grading: "whole" | "chunked" | "whole+chunked";
+    if (files.length > WHOLE_SHEET_PAGES) { ev = await gradeInChunks(t.org_id, paper!, files, CHUNK_PAGES); grading = "chunked"; }
+    else {
+      ev = await evaluateSheet(t.org_id, paper!, files, "marking");
+      if (!Array.isArray(ev?.questions)) throw new AiError("Claude's answer couldn't be read. Please try again.");
+      const tried = ev.questions.filter((q) => q.attempted);
+      if (files.length >= 2 && tried.length && tried.filter((q) => q.confidence === "low").length / tried.length >= 0.5) {
+        const again = await gradeInChunks(t.org_id, paper!, files, Math.max(1, Math.ceil(files.length / 2)));
+        ev = preferSurer(ev, again); grading = "whole+chunked";
+      } else grading = "whole";
+    }
     if (!Array.isArray(ev?.questions)) throw new AiError("Claude's answer couldn't be read. Please try again.");
     const questions = questionsOf(paper!.sections);
     scoreEvaluation(ev, questions);
@@ -648,7 +711,8 @@ async function runEvaluation(attemptId: string) {
     const score = scoreEvaluation(ev, questions);
     // Keep what the AI gave (and which model), so later teacher changes can be compared with it.
     for (const qe of ev.questions as (CheckedQ & { ai_marks?: number })[]) qe.ai_marks = qe.marks_awarded;
-    (ev as SheetEvaluation & { meta?: unknown }).meta = { model: modelFor(t.org_id, "marking"), recheck_model: modelFor(t.org_id, "recheck"), marked_at: new Date().toISOString() };
+    (ev as SheetEvaluation & { meta?: unknown }).meta = { model: modelFor(t.org_id, "marking"), recheck_model: modelFor(t.org_id, "recheck"), marked_at: new Date().toISOString(), grading, pages: files.length };
+    withD6(ev);
     run("UPDATE attempts SET status = 'evaluated', error = NULL, evaluation = ?, score = ?, max_score = ?, reviewed = 0, evaluated_at = CURRENT_TIMESTAMP WHERE id = ?",
       JSON.stringify(ev), score, paper!.total_marks, attemptId);
     // A re-marked sheet gets a fresh Fix-it plan (if results are already out).
@@ -709,7 +773,7 @@ testRoutes.get("/attempts/:id", (req, res) => {
     FROM attempts a JOIN users u ON u.id = a.student_id JOIN tests t ON t.id = a.test_id WHERE a.id = ?`, req.params.id);
   if (!a || a.org_id !== u.org_id) return res.status(404).json({ error: "Not found" });
   if (u.role === "student" && (a.student_id !== u.id || !a.results_published)) return res.status(403).json({ error: "Results not published yet" });
-  res.json({ ...a, files: json<string[]>(a.files, []).length, page_types: pageTypes(a.files), responses: json(a.responses, {}), evaluation: json(a.evaluation, null),
+  res.json({ ...a, files: json<string[]>(a.files, []).length, page_types: pageTypes(a.files), responses: json(a.responses, {}), evaluation: withD6(json<SheetEvaluation | null>(a.evaluation, null)),
     paper: u.role === "student" ? paperForViewer(a.test_id) : paperFor(a.test_id) });
 });
 
@@ -848,11 +912,11 @@ testRoutes.post("/cbt/:testId/submit", student, (req, res) => {
       feedback: !attempted ? "Not attempted." : correct ? "Correct." : `Incorrect. ${q.solution}`,
       mistake_type: (!attempted ? "not_attempted" : correct ? "none" : "concept") as "none" | "concept" | "not_attempted",
       mistake_note: !attempted || correct ? "" : "Chose a wrong answer",
-      location: { page: 0, top: 0, bottom: 0, mark_x: 0, mark_y: 0 }, // online answers have no paper
+      location: { page: 0, top: 0, bottom: 0, mark_x: 0, mark_y: 0 }, annotations: [], // online answers have no paper
     };
   });
   const score = evQuestions.reduce((t, q) => t + q.marks_awarded, 0);
-  const ev: SheetEvaluation = { student_name_on_sheet: null, questions: evQuestions, overall_feedback: "", strengths: [], gaps: [] };
+  const ev: SheetEvaluation = withD6({ student_name_on_sheet: null, questions: evQuestions, overall_feedback: "", strengths: [], gaps: [] });
   run(`UPDATE attempts SET responses = ?, evaluation = ?, score = ?, max_score = ?, status = 'evaluated', submitted_at = CURRENT_TIMESTAMP,
        evaluated_at = CURRENT_TIMESTAMP WHERE id = ?`, JSON.stringify(responses), JSON.stringify(ev), score, paper.total_marks, a.id);
   res.json({ ok: true });

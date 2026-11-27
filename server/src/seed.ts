@@ -138,7 +138,7 @@ function synthEval(sections: Section[], skill: number): SheetEvaluation {
     return { question_id: qq.id, attempted, transcription: "", steps, marks_awarded: marks, max_marks: qq.marks, confidence: "high" as const,
       feedback: !attempted ? "Not attempted." : marks >= qq.marks ? "Fully correct." : `Revise ${qq.topic}.`,
       mistake_type, mistake_note: mistake_type === "none" || mistake_type === "not_attempted" ? "" : `Demo: ${mistake_type} mistake in ${qq.topic}`,
-      location: { page: 0, top: 0, bottom: 0, mark_x: 0, mark_y: 0 } };
+      location: { page: 0, top: 0, bottom: 0, mark_x: 0, mark_y: 0 }, annotations: [] };
   });
   const weak = [...new Set(questions.filter((x) => x.marks_awarded < x.max_marks * 0.5).map((x) => sections.flatMap((s) => s.questions).find((qq) => qq.id === x.question_id)!.topic))];
   return { student_name_on_sheet: null, questions, overall_feedback: "Demo evaluation.", strengths: [], gaps: weak };

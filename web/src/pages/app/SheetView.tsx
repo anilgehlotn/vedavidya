@@ -114,6 +114,11 @@ export function SheetView(p: SheetViewProps) {
                   : <img src={url} alt={`Answer sheet page ${i + 1}`} />}
                 {!isPdf && url && <>
                   {layout[i].boxes.filter((b) => b.qid === sel).map((b) => <div key={b.qid} className="mk-box" style={{ top: `${b.top * 100}%`, height: `${Math.max(2, (b.bottom - b.top) * 100)}%` }} />)}
+                  {layout[i].notes.map((n, k) => (
+                    <span key={`n${k}`} className={`mk-note mk-note-${n.kind}`} style={{ left: `${n.x * 100}%`, top: `${n.y * 100}%`, width: `${n.w * 100}%`, height: `${n.h * 100}%` }}>
+                      <span className="mk-note-text" style={{ top: `calc(100% + 2px)` }}>{n.text.replace(/\$/g, "")}</span>
+                    </span>
+                  ))}
                   {layout[i].marks.map((m) => <span key={`m${m.qid}`} className={`mk mk-${m.kind}`} style={{ left: `${m.x * 100}%`, top: `${m.y * 100}%` }}><MarkSvg kind={m.kind} /></span>)}
                   {layout[i].circles.map((c) => (
                     <span key={`c${c.qid}`} className="mk-wrap" style={{ left: `${c.x * 100}%`, top: `${c.y * 100}%` }}>
