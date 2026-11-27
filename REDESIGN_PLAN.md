@@ -1,6 +1,6 @@
 # Veda Vidya: Redesign Plan (Phase 0 audit)
 
-Status: Phase 0 and 1 done (on `main`). Phase 2 (data model, credits) and Phase 3 (app shell) done on branch `phase-2`, awaiting approval to merge. Phase 4 next.
+Status: Phases 0–4 done and live on `main`. Phase 5 (demo seed, tablet layouts, keyboard and focus, full end-to-end run) done on branch `phase-5`, awaiting approval to merge.
 Questions marked **🟡 DECISION** need your answer before the phase that depends on them.
 
 ---

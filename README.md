@@ -58,10 +58,10 @@ npm run dev     # web on http://localhost:5173, API on http://localhost:4000
 
 Production: run `npm run build`, then `JWT_SECRET=... npm start`. That serves the built site and the API together on port 4000.
 
-Each institute adds its own Claude API key in **Settings → AI engine**. The key is checked against the API, stored
-encrypted (AES-256-GCM, derived from `JWT_SECRET`), and never sent back to the browser. Everything except paper generation
-and answer-sheet evaluation works without a key. The public demo institute can never use a key, and its scores are
-synthetic, not produced by the AI.
+AI runs on the platform's Claude key (`PLATFORM_CLAUDE_KEY`) and is paid with credits: each institute gets free credits every
+month, and the platform owner can add more on the Platform page. An institute can add its own Claude key in **Settings → AI engine**
+instead; it is checked against the API, stored encrypted (AES-256-GCM, derived from `JWT_SECRET`), never sent back to the browser,
+and then no credits are used. The public demo institute can never use AI, and its marks are prepared in advance.
 
 ### Uploads and background processing
 
@@ -92,22 +92,28 @@ A copy of the SQLite database is made daily with SQLite's online backup API into
 
 ### Testing without an API key
 
-`scripts/mock-claude.mjs` imitates the Claude API, including streaming, its size limits and random 429/529 errors.
-`scripts/e2e-api.mjs` runs about 470 checks over every endpoint, including a 50-student upload and marking run, role and
-institute isolation, and cleanup. `scripts/e2e-institute.mjs` simulates a full institute: classes 8–12 with 20–30 students, 4 subject
-teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart. `scripts/e2e-ui-phase4.mjs` walks through the Phase 4 screens (home, batches, onboarding, papers, import, paper editor, tests, test details, class scan → review pages → marking, report card, send reports; start the server with `RESEND_API_KEY=re_test_key RESEND_BASE_URL=http://localhost:4999` so the mock stands in for Resend). `scripts/unit-sheetmap.ts` checks how scanned pages are grouped into students. `scripts/e2e-ui-shell.mjs` checks the app shell in Chromium (menu, flyouts, breadcrumbs, search, toasts, skeletons, empty/error states, phone drawer, every page on a phone). `scripts/e2e-ui-phase2.mjs` drives the real pages in Chromium (credits panel, Platform page, Courses card, teacher note on mark changes); run it on a fresh server started with `SUPER_ADMIN_EMAILS=root-admin@example.com` and a `PLATFORM_CLAUDE_KEY` starting `sk-ant-test-valid` (the mock only accepts those).
+`scripts/mock-claude.mjs` stands in for the Claude API (streaming, size limits, random 429/529 errors) and for the Resend
+email API. One command runs every check against fresh servers (about 10 minutes):
 
 ```bash
-MOCK_FAIL_RATE=0.3 node scripts/mock-claude.mjs
+scripts/run-all.sh
 ```
 
-```bash
-cd server && NODE_ENV=production JWT_SECRET=x DATA_DIR=/tmp/vv PORT=4300 ANTHROPIC_BASE_URL=http://localhost:4999 npx tsx src/index.ts
-```
+It runs, in order: typecheck and build; `scripts/unit-sheetmap.ts` (grouping scanned pages into students);
+`scripts/e2e-api.mjs` (about 650 checks over every endpoint, including uploads, marking, credits, institute isolation and cleanup);
+`scripts/e2e-institute.mjs` (classes 8–12, 4 teachers, 21 tests, then all 125 students sign in and see only their own results);
+`scripts/e2e-restart.mjs` (marking resumes after the server is killed); and the browser suites in Chromium:
+`e2e-ui-shell.mjs` (menu, flyouts, search, toasts, skeletons, empty/error states, phones), `e2e-ui-phase2.mjs` (credits, Platform page,
+courses, teacher notes), `e2e-ui-phase4.mjs` (every Phase 4 screen, from onboarding to class scan → review pages → marking → report
+card → send reports) and `e2e-ui-phase5.mjs` (the demo, keyboard and focus, labels on every control, tablet layouts).
 
-```bash
-DATA_DIR=/tmp/vv node scripts/e2e-api.mjs
-```
+### Demo institute
+
+`npm run seed` (and the Docker image on start, with `SEED_DEMO=true`) creates **Sunrise Academy**: 2 centres, 2 courses, 4 batches,
+20 students, 3 question papers, three published online physics tests and one Maths unit test fully marked from realistic
+handwritten answer sheets (drawn with the bundled Kalam font, OFL licence, in `server/assets/fonts`). Logins:
+`admin@demo.school`, `teacher1@demo.school` and `student`, all with password `demo1234`. The demo is read-only and never uses AI.
+An existing demo is left alone; start once with `DEMO_RESEED=true` to replace it with the current one, then remove the setting.
 
 ## Layout
 
@@ -159,6 +165,7 @@ Run `npm audit --omit=dev` before each release.
 | `JWT_SECRET` | dev value | **Required in production**. Also encrypts stored API keys, so if you change it, re-enter the key |
 | `ALLOW_SIGNUP` | `true` | Set `false` to stop strangers creating institutes from the login page |
 | `SEED_DEMO` | `true` (Docker) | Creates the public demo institute on first start |
+| `DEMO_RESEED` | empty | `true` replaces an existing demo institute with the current one on start (set once, then remove) |
 | `EVAL_CONCURRENCY` | `3` | Answer sheets evaluated in parallel |
 | `PRACTICE_CONCURRENCY` | `2` | Fix-it plans prepared in parallel |
 | `PRACTICE_RETEST_DAYS` | `7` | Days before a student's Fix-it check-up unlocks |
