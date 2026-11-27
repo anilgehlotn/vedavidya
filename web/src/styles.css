@@ -724,3 +724,9 @@ body:not(:has(.shell)) .toasts { left: 16px; }
 .rank-card > .badge { justify-self: start; }
 .send-table { max-height: 50vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
 .send-table th { position: sticky; top: 0; background: var(--surface) !important; z-index: 1; }
+
+/* Tablets: card grids next to the sidebar get two columns; long names wrap */
+@media (max-width: 1180px) { .paper-grid, .batch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .paper-grid, .batch-grid { grid-template-columns: minmax(0, 1fr); } }
+.batch-name { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+td .menu-wrap .pop-menu { min-width: 230px; }

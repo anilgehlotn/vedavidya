@@ -603,13 +603,16 @@ export function TestDetail() {
                 {offline && a.status !== "evaluating" && !DEMO && <UploadCell a={a} onDone={() => t.reload(true)} />}
                 {offline && a.files > 0 && a.status !== "evaluating" && a.status !== "uploaded" && !DEMO && <button className="btn btn-ghost btn-sm" onClick={() => { if (a.status !== "evaluated" || confirm(`Re-mark ${a.student_name}'s sheet? This uses AI credits again and replaces any marks you changed.`)) evaluate([a.id]); }}>{a.status === "evaluated" ? "Re-mark" : "Retry"}</button>}
                 {a.score != null && <button className="btn btn-ghost btn-sm" onClick={() => nav(`/app/attempts/${a.id}`)}>Review</button>}
-                {a.score != null && !DEMO && <button className="btn btn-ghost btn-sm" title="Download this student's report card" onClick={() => pdf(`/attempts/${a.id}/report.pdf`, `Roll_${a.roll_no ?? ""}_${a.student_name.replace(/\W+/g, "_")}`)}>PDF</button>}
-                {a.share_token && d.results_published && a.score != null ? <>
-                  <a className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer" title={`Send on WhatsApp${a.parent_phone || a.phone ? ` to ${a.parent_phone || a.phone}` : ""}`}
-                    onClick={() => void api(`/tests/${d.id}/report-sends/whatsapp`, { body: { attempt_id: a.id, to: a.parent_phone || a.phone || "", recipient: a.parent_phone ? "parent" : "student" } }).catch(() => {})}
-                    href={`https://wa.me/${waNumber(a.parent_phone || a.phone)}?text=${encodeURIComponent(resultMessage(a, d.title, org?.name ?? ""))}`}>WhatsApp</a>
-                  <button className="btn btn-ghost btn-sm" title="Copy report link" onClick={() => copyLink(a.share_token!)}>🔗</button>
-                </> : null}
+                {a.score != null && !DEMO && <MenuButton label="⋯" small ariaLabel={`More for ${a.student_name}`} items={[
+                  { label: "Report card PDF", run: () => pdf(`/attempts/${a.id}/report.pdf`, `Roll_${a.roll_no ?? ""}_${a.student_name.replace(/\W+/g, "_")}`) },
+                  ...(a.share_token && d.results_published ? [
+                    { label: `Send on WhatsApp${a.parent_phone || a.phone ? ` (${a.parent_phone || a.phone})` : ""}`, run: () => {
+                      void api(`/tests/${d.id}/report-sends/whatsapp`, { body: { attempt_id: a.id, to: a.parent_phone || a.phone || "", recipient: a.parent_phone ? "parent" : "student" } }).catch(() => {});
+                      window.open(`https://wa.me/${waNumber(a.parent_phone || a.phone)}?text=${encodeURIComponent(resultMessage(a, d.title, org?.name ?? ""))}`, "_blank", "noopener");
+                    } },
+                    { label: "Copy parent report link", run: () => copyLink(a.share_token!) },
+                  ] : []),
+                ]} />}
               </div></td>
             </tr>))}
           </tbody>
@@ -674,20 +677,38 @@ function QuestionPerformance({ qs }: { qs: { id: string; n: number; topic: strin
 }
 
 /** A button that opens a small menu of actions. */
-function MenuButton({ label, items, disabled }: { label: string; items: { label: string; run: () => void }[]; disabled?: boolean }) {
-  const [open, setOpen] = useState(false);
+function MenuButton({ label, items, disabled, small, ariaLabel }: { label: string; items: { label: string; run: () => void }[]; disabled?: boolean; small?: boolean; ariaLabel?: string }) {
+  // The menu floats above the page (fixed position), so it isn't cut off inside scrolling tables.
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const btn = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!open) return;
-    const c = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    const k = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", c); document.addEventListener("keydown", k);
-    return () => { document.removeEventListener("mousedown", c); document.removeEventListener("keydown", k); };
-  }, [open]);
+    if (!pos) return;
+    const c = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setPos(null); };
+    const k = (e: KeyboardEvent) => { if (e.key === "Escape") { setPos(null); btn.current?.focus(); } };
+    const close = () => setPos(null);
+    document.addEventListener("mousedown", c); document.addEventListener("keydown", k); window.addEventListener("scroll", close, true); window.addEventListener("resize", close);
+    menu.current?.querySelector<HTMLElement>("button")?.focus();
+    return () => { document.removeEventListener("mousedown", c); document.removeEventListener("keydown", k); window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); };
+  }, [pos]);
+  const toggle = () => {
+    if (pos) return setPos(null);
+    const r = btn.current!.getBoundingClientRect();
+    setPos({ top: Math.min(r.bottom + 4, window.innerHeight - 40 * items.length - 20), right: Math.max(8, window.innerWidth - r.right) });
+  };
   return (
     <div className="menu-wrap" ref={ref}>
-      <button className="btn btn-ghost" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>{label} ▾</button>
-      {open && <div className="pop-menu" role="menu">{items.map((i) => <button key={i.label} role="menuitem" onClick={() => { setOpen(false); i.run(); }}>{i.label}</button>)}</div>}
+      <button ref={btn} className={`btn btn-ghost ${small ? "btn-sm" : ""}`} disabled={disabled} aria-haspopup="menu" aria-expanded={Boolean(pos)} aria-label={ariaLabel} onClick={toggle}>{label}{small ? "" : " ▾"}</button>
+      {pos && <div ref={menu} className="pop-menu" role="menu" style={{ position: "fixed", top: pos.top, right: pos.right }}
+        onKeyDown={(e) => {
+          const list = [...(menu.current?.querySelectorAll<HTMLElement>("button") ?? [])];
+          const i = list.indexOf(document.activeElement as HTMLElement);
+          if (e.key === "ArrowDown") { e.preventDefault(); list[(i + 1) % list.length]?.focus(); }
+          if (e.key === "ArrowUp") { e.preventDefault(); list[(i - 1 + list.length) % list.length]?.focus(); }
+        }}>
+        {items.map((i) => <button key={i.label} role="menuitem" onClick={() => { setPos(null); btn.current?.focus(); i.run(); }}>{i.label}</button>)}
+      </div>}
     </div>
   );
 }
