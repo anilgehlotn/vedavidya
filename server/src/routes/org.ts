@@ -15,30 +15,71 @@ import { adminOnly, staff } from "../auth.js";
 
 export const orgRoutes = Router();
 
+/**
+ * Home dashboard. Optional filters: ?centre_id= and ?course_id= (they narrow students, batches and tests to those batches).
+ * Each stat has a "new in the last 30 days" count.
+ */
 orgRoutes.get("/overview", staff, (req, res) => {
   const org = req.user!.org_id;
+  const q = z.object({ centre_id: z.string().max(60).optional(), course_id: z.string().max(60).optional() }).parse(req.query);
+  // The batches in view (all when no filter).
+  const batchWhere = `b.org_id = ?${q.centre_id ? " AND b.centre_id = ?" : ""}${q.course_id ? " AND b.course_id = ?" : ""}`;
+  const bArgs = [org, ...(q.centre_id ? [q.centre_id] : []), ...(q.course_id ? [q.course_id] : [])];
+  const filtered = Boolean(q.centre_id || q.course_id);
+  const since = "datetime('now', '-30 days')";
+  const pair = (sql: string, args: unknown[]) => {
+    const r = one<{ n: number; recent: number }>(sql, ...args);
+    return { total: r?.n ?? 0, new_30d: r?.recent ?? 0 };
+  };
+  const studentsIn = filtered
+    ? `SELECT count(DISTINCT u.id) n, count(DISTINCT CASE WHEN u.created_at >= ${since} THEN u.id END) recent
+         FROM users u JOIN enrollments e ON e.student_id = u.id JOIN batches b ON b.id = e.batch_id WHERE ${batchWhere}`
+    : `SELECT count(*) n, sum(created_at >= ${since}) recent FROM users WHERE org_id = ? AND role = 'student'`;
+  const cards = {
+    students: pair(studentsIn, bArgs),
+    teachers: filtered
+      ? pair(`SELECT count(DISTINCT u.id) n, count(DISTINCT CASE WHEN u.created_at >= ${since} THEN u.id END) recent
+           FROM users u JOIN batches b ON b.teacher_id = u.id WHERE ${batchWhere}`, bArgs)
+      : pair(`SELECT count(*) n, sum(created_at >= ${since}) recent FROM users WHERE org_id = ? AND role IN ('teacher','admin')`, [org]),
+    batches: pair(`SELECT count(*) n, sum(b.created_at >= ${since}) recent FROM batches b WHERE ${batchWhere}`, bArgs),
+    tests: filtered
+      ? pair(`SELECT count(DISTINCT t.id) n, count(DISTINCT CASE WHEN t.created_at >= ${since} THEN t.id END) recent
+           FROM tests t JOIN test_batches tb ON tb.test_id = t.id JOIN batches b ON b.id = tb.batch_id WHERE ${batchWhere}`, bArgs)
+      : pair(`SELECT count(*) n, sum(created_at >= ${since}) recent FROM tests WHERE org_id = ?`, [org]),
+  };
   const count = (sql: string) => (one<{ n: number }>(sql, org)?.n ?? 0);
   const stats = {
-    students: count("SELECT count(*) n FROM users WHERE org_id = ? AND role = 'student'"),
-    teachers: count("SELECT count(*) n FROM users WHERE org_id = ? AND role = 'teacher'"),
-    batches: count("SELECT count(*) n FROM batches WHERE org_id = ?"),
+    students: cards.students.total, teachers: cards.teachers.total, batches: cards.batches.total, tests: cards.tests.total,
     centres: count("SELECT count(*) n FROM centres WHERE org_id = ?"),
     papers: count("SELECT count(*) n FROM question_papers WHERE org_id = ?"),
-    tests: count("SELECT count(*) n FROM tests WHERE org_id = ?"),
     sheets_evaluated: count("SELECT count(*) n FROM attempts a JOIN tests t ON t.id = a.test_id WHERE t.org_id = ? AND a.status = 'evaluated'"),
   };
+  // Students per batch, grouped by course (for the chart).
+  const batches = all<{ id: string; name: string; course_id: string | null; course_name: string | null; centre_name: string | null; students: number; avg_pct: number | null }>(`
+    SELECT b.id, b.name, b.course_id, co.name AS course_name, c.name AS centre_name,
+      (SELECT count(*) FROM enrollments e WHERE e.batch_id = b.id) AS students,
+      (SELECT avg(a.score * 100.0 / a.max_score) FROM enrollments e JOIN attempts a ON a.student_id = e.student_id
+        WHERE e.batch_id = b.id AND a.score IS NOT NULL AND a.max_score > 0) AS avg_pct
+    FROM batches b LEFT JOIN courses co ON co.id = b.course_id LEFT JOIN centres c ON c.id = b.centre_id
+    WHERE ${batchWhere} ORDER BY co.name, b.name`, ...bArgs);
+  const byCourse = new Map<string, { id: string | null; name: string; batches: typeof batches }>();
+  for (const b of batches) {
+    const k = b.course_id ?? "";
+    if (!byCourse.has(k)) byCourse.set(k, { id: b.course_id, name: b.course_name ?? "No course", batches: [] });
+    byCourse.get(k)!.batches.push(b);
+  }
+  const recentStudents = all(`SELECT u.id, u.name, u.created_at, e.roll_no, b.name AS batch_name, co.name AS course_name
+    FROM users u JOIN enrollments e ON e.student_id = u.id JOIN batches b ON b.id = e.batch_id LEFT JOIN courses co ON co.id = b.course_id
+    WHERE ${batchWhere} AND u.role = 'student' ORDER BY u.created_at DESC, u.name LIMIT 8`, ...bArgs);
+  const testScope = filtered ? `AND t.id IN (SELECT tb.test_id FROM test_batches tb JOIN batches b ON b.id = tb.batch_id WHERE ${batchWhere})` : "";
   const recentTests = all(`
     SELECT t.id, t.title, t.mode, t.scheduled_at, t.results_published,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id) AS candidates,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.status = 'evaluated') AS evaluated,
       (SELECT avg(a.score * 100.0 / a.max_score) FROM attempts a WHERE a.test_id = t.id AND a.score IS NOT NULL AND a.max_score > 0) AS avg_pct
-    FROM tests t WHERE t.org_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC LIMIT 8`, org);
-  const batchPerf = all(`
-    SELECT b.id, b.name, count(a.id) AS attempts, avg(a.score * 100.0 / a.max_score) AS avg_pct
-    FROM batches b JOIN enrollments e ON e.batch_id = b.id
-    LEFT JOIN attempts a ON a.student_id = e.student_id AND a.score IS NOT NULL AND a.max_score > 0
-    WHERE b.org_id = ? GROUP BY b.id ORDER BY b.name`, org);
-  res.json({ stats, recentTests, batchPerf });
+    FROM tests t WHERE t.org_id = ? ${testScope} ORDER BY coalesce(t.scheduled_at, t.created_at) DESC LIMIT 8`, org, ...(filtered ? bArgs : []));
+  const batchPerf = batches.map((b) => ({ id: b.id, name: b.name, attempts: 0, avg_pct: b.avg_pct }));
+  res.json({ stats, cards, courses: [...byCourse.values()], recentStudents, recentTests, batchPerf });
 });
 
 // ---- Centres

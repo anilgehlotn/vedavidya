@@ -290,6 +290,19 @@ section("Teacher review, publish, reports");
   await expect("student can't view others' analytics", 403, "GET", `/analytics/student/${creds[1].id}`, { token: studentTok });
   const ov = await expect("overview", 200, "GET", "/overview", { token: teacher });
   ok(ov.data.stats.students === N + 3 && ov.data.stats.sheets_evaluated === N, "overview counts");
+  ok(ov.data.cards.students.total === N + 3 && ov.data.cards.students.new_30d === N + 3 && ov.data.cards.batches.total >= 1, "overview cards with 30-day counts");
+  ok(ov.data.courses.flatMap((c) => c.batches).length === ov.data.cards.batches.total && Array.isArray(ov.data.recentStudents) && ov.data.recentStudents.length > 0, "overview course/batch chart and recent students");
+  {
+    const one = ov.data.courses.flatMap((c) => c.batches)[0];
+    const byCourse = ov.data.courses.find((c) => c.batches.some((b) => b.id === one.id));
+    if (byCourse.id) {
+      const f = (await expect("overview filtered by course", 200, "GET", `/overview?course_id=${byCourse.id}`, { token: teacher })).data;
+      ok(f.cards.batches.total === byCourse.batches.length && f.courses.length === 1, "course filter narrows batches");
+      ok(f.cards.students.total > 0 && f.cards.students.total <= byCourse.batches.reduce((t, b) => t + b.students, 0), "course filter narrows students");
+    }
+    const none = (await expect("overview filtered by an unknown centre", 200, "GET", "/overview?centre_id=nope", { token: teacher })).data;
+    ok(none.cards.students.total === 0 && none.cards.batches.total === 0 && none.recentTests.length === 0, "unknown centre shows nothing (no other institute's data)");
+  }
   await expect("tests list", 200, "GET", "/tests", { token: teacher });
 }
 
