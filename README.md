@@ -93,9 +93,9 @@ A copy of the SQLite database is made daily with SQLite's online backup API into
 ### Testing without an API key
 
 `scripts/mock-claude.mjs` imitates the Claude API, including streaming, its size limits and random 429/529 errors.
-`scripts/e2e-api.mjs` runs 362 checks over every endpoint, including a 50-student upload and marking run, role and
+`scripts/e2e-api.mjs` runs about 470 checks over every endpoint, including a 50-student upload and marking run, role and
 institute isolation, and cleanup. `scripts/e2e-institute.mjs` simulates a full institute: classes 8–12 with 20–30 students, 4 subject
-teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart.
+teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart. `scripts/e2e-ui-phase2.mjs` drives the real pages in Chromium (credits panel, Platform page, Courses card, teacher note on mark changes); run it on a fresh server started with `SUPER_ADMIN_EMAILS=root-admin@example.com` and a `PLATFORM_CLAUDE_KEY` starting `sk-ant-test-valid` (the mock only accepts those).
 
 ```bash
 MOCK_FAIL_RATE=0.3 node scripts/mock-claude.mjs

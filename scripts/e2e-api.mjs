@@ -855,7 +855,7 @@ section("Teacher corrections are kept for improving the marking");
   ok(typeof q.ai_marks === "number" && at.evaluation.meta?.model, `marking records the AI's marks and model (${at.evaluation.meta?.model})`);
   const newMarks = q.marks_awarded >= q.max_marks ? 0 : q.max_marks;
   await expect("teacher changes marks with a note", 200, "PUT", `/attempts/${a.id}/evaluation`, { token: teacher, body: { questions: [{ question_id: q.question_id, marks_awarded: newMarks, note: "Method fully correct" }] } });
-  await expect("teacher changes it again", 200, "PUT", `/attempts/${a.id}/evaluation`, { token: teacher, body: { questions: [{ question_id: q.question_id, marks_awarded: Math.max(0, newMarks - 0.5) }] } });
+  await expect("teacher changes it again", 200, "PUT", `/attempts/${a.id}/evaluation`, { token: teacher, body: { questions: [{ question_id: q.question_id, marks_awarded: newMarks === 0 ? 0.5 : newMarks - 0.5 }] } });
   const after = (await call("GET", `/attempts/${a.id}`, { token: teacher })).data.evaluation.questions[0];
   ok(after.teacher_override && after.teacher_note === "Method fully correct", "the sheet shows the teacher's override and note");
   if (DATA_DIR) {

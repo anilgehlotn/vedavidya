@@ -78,7 +78,8 @@ const checkBatchRefs = (b: z.infer<typeof BatchBody>, org: string) => {
 function resolveCourse(b: z.infer<typeof BatchBody>, org: string): { id: string | null; name: string | null } {
   if (b.course_id) return { id: b.course_id, name: one<{ name: string }>("SELECT name FROM courses WHERE id = ?", b.course_id)!.name };
   if (!b.course) return { id: null, name: null };
-  return { id: findOrCreateCourse(org, b.course), name: b.course };
+  const id = findOrCreateCourse(org, b.course);
+  return { id, name: one<{ name: string }>("SELECT name FROM courses WHERE id = ?", id)!.name }; // the course's own spelling
 }
 export function findOrCreateCourse(org: string, name: string) {
   const existing = one<{ id: string }>("SELECT id FROM courses WHERE org_id = ? AND name = ? COLLATE NOCASE", org, name.trim());
@@ -115,21 +116,28 @@ orgRoutes.get("/courses", staff, (req, res) => {
   res.json(courses.map((c) => ({ ...c, subjects: subjects.filter((s) => s.course_id === c.id) })));
 });
 const CourseBody = z.object({ name: z.string().trim().min(1).max(100), board: z.string().trim().max(80).nullable().optional() });
+/** Names are compared ignoring case and extra spaces, so "10th CBSE" and "10th cbse" can't both exist. */
+const courseTaken = (org: string, name: string, exceptId = "") =>
+  one("SELECT 1 FROM courses WHERE org_id = ? AND lower(trim(name)) = lower(?) AND id != ?", org, name, exceptId);
+const subjectTaken = (courseId: string, name: string, exceptId = "") =>
+  one("SELECT 1 FROM subjects WHERE course_id = ? AND lower(trim(name)) = lower(?) AND id != ?", courseId, name, exceptId);
 orgRoutes.post("/courses", adminOnly, (req, res) => {
   const b = CourseBody.parse(req.body);
+  if (courseTaken(req.user!.org_id, b.name)) return res.status(409).json({ error: `A course called "${b.name}" already exists.` });
   const id = uid("crs");
   run("INSERT INTO courses (id, org_id, name, board) VALUES (?,?,?,?)", id, req.user!.org_id, b.name, b.board ?? null);
   res.json({ id });
 });
 orgRoutes.put("/courses/:id", adminOnly, (req, res) => {
   const b = CourseBody.parse(req.body);
+  if (courseTaken(req.user!.org_id, b.name, req.params.id)) return res.status(409).json({ error: `A course called "${b.name}" already exists.` });
   const r = run("UPDATE courses SET name = ?, board = ? WHERE id = ? AND org_id = ?", b.name, b.board ?? null, req.params.id, req.user!.org_id);
   if (!r.changes) return res.status(404).json({ error: "Course not found" });
   run("UPDATE batches SET course = ? WHERE course_id = ?", b.name, req.params.id); // keep the old text column in step
   res.json({ ok: true });
 });
 orgRoutes.delete("/courses/:id", adminOnly, (req, res) => {
-  const used = one<{ n: number }>("SELECT count(*) n FROM batches WHERE course_id = ?", req.params.id)!.n;
+  const used = one<{ n: number }>("SELECT count(*) n FROM batches WHERE course_id = ? AND org_id = ?", req.params.id, req.user!.org_id)!.n;
   if (used) return res.status(409).json({ error: `${used} batch${used > 1 ? "es use" : " uses"} this course. Move ${used > 1 ? "them" : "it"} to another course first.` });
   const r = run("DELETE FROM courses WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   if (!r.changes) return res.status(404).json({ error: "Course not found" });
@@ -138,12 +146,15 @@ orgRoutes.delete("/courses/:id", adminOnly, (req, res) => {
 orgRoutes.post("/courses/:id/subjects", adminOnly, (req, res) => {
   const { name } = z.object({ name: z.string().trim().min(1).max(80) }).parse(req.body);
   if (!one("SELECT 1 FROM courses WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id)) return res.status(404).json({ error: "Course not found" });
+  if (subjectTaken(req.params.id, name)) return res.status(409).json({ error: `This course already has the subject "${name}".` });
   const id = uid("sub");
   run("INSERT INTO subjects (id, org_id, course_id, name) VALUES (?,?,?,?)", id, req.user!.org_id, req.params.id, name);
   res.json({ id });
 });
 orgRoutes.put("/subjects/:id", adminOnly, (req, res) => {
   const { name } = z.object({ name: z.string().trim().min(1).max(80) }).parse(req.body);
+  const cur = one<{ course_id: string }>("SELECT course_id FROM subjects WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  if (cur && subjectTaken(cur.course_id, name, req.params.id)) return res.status(409).json({ error: `This course already has the subject "${name}".` });
   const r = run("UPDATE subjects SET name = ? WHERE id = ? AND org_id = ?", name, req.params.id, req.user!.org_id);
   if (!r.changes) return res.status(404).json({ error: "Subject not found" });
   res.json({ ok: true });
