@@ -15,6 +15,17 @@ services:
         value: "true"
       - key: EVAL_CONCURRENCY
         value: "3"
+      # Set these in the Render dashboard (secrets are never stored in this file):
+      - key: PLATFORM_CLAUDE_KEY
+        sync: false
+      - key: SUPER_ADMIN_EMAILS
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: REPORTS_FROM
+        value: "Veda Vidya <reports@vedavidya.co>"
+      - key: APP_URL
+        value: "https://app.vedavidya.co"
     disk:
       name: vedavidya-data
       mountPath: /data

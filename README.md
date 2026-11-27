@@ -95,7 +95,7 @@ A copy of the SQLite database is made daily with SQLite's online backup API into
 `scripts/mock-claude.mjs` imitates the Claude API, including streaming, its size limits and random 429/529 errors.
 `scripts/e2e-api.mjs` runs about 470 checks over every endpoint, including a 50-student upload and marking run, role and
 institute isolation, and cleanup. `scripts/e2e-institute.mjs` simulates a full institute: classes 8–12 with 20–30 students, 4 subject
-teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart. `scripts/e2e-ui-shell.mjs` checks the app shell in Chromium (menu, flyouts, breadcrumbs, search, toasts, skeletons, empty/error states, phone drawer, every page on a phone). `scripts/e2e-ui-phase2.mjs` drives the real pages in Chromium (credits panel, Platform page, Courses card, teacher note on mark changes); run it on a fresh server started with `SUPER_ADMIN_EMAILS=root-admin@example.com` and a `PLATFORM_CLAUDE_KEY` starting `sk-ant-test-valid` (the mock only accepts those).
+teachers and 21 tests, after which all 125 students sign in and must see only their own results. `scripts/e2e-restart.mjs` checks that marking resumes after a restart. `scripts/e2e-ui-phase4.mjs` walks through the Phase 4 screens (home, batches, onboarding, papers, import, paper editor, tests, test details, class scan → review pages → marking, report card, send reports; start the server with `RESEND_API_KEY=re_test_key RESEND_BASE_URL=http://localhost:4999` so the mock stands in for Resend). `scripts/unit-sheetmap.ts` checks how scanned pages are grouped into students. `scripts/e2e-ui-shell.mjs` checks the app shell in Chromium (menu, flyouts, breadcrumbs, search, toasts, skeletons, empty/error states, phone drawer, every page on a phone). `scripts/e2e-ui-phase2.mjs` drives the real pages in Chromium (credits panel, Platform page, Courses card, teacher note on mark changes); run it on a fresh server started with `SUPER_ADMIN_EMAILS=root-admin@example.com` and a `PLATFORM_CLAUDE_KEY` starting `sk-ant-test-valid` (the mock only accepts those).
 
 ```bash
 MOCK_FAIL_RATE=0.3 node scripts/mock-claude.mjs
@@ -168,6 +168,11 @@ Run `npm audit --omit=dev` before each release.
 | `BACKUP_DIR` / `BACKUP_KEEP` | `DATA_DIR/backups` / `14` | Where daily database backups go, and how many are kept |
 | `RENDER_CONCURRENCY` | `1` | Uploads turned into page images in parallel (CPU and memory heavy) |
 | `JOB_BACKOFF_SCALE` | `1` | Multiplies retry waits (tests use a small value) |
+| `PLATFORM_CLAUDE_KEY` | empty | The platform's Claude key, used by every institute without its own key (paid with credits) |
+| `RESEND_API_KEY` | empty | Resend key for emailing report cards (Send Reports). Without it, only WhatsApp links are offered |
+| `REPORTS_FROM` | `Veda Vidya <reports@vedavidya.co>` | Sender of report emails; the domain must be verified in Resend |
+| `APP_URL` | `https://app.vedavidya.co` | Public address used in links inside emails |
+| `REPORT_EMAILS_PER_DAY` | `2000` | Most report emails one institute can send in a day |
 
 ## Deploy (app.vedavidya.co)
 

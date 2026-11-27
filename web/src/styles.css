@@ -722,3 +722,5 @@ body:not(:has(.shell)) .toasts { left: 16px; }
 .topic-tip span { opacity: .85; }
 @media (max-width: 600px) { .topic-row { grid-template-columns: minmax(0, 110px) minmax(0, 1fr) 40px; } }
 .rank-card > .badge { justify-self: start; }
+.send-table { max-height: 50vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.send-table th { position: sticky; top: 0; background: var(--surface) !important; z-index: 1; }

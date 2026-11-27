@@ -1077,6 +1077,56 @@ section("AI grading (D6): strict shape, long sheets in chunks, doubtful sheets r
   await call("DELETE", `/batches/${gb}`, { token: admin });
 }
 
+section("Send reports by email (Resend) and log every send");
+{
+  const MOCK = process.env.MOCK_URL ?? "http://localhost:4999";
+  const sb = (await call("POST", "/batches", { token: admin, body: { name: `Send ${Date.now()}` } })).data.id;
+  const tag = Date.now();
+  await expect("students with parent emails", 200, "POST", "/students/import", { token: admin, body: { batch_id: sb, rows: [
+    { name: "Mail One", roll_no: "1", parent_email: `p1-${tag}@example.com`, email: `s1-${tag}@example.com` },
+    { name: "Mail Two", roll_no: "2", parent_email: `bounce-${tag}@example.com` },
+    { name: "Mail Three", roll_no: "3" },
+  ] } });
+  const stt = (await expect("send test", 200, "POST", "/tests", { token: teacher, body: { title: "Send test", paper_id: aiPaper.id, mode: "offline", batch_ids: [sb] } })).data.id;
+  const sa = (await call("GET", `/tests/${stt}`, { token: teacher })).data.attempts;
+  for (const a of sa) await call("POST", `/attempts/${a.id}/files`, { token: teacher, body: { upload_ids: await uploadAll(API, teacher, [["s.jpg", await jpeg(500, 700, a.student_name)]], "student_sheet") } });
+  await waitProcessed(API, teacher, stt);
+  await call("POST", `/tests/${stt}/evaluate`, { token: teacher, body: {} });
+  await poll(() => call("GET", `/tests/${stt}`, { token: teacher }).then((x) => x.data), (d) => d.attempts.every((a) => a.status === "evaluated" || a.status === "failed"));
+  await expect("can't send before publishing", 400, "POST", `/tests/${stt}/send-reports`, { token: teacher, body: {} });
+  await expect("publish", 200, "POST", `/tests/${stt}/publish`, { token: teacher, body: { publish: true, practice: false } });
+  const before = (await expect("send list", 200, "GET", `/tests/${stt}/report-sends`, { token: teacher })).data;
+  ok(before.configured && before.published && before.students.length === 3 && before.from.includes("vedavidya.co"), `ready to send from ${before.from}`);
+  const emailsBefore = (await (await fetch(`${MOCK}/__emails`)).json()).length;
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ rejectEmail: [`bounce-${tag}@example.com`], emailFail: 1 }) });
+  const sent = await expect("send to parents", 200, "POST", `/tests/${stt}/send-reports`, { token: teacher, body: {} });
+  ok(sent.data.queued === 2 && sent.data.skipped.length === 1 && /no parent email/.test(sent.data.skipped[0].reason), `2 queued, 1 skipped (no email) ${JSON.stringify(sent.data.skipped)}`);
+  const after = await poll(() => call("GET", `/tests/${stt}/report-sends`, { token: teacher }).then((x) => x.data), (d) => d.counts.queued === 0);
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ rejectEmail: [], emailFail: 0 }) });
+  const one1 = after.students.find((x) => x.name === "Mail One").sends[0], two = after.students.find((x) => x.name === "Mail Two").sends[0];
+  ok(one1.status === "sent" && one1.channel === "email" && one1.recipient === "parent", "sent to Mail One's parent (after one temporary failure, retried)");
+  ok(two.status === "failed" && /Invalid/.test(two.error), `a rejected address is logged as failed (${two.error})`);
+  const mails = (await (await fetch(`${MOCK}/__emails`)).json()).slice(emailsBefore);
+  const m1 = mails.find((m) => m.to[0] === `p1-${tag}@example.com`);
+  ok(m1 && m1.attachments.length === 1 && m1.attachments[0].pdf && m1.attachments[0].bytes > 1000 && /Mail_One/.test(m1.attachments[0].filename), "the email carries the student's report card PDF");
+  ok(m1 && /Mail One/.test(m1.subject) && /Score: /.test(m1.text) && /\/report\//.test(m1.text) && /vedavidya\.co/.test(m1.from), "subject, score and online report link in the email");
+  ok(m1 && m1.reply_to, "replies go to the teacher who sent it");
+  const again = await expect("send again", 200, "POST", `/tests/${stt}/send-reports`, { token: teacher, body: {} });
+  ok(again.data.queued === 1 && again.data.skipped.some((x) => /already sent/.test(x.reason)), "already-sent reports aren't sent twice in a day (the failed one is retried)");
+  const resend = await expect("send again on purpose", 200, "POST", `/tests/${stt}/send-reports`, { token: teacher, body: { attempt_ids: [sa.find((a) => a.student_name === "Mail One").id], resend: true } });
+  ok(resend.data.queued === 1, "can resend on purpose");
+  const both = await expect("send to students too", 200, "POST", `/tests/${stt}/send-reports`, { token: teacher, body: { to: "student" } });
+  ok(both.data.queued === 1 && both.data.skipped.length === 2, "students with their own email get it");
+  await expect("log a WhatsApp send", 200, "POST", `/tests/${stt}/report-sends/whatsapp`, { token: teacher, body: { attempt_id: sa[2].id, to: "9876543210" } });
+  const fin = (await call("GET", `/tests/${stt}/report-sends`, { token: teacher })).data;
+  ok(fin.counts.whatsapp === 1 && fin.students.find((x) => x.attempt_id === sa[2].id).sends[0].channel === "whatsapp", "WhatsApp sends are logged");
+  await expect("another institute can't see the log", 404, "GET", `/tests/${stt}/report-sends`, { token: otherAdmin });
+  await expect("another institute can't send", 404, "POST", `/tests/${stt}/send-reports`, { token: otherAdmin, body: {} });
+  await call("DELETE", `/tests/${stt}`, { token: admin });
+  for (const st of (await call("GET", `/students?batch_id=${sb}`, { token: admin })).data) await call("DELETE", `/students/${st.id}`, { token: admin });
+  await call("DELETE", `/batches/${sb}`, { token: admin });
+}
+
 section("Manage tests: stats and results summary");
 {
   const st = await expect("test stats", 200, "GET", "/tests/stats", { token: teacher });

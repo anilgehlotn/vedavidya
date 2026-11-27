@@ -495,6 +495,34 @@ try {
     ok(!(await sp2.locator("input[type=number]").count()), "students can't change marks");
   }
 
+  // ------------------------------------------------------------------ Send reports
+  log("▸ Send reports");
+  const scanStudents = (await call("GET", `/students?batch_id=${sb}`, { token: admin })).data;
+  for (const [i, st] of scanStudents.slice(0, 3).entries())
+    await call("PUT", `/students/${st.id}`, { token: admin, body: { name: st.name, batch_id: sb, roll_no: st.roll_no ?? "", parent_email: `parent${i}-${s}@example.com`, parent_phone: "9876500000" } });
+  await call("POST", `/tests/${stid}/publish`, { token: admin, body: { publish: true, practice: false } });
+  await fp.goto(BASE + `/app/tests/${stid}`);
+  await fp.getByRole("button", { name: "✉ Send reports" }).click();
+  const sr = fp.getByRole("dialog", { name: "Send reports" });
+  ok(await visible(sr.getByText(/Sent from/)), "send window opens");
+  ok(await visible(sr.locator(".badge", { hasText: "1 without a parent email" })), "students without an email are counted");
+  ok(await sr.getByRole("button", { name: "✉ Email 3 reports" }).isEnabled(), "3 parents can be emailed");
+  await sr.getByLabel(`Send to ${scanStudents[0].name}`).uncheck();
+  ok(await visible(sr.getByRole("button", { name: "✉ Email 2 reports" })), "untick a student");
+  await sr.getByRole("button", { name: "✉ Email 2 reports" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: "Sending 2 reports." })), "sending started");
+  ok(await visible(sr.locator(".badge", { hasText: "2 sent" }), 30000), "both show as sent");
+  ok(await sr.locator("tbody .badge", { hasText: "✓ Sent" }).count() === 2, "each row shows its status");
+  ok(await visible(sr.getByRole("button", { name: "✉ Email 1 report" })), "afterwards only unsent reports are ticked");
+  await shot(fp, "p4-send");
+  await fp.evaluate(() => { window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null; }; });
+  await sr.locator("tr", { hasText: scanStudents[0].name }).getByRole("button", { name: "WhatsApp" }).click();
+  const opened = await fp.evaluate(() => window.__opened);
+  ok(/^https:\/\/wa\.me\/919876500000\?text=.*report/.test(opened[0] ?? ""), `WhatsApp opens with the parent's number and the report link (${(opened[0] ?? "").slice(0, 60)})`);
+  ok(await visible(sr.getByText(/WhatsApp opened/)), "WhatsApp send is logged");
+  const sends = (await call("GET", `/tests/${stid}/report-sends`, { token: admin })).data;
+  ok(sends.counts.sent === 2 && sends.counts.whatsapp === 1, "log matches");
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();

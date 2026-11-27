@@ -353,3 +353,20 @@ CREATE TABLE IF NOT EXISTS sheet_pages (
 );
 CREATE INDEX IF NOT EXISTS idx_sheet_pages_test ON sheet_pages(test_id);
 `);
+
+// ---- Phase 4: every report sent to a parent or student (email via Resend, or a WhatsApp link opened) ----
+db.exec(`
+CREATE TABLE IF NOT EXISTS report_sends (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  test_id TEXT NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+  attempt_id TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL CHECK (channel IN ('email','whatsapp')),
+  recipient TEXT NOT NULL CHECK (recipient IN ('parent','student')),
+  to_address TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','sent','failed','opened')),
+  provider_id TEXT, error TEXT, created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP, sent_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_report_sends_test ON report_sends(test_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_report_sends_org ON report_sends(org_id, created_at);
+`);

@@ -146,6 +146,7 @@ function streamText(res, model, text) {
 }
 
 const recent = [];
+const emails = [];
 http.createServer((req, res) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
@@ -156,6 +157,19 @@ http.createServer((req, res) => {
     if (url.pathname === "/__recent") return send(res, 200, recent);
     // Test control: the next N answers are unreadable text (to exercise the app's job retries).
     if (url.pathname === "/__mode") { try { Object.assign(mode, JSON.parse(Buffer.concat(chunks).toString() || "{}")); } catch { /* ignore */ } return send(res, 200, mode); }
+    // ---- Stand-in for the Resend email API (RESEND_BASE_URL=http://localhost:4999, key starting re_test) ----
+    if (url.pathname === "/__emails") return send(res, 200, emails);
+    if (req.method === "POST" && url.pathname === "/emails") {
+      if (!/^Bearer re_test/.test(String(req.headers.authorization ?? ""))) return send(res, 401, { statusCode: 401, name: "validation_error", message: "API key is invalid" });
+      let m; try { m = JSON.parse(Buffer.concat(chunks).toString()); } catch { return send(res, 422, { statusCode: 422, message: "bad json" }); }
+      if (!m.from || !Array.isArray(m.to) || !m.to.length || !m.subject || !(m.html || m.text)) return send(res, 422, { statusCode: 422, name: "validation_error", message: "Missing from/to/subject/body" });
+      if (mode.emailFail > 0) { mode.emailFail--; return send(res, 500, { statusCode: 500, message: "Internal server error" }); }
+      if ((mode.rejectEmail ?? []).includes(m.to[0])) return send(res, 422, { statusCode: 422, name: "validation_error", message: `Invalid \`to\` field: ${m.to[0]}` });
+      const id = `re_mock_${emails.length + 1}`;
+      emails.push({ id, from: m.from, to: m.to, subject: m.subject, reply_to: m.reply_to ?? null, text: m.text ?? "", html: m.html ?? "",
+        attachments: (m.attachments ?? []).map((a) => { const b = Buffer.from(a.content ?? "", "base64"); return { filename: a.filename, bytes: b.length, pdf: b.subarray(0, 5).toString() === "%PDF-" }; }) });
+      return send(res, 200, { id });
+    }
     const key = req.headers["x-api-key"] ?? String(req.headers.authorization ?? "").replace(/^Bearer /, "");
     if (!key || !VALID_KEY.test(String(key))) return apiError(res, 401, "authentication_error", "invalid x-api-key");
 

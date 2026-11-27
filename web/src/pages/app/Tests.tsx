@@ -605,6 +605,7 @@ export function TestDetail() {
                 {a.score != null && !DEMO && <button className="btn btn-ghost btn-sm" title="Download this student's report card" onClick={() => pdf(`/attempts/${a.id}/report.pdf`, `Roll_${a.roll_no ?? ""}_${a.student_name.replace(/\W+/g, "_")}`)}>PDF</button>}
                 {a.share_token && d.results_published && a.score != null ? <>
                   <a className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer" title={`Send on WhatsApp${a.parent_phone || a.phone ? ` to ${a.parent_phone || a.phone}` : ""}`}
+                    onClick={() => void api(`/tests/${d.id}/report-sends/whatsapp`, { body: { attempt_id: a.id, to: a.parent_phone || a.phone || "", recipient: a.parent_phone ? "parent" : "student" } }).catch(() => {})}
                     href={`https://wa.me/${waNumber(a.parent_phone || a.phone)}?text=${encodeURIComponent(resultMessage(a, d.title, org?.name ?? ""))}`}>WhatsApp</a>
                   <button className="btn btn-ghost btn-sm" title="Copy report link" onClick={() => copyLink(a.share_token!)}>🔗</button>
                 </> : null}
