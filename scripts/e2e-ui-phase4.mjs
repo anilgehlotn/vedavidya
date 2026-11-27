@@ -84,6 +84,69 @@ try {
   ok(await visible(f.locator(".state", { hasText: "No batches yet" })), "new institute: chart empty state");
   ok(await visible(f.locator(".state", { hasText: "No students yet" })), "new institute: students empty state");
 
+  // ------------------------------------------------------------------ Batches
+  log("▸ Batches");
+  await p.goto(BASE + "/app/batches");
+  const cards = p.locator(".batch-card");
+  ok(await visible(cards), "batches show as cards");
+  const total = await cards.count();
+  ok(total === 3, `all demo batches (${total})`);
+  ok(/Students/.test(await cards.first().innerText()) && /Average/.test(await cards.first().innerText()), "cards show students, tests and average");
+  await p.getByLabel("Search batches").fill("alpha");
+  ok(await cards.count() === 1, "search narrows the cards");
+  await p.getByLabel("Search batches").fill("zzz");
+  ok(await visible(p.locator(".state", { hasText: "No batches match" })), "no-match state");
+  await p.getByRole("button", { name: "Clear search and filters" }).click();
+  ok(await cards.count() === total, "clearing shows all");
+  await p.getByLabel("Course").selectOption({ label: "JEE Main" });
+  await sleep(200);
+  ok(await cards.count() === 2, "course filter");
+  await p.getByLabel("Course").selectOption("");
+  await p.getByRole("button", { name: "List" }).click();
+  ok(await visible(p.locator("table.t th", { hasText: "Lead teacher" })), "list view");
+  await p.reload();
+  ok(await visible(p.locator("table.t th", { hasText: "Lead teacher" })), "list view is remembered");
+  await p.getByRole("button", { name: "Cards" }).click();
+  await p.getByRole("tab", { name: /Centres/ }).click();
+  ok(await visible(p.locator("table.t", { hasText: "City" })), "Centres tab");
+  await p.getByRole("tab", { name: /Courses/ }).click();
+  ok(await visible(p.locator(".card", { hasText: "Courses & subjects" })), "Courses tab");
+  await shot(p, "p4-batches");
+
+  // Moving students (new institute, so the demo data stays untouched)
+  const fb = await pageAs(admin);
+  await fb.goto(BASE + "/app/batches");
+  ok(await visible(fb.locator(".state", { hasText: "No batches yet" })), "new institute: empty state");
+  for (const name of ["Morning", "Evening"]) {
+    await fb.getByRole("button", { name: "+ Batch" }).first().click();
+    await fb.getByPlaceholder("e.g. NEET 2027 - Morning").fill(name);
+    await fb.getByPlaceholder("e.g. 10th CBSE").fill("10th CBSE");
+    await fb.getByLabel("Start date").fill("2026-06-01");
+    await fb.getByRole("button", { name: "Create batch" }).click();
+    ok(await visible(fb.locator(".toast", { hasText: `Batch "${name}" created.` })), `batch ${name} created`);
+  }
+  const fbatches = (await call("GET", "/batches", { token: admin })).data;
+  const morning = fbatches.find((b) => b.name === "Morning"), evening = fbatches.find((b) => b.name === "Evening");
+  ok(morning.start_date === "2026-06-01" && morning.course_name === "10th CBSE", "start date and course saved");
+  await call("POST", "/students/bulk", { token: admin, body: { batch_id: morning.id, csv: "Ravi Kumar,1\nSita Devi,2\nAmit Shah,3" } });
+  await call("POST", "/students/bulk", { token: admin, body: { batch_id: evening.id, csv: "Neha Joshi,2" } });
+  await fb.reload();
+  const mcard = fb.locator(".batch-card", { hasText: "Morning" });
+  ok(/Started/.test(await mcard.innerText()), "card shows the start date");
+  await mcard.getByRole("button", { name: "Move students" }).click();
+  const dlg = fb.getByRole("dialog");
+  ok(await visible(dlg.getByText("3 of 3 selected")), "everyone selected at first");
+  await dlg.getByLabel("Ravi Kumar").uncheck();
+  ok(await visible(dlg.getByText("2 of 3 selected")), "untick one");
+  await dlg.getByRole("button", { name: "Move 2 students" }).click();
+  ok(await visible(fb.locator(".toast", { hasText: "Moved 2 students to Evening." })), "move confirmed");
+  ok(await visible(fb.locator(".toast", { hasText: /Roll numbers already used in Evening/ })), "roll number clash explained");
+  await sleep(500);
+  ok((await fb.locator(".batch-card", { hasText: "Evening" }).locator(".batch-stats").innerText()).startsWith("3"), "Evening now has 3 students");
+  fb.once("dialog", (d) => d.accept());
+  await fb.locator(".batch-card", { hasText: "Morning" }).getByRole("button", { name: "Delete Morning" }).click();
+  ok(await visible(fb.locator(".toast", { hasText: 'Batch "Morning" deleted.' })), "delete batch");
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();

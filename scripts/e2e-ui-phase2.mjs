@@ -113,7 +113,7 @@ try {
   await shot(r, "platform");
 
   log("▸ Courses card");
-  await p.goto(BASE + "/app/batches");
+  await p.goto(BASE + "/app/batches?tab=courses");
   const card = p.locator(".card", { hasText: "Courses & subjects" });
   ok(await visible(card), "Courses card is on the batches page");
   ok(await visible(card.getByText("10th CBSE")), "the batch's course was created automatically");

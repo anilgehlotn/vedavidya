@@ -300,6 +300,26 @@ section("Teacher review, publish, reports");
       ok(f.cards.batches.total === byCourse.batches.length && f.courses.length === 1, "course filter narrows batches");
       ok(f.cards.students.total > 0 && f.cards.students.total <= byCourse.batches.reduce((t, b) => t + b.students, 0), "course filter narrows students");
     }
+    // Moving students between batches (own batches and students, removed afterwards).
+    const tag = Date.now();
+    const bA = (await expect("transfer: batch A", 200, "POST", "/batches", { token: admin, body: { name: `Move A ${tag}`, course: "Move Course" } })).data.id;
+    const b2 = (await expect("transfer: batch B", 200, "POST", "/batches", { token: admin, body: { name: `Move B ${tag}`, course: "Move Course" } })).data.id;
+    await call("POST", "/students/bulk", { token: admin, body: { batch_id: bA, csv: "Mover One,1\nMover Two,2\nMover Three,3" } });
+    await call("POST", "/students/bulk", { token: admin, body: { batch_id: b2, csv: "Stayer,3" } });
+    const inB = (await call("GET", `/students?batch_id=${bA}`, { token: teacher })).data;
+    await expect("move to the same batch rejected", 400, "POST", `/batches/${bA}/transfer`, { token: teacher, body: { to_batch_id: bA } });
+    await expect("move to another institute's batch rejected", 400, "POST", `/batches/${bA}/transfer`, { token: teacher, body: { to_batch_id: "bat_nope" } });
+    await expect("another institute can't move my students", 404, "POST", `/batches/${bA}/transfer`, { token: otherAdmin, body: { to_batch_id: b2 } });
+    const mv = await expect("move 2 students", 200, "POST", `/batches/${bA}/transfer`, { token: teacher, body: { to_batch_id: b2, student_ids: [inB[0].id, inB[1].id] } });
+    ok(mv.data.moved === 2 && mv.data.roll_cleared.length === 0, "2 moved");
+    ok((await call("GET", `/students?batch_id=${b2}`, { token: teacher })).data.length === 3 && (await call("GET", `/students?batch_id=${bA}`, { token: teacher })).data.length === 1, "batch counts follow");
+    const mv2 = await expect("move a student whose roll is taken", 200, "POST", `/batches/${bA}/transfer`, { token: teacher, body: { to_batch_id: b2 } });
+    ok(mv2.data.moved === 1 && mv2.data.roll_cleared.length === 1 && mv2.data.roll_cleared[0] === "Mover Three", "roll number clash reported");
+    ok((await call("GET", `/students?batch_id=${b2}`, { token: teacher })).data.find((x) => x.name === "Mover Three").roll_no === null, "clashing roll number cleared");
+    const bl = (await call("GET", "/batches", { token: teacher })).data.find((x) => x.id === batch);
+    ok(typeof bl.test_count === "number" && bl.test_count >= 1 && bl.avg_pct != null, `batch list has tests and average (${bl.test_count}, ${bl.avg_pct}%)`);
+    for (const st of (await call("GET", `/students?batch_id=${b2}`, { token: teacher })).data) await call("DELETE", `/students/${st.id}`, { token: admin });
+    await call("DELETE", `/batches/${bA}`, { token: admin }); await call("DELETE", `/batches/${b2}`, { token: admin });
     const none = (await expect("overview filtered by an unknown centre", 200, "GET", "/overview?centre_id=nope", { token: teacher })).data;
     ok(none.cards.students.total === 0 && none.cards.batches.total === 0 && none.recentTests.length === 0, "unknown centre shows nothing (no other institute's data)");
   }

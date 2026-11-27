@@ -481,3 +481,27 @@ kbd { font: inherit; font-size: 11px; border: 1px solid var(--line-2); border-ra
   .stat-grid .value { font-size: 26px !important; }
   .stat-grid .trend .muted { display: none; }
 }
+
+/* ---------- Batches ---------- */
+.search-field { position: relative; flex: 1 1 220px; max-width: 320px; }
+.search-field .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.search-field .input { padding-left: 36px; width: 100%; min-width: 0; }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; margin-left: auto; background: var(--surface); }
+.seg button { border: 0; background: transparent; padding: 8px 11px; cursor: pointer; color: var(--muted); display: inline-grid; place-items: center; }
+.seg button.on { background: var(--ink); color: #fff; }
+.batch-card { display: flex; flex-direction: column; gap: 14px; }
+.batch-name { font-size: 17px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-stats { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 10px; }
+.batch-stats > * { padding: 10px 12px; text-decoration: none; color: inherit; display: grid; }
+.batch-stats > * + * { border-left: 1px solid var(--line); }
+.batch-stats b { font-size: 20px; font-weight: 600; }
+.batch-stats span { font-size: 12px; color: var(--muted); }
+.batch-stats a:hover { background: var(--bg-2); }
+.batch-actions { gap: 6px; margin-top: auto; }
+td .batch-actions { justify-content: flex-end; flex-wrap: nowrap; }
+.check-list { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+.check-list label { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.check-list label:last-child { border-bottom: 0; }
+.check-list label:hover { background: var(--bg-2); }
+.btn-icon { padding: 6px 8px; }
+.batch-card .batch-actions .btn-icon { margin-left: auto; }

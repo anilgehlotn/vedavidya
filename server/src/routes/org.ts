@@ -3,7 +3,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { z } from "zod";
-import { all, one, run, uid, bumpTokenVersion } from "../db.js";
+import { all, db, one, run, uid, bumpTokenVersion } from "../db.js";
 import { storage } from "../lib/storage.js";
 import { deleteDocuments } from "../lib/documents.js";
 import { studentDocuments, studentFiles } from "./tests.js";
@@ -101,7 +101,11 @@ orgRoutes.delete("/centres/:id", adminOnly, (req, res) => {
 // ---- Batches
 orgRoutes.get("/batches", staff, (req, res) => {
   res.json(all(`SELECT b.*, c.name AS centre_name, u.name AS teacher_name, co.name AS course_name,
-      (SELECT count(*) FROM enrollments e WHERE e.batch_id = b.id) AS student_count
+      (SELECT count(*) FROM enrollments e WHERE e.batch_id = b.id) AS student_count,
+      (SELECT count(*) FROM test_batches tb WHERE tb.batch_id = b.id) AS test_count,
+      (SELECT round(avg(a.score * 100.0 / a.max_score)) FROM enrollments e JOIN attempts a ON a.student_id = e.student_id
+        JOIN test_batches tb ON tb.test_id = a.test_id AND tb.batch_id = b.id
+        WHERE e.batch_id = b.id AND a.score IS NOT NULL AND a.max_score > 0) AS avg_pct
     FROM batches b LEFT JOIN centres c ON c.id = b.centre_id LEFT JOIN users u ON u.id = b.teacher_id LEFT JOIN courses co ON co.id = b.course_id
     WHERE b.org_id = ? ORDER BY c.name, b.name`, req.user!.org_id));
 });
@@ -205,6 +209,31 @@ orgRoutes.delete("/subjects/:id", adminOnly, (req, res) => {
   const r = run("DELETE FROM subjects WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   if (!r.changes) return res.status(404).json({ error: "Subject not found" });
   res.json({ ok: true });
+});
+/**
+ * Moves students to another batch (all of them, or `student_ids`). A student whose roll number is already used
+ * in the new batch keeps no roll number there; the reply lists them so the teacher can set new ones.
+ */
+orgRoutes.post("/batches/:id/transfer", staff, (req, res) => {
+  const org = req.user!.org_id;
+  const b = z.object({ to_batch_id: z.string().max(60), student_ids: z.array(z.string().max(60)).max(5000).optional() }).parse(req.body);
+  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", req.params.id, org)) return res.status(404).json({ error: "Batch not found" });
+  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", b.to_batch_id, org)) return res.status(400).json({ error: "Pick a batch from your institute to move them to" });
+  if (b.to_batch_id === req.params.id) return res.status(400).json({ error: "Pick a different batch" });
+  const rows = all<{ student_id: string; roll_no: string | null; name: string }>(`SELECT e.student_id, e.roll_no, u.name FROM enrollments e JOIN users u ON u.id = e.student_id
+    WHERE e.batch_id = ?`, req.params.id).filter((r) => !b.student_ids || b.student_ids.includes(r.student_id));
+  if (!rows.length) return res.status(400).json({ error: "No students to move" });
+  const rollCleared: string[] = [];
+  db.exec("BEGIN");
+  try {
+    for (const r of rows) {
+      const clash = r.roll_no && one("SELECT 1 FROM enrollments WHERE batch_id = ? AND roll_no = ? AND student_id != ?", b.to_batch_id, r.roll_no, r.student_id);
+      if (clash) rollCleared.push(r.name);
+      run("UPDATE enrollments SET batch_id = ?, roll_no = ? WHERE student_id = ? AND batch_id = ?", b.to_batch_id, clash ? null : r.roll_no, r.student_id, req.params.id);
+    }
+    db.exec("COMMIT");
+  } catch (e) { db.exec("ROLLBACK"); throw e; }
+  res.json({ moved: rows.length, roll_cleared: rollCleared });
 });
 orgRoutes.delete("/batches/:id", adminOnly, (req, res) => {
   run("DELETE FROM batches WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
