@@ -307,3 +307,15 @@ addColumn("orgs", "monthly_free_credits", "REAL"); // null = platform default
 }
 addColumn("question_papers", "updated_at", "TEXT");
 db.exec("UPDATE question_papers SET updated_at = created_at WHERE updated_at IS NULL");
+
+// ---- Phase 4: invite links (a student joins a batch from a shared link) ----
+db.exec(`
+CREATE TABLE IF NOT EXISTS invite_links (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+  token TEXT NOT NULL UNIQUE, created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  expires_at TEXT NOT NULL, max_uses INTEGER, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_invites_org ON invite_links(org_id, created_at);
+`);

@@ -937,6 +937,59 @@ section("Teacher corrections are kept for improving the marking");
   await expect("institute admin can't read all corrections", 403, "GET", "/admin/corrections", { token: admin });
 }
 
+section("Onboarding: spreadsheet import with preview, invite links");
+{
+  const ob = (await expect("onboarding batch", 200, "POST", "/batches", { token: admin, body: { name: `Onboard ${Date.now()}` } })).data.id;
+  const rows = [
+    { name: "Kavya Nair", roll_no: "1", phone: "9876543210", email: `kavya-${Date.now()}@example.com`, parent_phone: "9812345678" },
+    { name: "Rohan Das", roll_no: "2", phone: "98765 43211" },
+    { name: "", roll_no: "3" },
+    { name: "Zoya Khan", roll_no: "2", email: "not-an-email" },
+    { name: "Dev Malhotra", roll_no: "5", phone: "12" },
+    { name: "Dup Email", email: adminEmail },
+  ];
+  const dry = await expect("import preview (dry run)", 200, "POST", "/students/import", { token: teacher, body: { batch_id: ob, rows, dry_run: true } });
+  const e = dry.data.rows.map((r) => r.errors.join("; "));
+  ok(dry.data.valid === 2 && !e[0] && !e[1], `2 rows ready (${dry.data.valid})`);
+  ok(/Name is missing/.test(e[2]) && /Same roll number as row 2/.test(e[3]) && /Email doesn't look right/.test(e[3]) && /phone number/.test(e[4]) && /already used/.test(e[5]), `problems explained per row (${JSON.stringify(e)})`);
+  ok((await call("GET", `/students?batch_id=${ob}`, { token: teacher })).data.length === 0, "a dry run creates nobody");
+  const imp = await expect("import", 200, "POST", "/students/import", { token: teacher, body: { batch_id: ob, rows } });
+  ok(imp.data.created.length === 2 && imp.data.skipped.length === 4 && imp.data.created.every((c) => c.username && c.password), "valid rows added with logins, the rest skipped");
+  const again = await expect("import preview again", 200, "POST", "/students/import", { token: teacher, body: { batch_id: ob, rows: rows.slice(0, 1), dry_run: true } });
+  ok(/Roll number 1 is already used/.test(again.data.rows[0].errors.join()), "already-added roll numbers are caught");
+  await expect("import into another institute's batch rejected", 400, "POST", "/students/import", { token: otherAdmin, body: { batch_id: ob, rows } });
+  await expect("too many rows rejected", 400, "POST", "/students/import", { token: teacher, body: { batch_id: ob, rows: Array.from({ length: 1001 }, (_, i) => ({ name: `S${i}` })) } });
+
+  // Invite links
+  const inv = await expect("create invite link", 200, "POST", "/invites", { token: teacher, body: { batch_id: ob, days: 7, max_uses: 2 } });
+  ok(inv.data.token.length >= 20, "long random token");
+  await expect("other institute can't make a link for my batch", 400, "POST", "/invites", { token: otherAdmin, body: { batch_id: ob } });
+  ok(!(await call("GET", "/invites", { token: otherAdmin })).data.some((i) => i.id === inv.data.id), "other institutes don't see my links");
+  const info = await expect("open invite (no login)", 200, "GET", `/public/invite/${inv.data.token}`);
+  ok(info.data.batch.startsWith("Onboard") && info.data.institute && !info.data.org_id && !info.data.batch_id, "invite shows only the institute and batch names");
+  await expect("join needs a password", 400, "POST", `/public/invite/${inv.data.token}/join`, { body: { name: "No Pass" } });
+  const j1 = await expect("student joins", 200, "POST", `/public/invite/${inv.data.token}/join`, { body: { name: "Joiner One", roll_no: "11", phone: "9000000001", password: "joiner-pass-1" } });
+  ok(j1.data.token && j1.data.username, "joined and signed in");
+  const me = (await call("GET", "/me", { token: j1.data.token })).data;
+  ok(me.user.role === "student", "the new account is a student");
+  ok((await call("POST", "/auth/login", { body: { identifier: j1.data.username, password: "joiner-pass-1" } })).status === 200, "they can sign in with the password they chose");
+  ok((await call("GET", `/students?batch_id=${ob}`, { token: teacher })).data.some((x) => x.name === "Joiner One" && x.roll_no === "11"), "they are in the batch with their roll number");
+  await expect("roll number already used", 409, "POST", `/public/invite/${inv.data.token}/join`, { body: { name: "Joiner Clash", roll_no: "11", password: "joiner-pass-2" } });
+  ok((await call("GET", "/invites", { token: teacher })).data.find((i) => i.id === inv.data.id).uses === 1, "a failed join doesn't use up the link");
+  await expect("second student joins", 200, "POST", `/public/invite/${inv.data.token}/join`, { body: { name: "Joiner Two", password: "joiner-pass-2" } });
+  await expect("link full after 2", 410, "POST", `/public/invite/${inv.data.token}/join`, { body: { name: "Joiner Three", password: "joiner-pass-3" } });
+  await expect("full link says so", 410, "GET", `/public/invite/${inv.data.token}`);
+  const inv2 = (await call("POST", "/invites", { token: teacher, body: { batch_id: ob } })).data;
+  await expect("switch off a link", 200, "DELETE", `/invites/${inv2.id}`, { token: teacher });
+  await expect("switched-off link stops working", 404, "GET", `/public/invite/${inv2.token}`);
+  await expect("other institute can't switch off my link", 404, "DELETE", `/invites/${inv.data.id}`, { token: otherAdmin });
+  await expect("unknown link", 404, "GET", "/public/invite/not-a-real-token");
+  const demoAdmin = (await call("POST", "/auth/login", { body: { identifier: "admin@demo.school", password: "demo1234" } })).data.token;
+  if (demoAdmin) ok((await call("POST", "/invites", { token: demoAdmin, body: { batch_id: "x" } })).status === 403, "the demo institute can't make invite links");
+  for (const st of (await call("GET", `/students?batch_id=${ob}`, { token: teacher })).data) await call("DELETE", `/students/${st.id}`, { token: admin });
+  await call("DELETE", `/batches/${ob}`, { token: admin });
+}
+
 section("Security: roles");
 {
   const staffOnly = [["GET", "/overview"], ["GET", "/students"], ["GET", "/tests"], ["GET", "/papers"], ["GET", `/tests/${test}`], ["POST", `/tests/${test}/evaluate`], ["POST", `/tests/${test}/publish`],

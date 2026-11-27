@@ -6,6 +6,7 @@ import { api, csvCell, fmtDate, setToken } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { Empty, ErrorBox, ErrorState, Loading, Modal, PageTitle, SkeletonCards, SkeletonTable, useApi } from "../../components/ui";
 import { useRun, useToast } from "../../components/toast";
+import { OnboardModal } from "./Onboard";
 
 interface Centre { id: string; name: string; city: string | null; batch_count: number }
 interface Batch { id: string; name: string; course: string | null; start_date: string | null; centre_id: string | null; centre_name: string | null; teacher_id: string | null; teacher_name: string | null; student_count: number }
@@ -27,12 +28,11 @@ export function Students() {
   const batches = useApi<Batch[]>("/batches");
   const students = useApi<Student[]>(`/students${batchId ? `?batch_id=${batchId}` : ""}`);
   const [q, setQ] = useState("");
-  const [modal, setModal] = useState<null | "add" | "bulk" | { edit: Student }>(null);
+  const [modal, setModal] = useState<null | "onboard" | { edit: Student }>(null);
   const [creds, setCreds] = useState<{ name: string; username: string; password: string; roll_no?: string | null }[] | null>(null);
   const [skipped, setSkipped] = useState<{ line: number; reason: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const s = useForm({ name: "", roll_no: "", phone: "", email: "", batch_id: "", parent_name: "", parent_phone: "", parent_email: "" });
-  const [bulk, setBulk] = useState({ batch_id: "", csv: "" });
   const run = useRun();
   const toast = useToast();
 
@@ -40,7 +40,7 @@ export function Students() {
     setError(null);
     s.setF({ name: st?.name ?? "", roll_no: st?.roll_no ?? "", phone: st?.phone ?? "", email: st?.email ?? "", batch_id: st?.batch_id ?? batchId ?? batches.data?.[0]?.id ?? "",
       parent_name: st?.parent_name ?? "", parent_phone: st?.parent_phone ?? "", parent_email: st?.parent_email ?? "" });
-    setModal(st ? { edit: st } : "add");
+    if (st) setModal({ edit: st }); else setModal("onboard");
   };
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -49,16 +49,6 @@ export function Students() {
       else { const r = await api<{ name: string; username: string; password: string }>("/students", { body: s.f }); setCreds([r]); toast.success(`${s.f.name} added. Their login is shown below.`); }
       setModal(null); students.reload();
     } catch (err) { setError((err as Error).message); }
-  };
-  const saveBulk = async (e: FormEvent) => {
-    e.preventDefault();
-    try {
-      const r = await api<{ created: { name: string; username: string; password: string }[]; skipped: { line: number; reason: string }[] }>("/students/bulk", { body: bulk });
-      setCreds(r.created); setSkipped(r.skipped); setModal(null); students.reload();
-      if (r.created.length) toast.success(`${r.created.length} student${r.created.length === 1 ? "" : "s"} added.`);
-      if (r.skipped.length) toast.error(`${r.skipped.length} line${r.skipped.length === 1 ? " was" : "s were"} not added. See the list below.`);
-    }
-    catch (err) { setError((err as Error).message); }
   };
   const batchLogins = async () => {
     const b = batches.data?.find((x) => x.id === batchId);
@@ -86,8 +76,7 @@ export function Students() {
     <>
       <PageTitle title="Students" sub={`${students.data?.length ?? 0} students${batchId ? " in this batch" : ""}`}>
         {batchId && isAdmin && <button className="btn btn-ghost" onClick={batchLogins}>Logins for this batch</button>}
-        <button className="btn btn-ghost" onClick={() => { setError(null); setBulk({ batch_id: batchId || batches.data?.[0]?.id || "", csv: "" }); setModal("bulk"); }}>Bulk add</button>
-        <button className="btn btn-primary" onClick={() => open()}>+ Student</button>
+        <button className="btn btn-primary" onClick={() => setModal("onboard")}>+ Onboard students</button>
       </PageTitle>
       <div className="row wrap" style={{ marginBottom: 14 }}>
         <input className="input" style={{ maxWidth: 280 }} placeholder="Search name, roll no, phone…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -131,8 +120,12 @@ export function Students() {
           : <Empty title="No students yet" icon="student" action={<button className="btn btn-primary btn-sm" onClick={() => open()}>+ Student</button>}>Add students one by one or paste a list with “Bulk add”.</Empty>}
       </div>
 
-      {modal && modal !== "bulk" && (
-        <Modal title={typeof modal === "object" ? "Edit student" : "Add student"} onClose={() => setModal(null)}>
+      {modal === "onboard" && (
+        <OnboardModal batches={batches.data ?? []} defaultBatch={batchId} onClose={() => setModal(null)}
+          onCreated={(logins, sk) => { if (logins.length) setCreds(logins); setSkipped(sk ?? []); students.reload(); batches.reload(true); }} />
+      )}
+      {modal && typeof modal === "object" && (
+        <Modal title="Edit student" onClose={() => setModal(null)}>
           <form className="stack" onSubmit={save}>
             <div className="grid g2">
               <label className="field"><span>Full name *</span><input className="input" required value={s.f.name} onChange={s.set("name")} /></label>
@@ -144,19 +137,7 @@ export function Students() {
               <label className="field"><span>Parent phone</span><input className="input" value={s.f.parent_phone} onChange={s.set("parent_phone")} /></label>
               <label className="field"><span>Parent email</span><input className="input" value={s.f.parent_email} onChange={s.set("parent_email")} /></label>
             </div>
-            <ErrorBox error={error} /><button className="btn btn-primary">{typeof modal === "object" ? "Save" : "Add & create login"}</button>
-          </form>
-        </Modal>
-      )}
-      {modal === "bulk" && (
-        <Modal title="Bulk add students" onClose={() => setModal(null)}>
-          <form className="stack" onSubmit={saveBulk}>
-            <label className="field"><span>Batch</span><select className="input" required value={bulk.batch_id} onChange={(e) => setBulk({ ...bulk, batch_id: e.target.value })}><option value="">Select…</option>{batches.data?.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
-            <label className="field"><span>One student per line: name, roll no, phone, email, parent phone</span>
-              <textarea className="input" rows={8} required value={bulk.csv} onChange={(e) => setBulk({ ...bulk, csv: e.target.value })} placeholder={"Aarav Sharma, 1, 9876543210, , 9812345678\nIsha Patel, 2, 9876500000"} />
-            </label>
-            <p className="small muted">Tip: paste straight from Excel or Google Sheets after saving as CSV. Logins are generated automatically.</p>
-            <ErrorBox error={error} /><button className="btn btn-primary">Add students</button>
+            <ErrorBox error={error} /><button className="btn btn-primary">Save</button>
           </form>
         </Modal>
       )}

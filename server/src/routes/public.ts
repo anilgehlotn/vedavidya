@@ -10,6 +10,7 @@ import { isSuperAdmin } from "./admin.js";
 import { CHUNK_BYTES, LIMITS, MAX_IMAGE_BYTES } from "../lib/limits.js";
 import { requireAuth, signToken, type AuthUser } from "../auth.js";
 import { rateLimit } from "../ratelimit.js";
+import { createStudent } from "./org.js";
 
 export const publicRoutes = Router();
 
@@ -67,6 +68,42 @@ publicRoutes.post("/auth/register", signupLimit, (req, res) => {
     userId, orgId, body.name, body.email.toLowerCase(), bcrypt.hashSync(body.password, 10));
   const user: AuthUser = { id: userId, org_id: orgId, role: "admin", name: body.name, email: body.email.toLowerCase() };
   res.json({ token: signToken(user), user });
+});
+
+// ---- Joining a batch from an invite link (no login) ----
+const joinLimit = rateLimit("invite-join", 200, 60 * 60 * 1000); // a whole class may join from one school Wi-Fi
+type Invite = { id: string; org_id: string; batch_id: string; expires_at: string; max_uses: number | null; uses: number; revoked: number; institute: string; batch: string; is_demo: number };
+function liveInvite(token: string): { invite?: Invite; problem?: [number, string] } {
+  const invite = one<Invite>(`SELECT i.*, o.name AS institute, b.name AS batch, o.is_demo FROM invite_links i JOIN orgs o ON o.id = i.org_id JOIN batches b ON b.id = i.batch_id
+    WHERE i.token = ?`, token);
+  if (!invite || invite.revoked) return { problem: [404, "This invite link isn't valid. Ask your teacher for a new one."] };
+  if (Date.parse(invite.expires_at) < Date.now()) return { problem: [410, "This invite link has expired. Ask your teacher for a new one."] };
+  if (invite.max_uses != null && invite.uses >= invite.max_uses) return { problem: [410, "This invite link has been used the maximum number of times. Ask your teacher for a new one."] };
+  if (invite.is_demo) return { problem: [403, "The demo institute can't take new students."] };
+  return { invite };
+}
+publicRoutes.get("/public/invite/:token", (req, res) => {
+  const { invite, problem } = liveInvite(req.params.token);
+  if (!invite) return res.status(problem![0]).json({ error: problem![1] });
+  res.json({ institute: invite.institute, batch: invite.batch, expires_at: invite.expires_at });
+});
+publicRoutes.post("/public/invite/:token/join", joinLimit, (req, res) => {
+  const { invite, problem } = liveInvite(req.params.token);
+  if (!invite) return res.status(problem![0]).json({ error: problem![1] });
+  const b = z.object({
+    name: z.string().trim().min(2, "Enter your full name").max(100), roll_no: z.string().trim().max(20).optional(),
+    phone: z.string().trim().max(20).optional(), email: z.string().trim().email("Enter a valid email").max(200).optional().or(z.literal("")),
+    parent_phone: z.string().trim().max(20).optional(), password: z.string().min(8, "Choose a password of at least 8 characters").max(200),
+  }).parse(req.body);
+  // Count the use first (atomically), so two people can't both take the last place.
+  const took = run("UPDATE invite_links SET uses = uses + 1 WHERE id = ? AND (max_uses IS NULL OR uses < max_uses)", invite.id);
+  if (!took.changes) return res.status(410).json({ error: "This invite link has been used the maximum number of times. Ask your teacher for a new one." });
+  let s;
+  try { s = createStudent(invite.org_id, { name: b.name, roll_no: b.roll_no || undefined, phone: b.phone || undefined, email: b.email || "", parent_phone: b.parent_phone || undefined, batch_id: invite.batch_id }); }
+  catch (e) { run("UPDATE invite_links SET uses = uses - 1 WHERE id = ?", invite.id); return res.status((e as { status?: number }).status ?? 400).json({ error: (e as Error).message }); }
+  run("UPDATE users SET password_hash = ? WHERE id = ?", bcrypt.hashSync(b.password, 10), s.id);
+  const user: AuthUser = { id: s.id, org_id: invite.org_id, role: "student", name: s.name, email: b.email ? b.email.toLowerCase() : null };
+  res.json({ token: signToken(user), username: s.username, institute: invite.institute, batch: invite.batch });
 });
 
 publicRoutes.get("/me", requireAuth, (req, res) => {

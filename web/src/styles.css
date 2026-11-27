@@ -505,3 +505,15 @@ td .batch-actions { justify-content: flex-end; flex-wrap: nowrap; }
 .check-list label:hover { background: var(--bg-2); }
 .btn-icon { padding: 6px 8px; }
 .batch-card .batch-actions .btn-icon { margin-left: auto; }
+
+/* ---------- Onboard students ---------- */
+.dropzone { display: grid; justify-items: center; gap: 6px; text-align: center; padding: 32px 16px; border: 2px dashed var(--line-2); border-radius: 12px; background: var(--bg-2); cursor: pointer; color: var(--ink-2); transition: border-color .15s, background .15s; }
+.dropzone:hover, .dropzone.over, .dropzone:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+.file-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; flex-wrap: wrap; }
+.preview-table { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.preview-table th { position: sticky; top: 0; background: var(--surface) !important; z-index: 1; }
+tr.row-bad td { background: var(--red-soft); }
+.invite-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.invite-url { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.join-wrap { grid-template-columns: 1fr !important; }
+.join-wrap .auth-form { max-width: 560px; margin: 0 auto; }

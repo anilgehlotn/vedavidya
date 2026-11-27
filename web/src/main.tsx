@@ -15,6 +15,7 @@ import Home from "./pages/site/Home";
 import About from "./pages/site/About";
 import Contact from "./pages/site/Contact";
 import Login from "./pages/site/Login";
+import Join from "./pages/site/Join";
 import PublicReport from "./pages/site/PublicReport";
 import AppLayout from "./pages/app/AppLayout";
 import Overview from "./pages/app/Overview";
@@ -45,6 +46,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="/contact" element={<Contact />} />
           </Route>
           <Route path="/login" element={<Login />} />
+          <Route path="/join/:token" element={<Join />} />
           <Route path="/report/:token" element={<PublicReport />} />
           <Route path="/exam/:testId" element={<CbtExam />} />
           <Route path="/app" element={<AppLayout />}>

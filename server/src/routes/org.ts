@@ -270,7 +270,7 @@ const StudentBody = z.object({
 const rollTaken = (batchId: string, roll: string | undefined, exceptStudent?: string) =>
   Boolean(roll) && Boolean(one("SELECT 1 FROM enrollments WHERE batch_id = ? AND lower(trim(roll_no)) = lower(?) AND student_id <> ?", batchId, roll!.trim(), exceptStudent ?? ""));
 
-function createStudent(orgId: string, s: z.infer<typeof StudentBody>) {
+export function createStudent(orgId: string, s: z.infer<typeof StudentBody>) {
   if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", s.batch_id, orgId)) throw new ClientError("Pick a batch from your institute");
   if (s.email && one("SELECT 1 FROM users WHERE lower(email) = ?", s.email.toLowerCase())) throw new ClientError(`The email ${s.email} is already used by another account`, 409);
   if (rollTaken(s.batch_id, s.roll_no)) throw new ClientError(`Roll number ${s.roll_no} is already used in this batch`, 409);
@@ -306,6 +306,67 @@ orgRoutes.post("/students/bulk", staff, (req, res) => {
     }
   });
   res.json({ created, skipped });
+});
+
+// Bulk onboarding from a spreadsheet the browser has read into rows. With dry_run nothing is created:
+// every row comes back with its problems, so the teacher can fix the file first.
+const ImportRow = z.object({
+  name: z.string().max(200).optional(), roll_no: z.string().max(40).optional(), phone: z.string().max(40).optional(), email: z.string().max(200).optional(),
+  parent_name: z.string().max(200).optional(), parent_phone: z.string().max(40).optional(), parent_email: z.string().max(200).optional(),
+});
+orgRoutes.post("/students/import", staff, (req, res) => {
+  const org = req.user!.org_id;
+  const b = z.object({ batch_id: z.string().max(60), rows: z.array(ImportRow).max(1000, "Add at most 1,000 students at a time"), dry_run: z.boolean().optional() }).parse(req.body);
+  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", b.batch_id, org)) return res.status(400).json({ error: "Pick a batch from your institute" });
+  const seenRoll = new Map<string, number>(), seenEmail = new Map<string, number>();
+  const checked = b.rows.map((r, i) => {
+    const row = Object.fromEntries(Object.entries(r).map(([k, v]) => [k, (v ?? "").trim()])) as Record<keyof typeof r, string>;
+    const errors: string[] = [];
+    if (!row.name) errors.push("Name is missing");
+    else if (row.name.length > 100) errors.push("Name is too long");
+    if (row.email && !z.string().email().safeParse(row.email).success) errors.push("Email doesn't look right");
+    else if (row.email && one("SELECT 1 FROM users WHERE lower(email) = ?", row.email.toLowerCase())) errors.push("Email is already used by another account");
+    if (row.parent_email && !z.string().email().safeParse(row.parent_email).success) errors.push("Parent email doesn't look right");
+    for (const [k, label] of [["phone", "Phone"], ["parent_phone", "Parent phone"]] as const)
+      if (row[k] && !/^[+\d][\d\s-]{6,18}$/.test(row[k])) errors.push(`${label} doesn't look like a phone number`);
+    if (row.roll_no) {
+      if (row.roll_no.length > 20) errors.push("Roll number is too long");
+      else if (rollTaken(b.batch_id, row.roll_no)) errors.push(`Roll number ${row.roll_no} is already used in this batch`);
+      const k = row.roll_no.toLowerCase();
+      if (seenRoll.has(k)) errors.push(`Same roll number as row ${seenRoll.get(k)! + 1}`); else seenRoll.set(k, i);
+    }
+    if (row.email) { const k = row.email.toLowerCase(); if (seenEmail.has(k)) errors.push(`Same email as row ${seenEmail.get(k)! + 1}`); else seenEmail.set(k, i); }
+    return { row, errors };
+  });
+  if (b.dry_run) return res.json({ rows: checked.map((c, i) => ({ line: i + 1, errors: c.errors })), valid: checked.filter((c) => !c.errors.length).length });
+  const created: ReturnType<typeof createStudent>[] = [];
+  const skipped: { line: number; reason: string }[] = [];
+  checked.forEach((c, i) => {
+    if (c.errors.length) return void skipped.push({ line: i + 1, reason: c.errors.join("; ") });
+    try { created.push(createStudent(org, StudentBody.parse({ ...c.row, email: c.row.email || "", batch_id: b.batch_id }))); }
+    catch (e) { skipped.push({ line: i + 1, reason: e instanceof ClientError ? e.message : "could not be added" }); }
+  });
+  res.json({ created, skipped });
+});
+
+// ---- Invite links: students join a batch themselves ----
+orgRoutes.get("/invites", staff, (req, res) => {
+  res.json(all(`SELECT i.id, i.token, i.batch_id, b.name AS batch_name, i.expires_at, i.max_uses, i.uses, i.revoked, i.created_at, u.name AS created_by_name
+    FROM invite_links i JOIN batches b ON b.id = i.batch_id LEFT JOIN users u ON u.id = i.created_by
+    WHERE i.org_id = ? ORDER BY i.created_at DESC LIMIT 100`, req.user!.org_id));
+});
+orgRoutes.post("/invites", staff, (req, res) => {
+  const b = z.object({ batch_id: z.string().max(60), days: z.number().int().min(1).max(30).default(7), max_uses: z.number().int().min(1).max(2000).nullable().optional() }).parse(req.body);
+  if (!one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", b.batch_id, req.user!.org_id)) return res.status(400).json({ error: "Pick a batch from your institute" });
+  const id = uid("inv"), token = crypto.randomBytes(18).toString("base64url");
+  const expires = new Date(Date.now() + b.days * 86400000).toISOString();
+  run("INSERT INTO invite_links (id, org_id, batch_id, token, created_by, expires_at, max_uses) VALUES (?,?,?,?,?,?,?)", id, req.user!.org_id, b.batch_id, token, req.user!.id, expires, b.max_uses ?? null);
+  res.json({ id, token, expires_at: expires });
+});
+orgRoutes.delete("/invites/:id", staff, (req, res) => {
+  const r = run("UPDATE invite_links SET revoked = 1 WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  if (!r.changes) return res.status(404).json({ error: "Link not found" });
+  res.json({ ok: true });
 });
 
 orgRoutes.put("/students/:id", staff, (req, res) => {

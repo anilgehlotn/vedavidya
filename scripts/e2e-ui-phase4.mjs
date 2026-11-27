@@ -147,6 +147,68 @@ try {
   await fb.locator(".batch-card", { hasText: "Morning" }).getByRole("button", { name: "Delete Morning" }).click();
   ok(await visible(fb.locator(".toast", { hasText: 'Batch "Morning" deleted.' })), "delete batch");
 
+  // ------------------------------------------------------------------ Onboard students
+  log("▸ Onboard students");
+  const evId = (await call("POST", "/batches", { token: admin, body: { name: "Imports" } })).data.id;
+  await fb.goto(BASE + `/app/students?batch=${evId}`);
+  await fb.getByRole("button", { name: "+ Onboard students" }).click();
+  const ob = fb.getByRole("dialog", { name: "Onboard students" });
+  ok(await visible(ob.getByRole("tab", { name: "Upload a file" })), "window opens on Upload a file");
+  ok((await ob.getByLabel("Batch").inputValue()) === evId, "the batch being viewed is chosen");
+  const fileInput = ob.locator("input[type=file]");
+  await fileInput.setInputFiles({ name: "old.xls", mimeType: "application/vnd.ms-excel", buffer: Buffer.from("x") });
+  ok(await visible(ob.getByText(/Old Excel files \(\.xls\) can't be read/)), "old .xls files get a clear message");
+  const dl = fb.waitForEvent("download");
+  await ob.getByRole("button", { name: /Download a sample file/ }).click();
+  ok((await dl).suggestedFilename() === "students-sample.csv", "sample CSV downloads");
+  await fileInput.setInputFiles(new URL("./fixtures/students.xlsx", import.meta.url).pathname);
+  ok(await visible(ob.locator(".file-card", { hasText: "students.xlsx" })), "Excel file read");
+  ok(/5 rows/.test(await ob.locator(".file-card").innerText()), "5 rows found (second sheet ignored)");
+  ok(await visible(ob.locator(".badge", { hasText: "2 ready to add" })), "2 rows ready");
+  ok(await visible(ob.locator(".badge", { hasText: "3 with problems" })), "3 rows with problems");
+  ok(await visible(ob.locator("tr.row-bad", { hasText: "Name is missing" })), "missing name shown on its row");
+  ok(await visible(ob.locator("tr.row-bad", { hasText: "Same roll number as row 2" })), "repeated roll number shown");
+  ok(await visible(ob.locator("tr", { hasText: "Kavya Nair" }).getByText("✓ OK")), "good rows are ticked");
+  await shot(fb, "p4-onboard-preview");
+  await ob.getByRole("button", { name: "Add 2 students and create logins" }).click();
+  ok(await visible(fb.locator(".toast", { hasText: "2 students added." })), "added");
+  ok(await visible(fb.getByText(/Login details/)), "logins are shown to hand out");
+  ok(await visible(fb.locator(".error-box", { hasText: "Line 3" })), "skipped rows are listed on the page");
+  ok(await visible(fb.locator("table.t td", { hasText: "Kavya Nair" })), "students appear in the list");
+
+  await fb.getByRole("button", { name: "+ Onboard students" }).click();
+  await ob.getByRole("tab", { name: "Invite link" }).click();
+  await fb.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await ob.getByRole("button", { name: "Create link" }).click();
+  ok(await visible(fb.locator(".toast", { hasText: "Invite link for Imports created." })), "invite link created");
+  const url = (await ob.locator(".invite-url").first().innerText()).trim();
+  ok(/\/join\/[\w-]{20,}$/.test(url), `link shown (${url})`);
+  ok(await visible(ob.getByRole("link", { name: "WhatsApp" })), "WhatsApp share");
+  await ob.getByRole("tab", { name: "Add one student" }).click();
+  await ob.getByLabel("Full name *").fill("Single Student");
+  await ob.getByLabel("Roll no").fill("40");
+  await ob.getByRole("button", { name: "Add & create login" }).click();
+  ok(await visible(fb.locator(".toast", { hasText: "Single Student added." })), "one student added");
+
+  log("▸ Joining from an invite link");
+  const jctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
+  const jp = await jctx.newPage();
+  jp.on("pageerror", (e) => errors.push(`join: ${e.message}`));
+  await jp.goto(url);
+  ok(await visible(jp.getByRole("heading", { name: "Join Imports" })), "join page names the batch");
+  ok(await visible(jp.getByText(`at Phase4 Academy ${s}`)), "and the institute");
+  await jp.getByLabel("Your full name *").fill("Link Joiner");
+  await jp.getByLabel("Roll no").fill("41");
+  await jp.getByLabel("Choose a password (8+ characters) *").fill("joiner-pass-9");
+  await shot(jp, "p4-join");
+  await jp.getByRole("button", { name: "Join and sign in" }).click();
+  await jp.waitForURL("**/app/my");
+  ok(await visible(jp.locator(".toast", { hasText: /Your username is/ })), "joined, signed in, told their username");
+  await jp.goto(BASE + "/join/not-a-real-link");
+  ok(await visible(jp.getByRole("heading", { name: "Link not working" })), "bad links explain themselves");
+  await jctx.close();
+  ok((await call("GET", `/students?batch_id=${evId}`, { token: admin })).data.some((x) => x.name === "Link Joiner" && x.roll_no === "41"), "the joiner is in the batch");
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();
