@@ -559,7 +559,8 @@ export function TestDetail() {
           {offline && d.uploads.length > 0 && (
             <ul className="upload-list">{d.uploads.map((u) => (
               <li key={u.id}><Icon name="paper" size={15} /><span className="grow ellipsis" title={u.title}>{u.title}</span><span className="small muted">{u.pages} p</span>
-                <span className={`badge ${u.status === "completed" ? "green" : u.status === "failed" ? "red" : "amber"}`}>{u.status === "completed" ? "Ready" : u.status === "failed" ? "Problem" : "Processing"}</span></li>
+                <span className={`badge ${u.status === "completed" ? "green" : u.status === "failed" ? "red" : "amber"}`}>{u.status === "completed" ? "Ready" : u.status === "failed" ? "Problem" : "Processing"}</span>
+                {u.status !== "failed" && <Link to={`/app/tests/${d.id}/review/${u.id}`} className="btn-link small">Review pages</Link>}</li>
             ))}</ul>
           )}
         </div>

@@ -1,6 +1,7 @@
 // The guided test flow: ① question paper → ② answer sheets → ③ AI marking → ④ publish.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { CreditLine } from "./Credits";
 import { api, blobUrl, DEMO } from "../../lib/api";
 import type { Paper } from "../../lib/types";
 import { ErrorBox, Modal, useApi } from "../../components/ui";
@@ -143,12 +144,16 @@ export function ClassUploadWizard({ t, uploads, onClose, onDone }: { t: FlowTest
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ students: number; pages: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [how, setHow] = useState<"ai" | "order">("ai");
+  const nav = useNavigate();
 
-  // Start processing as soon as the scan has finished uploading.
+  // Start processing as soon as the scan has finished uploading. With "AI finds each student" the teacher
+  // goes straight to the review screen, which fills in as the pages are read.
   useEffect(() => {
     if (!upl.length || uplBusy || docId) return;
-    api<{ document_id: string }>(`/tests/${t.id}/sheets`, { body: { upload_id: upl[0].id } })
-      .then((r) => setDocId(r.document_id)).catch((e) => setError((e as Error).message));
+    api<{ document_id: string }>(`/tests/${t.id}/sheets`, { body: { upload_id: upl[0].id, identify: how === "ai" } })
+      .then((r) => { if (how === "ai") nav(`/app/tests/${t.id}/review/${r.document_id}`); else setDocId(r.document_id); })
+      .catch((e) => setError((e as Error).message));
   }, [upl, uplBusy]); // eslint-disable-line react-hooks/exhaustive-deps
   // Follow the processing job until the pages are ready (or it fails).
   useEffect(() => {
@@ -196,19 +201,33 @@ export function ClassUploadWizard({ t, uploads, onClose, onDone }: { t: FlowTest
           </div>
         ) : (
           <>
-            {classes.length > 1 && (
+            {!docId && (
+              <fieldset className="field" style={{ border: 0, padding: 0, margin: 0 }}>
+                <legend className="step-label" style={{ marginBottom: 6 }}>How should pages be matched to students?</legend>
+                <div className="seg-choice" role="radiogroup">
+                  <label className={how === "ai" ? "on" : ""}><input type="radio" name="how" checked={how === "ai"} onChange={() => setHow("ai")} />
+                    <b>AI finds each student (recommended)</b><span className="small muted">Reads the name or roll number on each first page. Any order, any number of pages. You check the result.</span></label>
+                  <label className={how === "order" ? "on" : ""}><input type="radio" name="how" checked={how === "order"} onChange={() => setHow("order")} />
+                    <b>Roll-number order</b><span className="small muted">Sheets scanned in roll order, the same number of pages each.</span></label>
+                </div>
+              </fieldset>
+            )}
+            {how === "order" && classes.length > 1 && (
               <label className="field"><span>Which class are these sheets from?</span>
                 <select className="input" value={cls} onChange={(e) => { setCls(e.target.value); setTouched(false); }}>
                   <option value="">Choose…</option>{classes.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </label>
             )}
-            {cls && !docId && (
+            {(how === "ai" || cls) && !docId && (
               <>
-                <div className="tip-box small"><b>Easiest way:</b> put the sheets in <b>roll-number order</b> and scan them as one PDF (or a ZIP of PDFs/photos). Big files are fine: the upload resumes if the connection drops.</div>
+                <div className="tip-box small">{how === "ai"
+                  ? <><b>Tip:</b> make sure every student wrote their name or roll number at the top of their first page. Scan the whole class as one PDF (or a ZIP of PDFs/photos). Big files are fine: the upload resumes if the connection drops.</>
+                  : <><b>Easiest way:</b> put the sheets in <b>roll-number order</b> and scan them as one PDF (or a ZIP of PDFs/photos). Big files are fine: the upload resumes if the connection drops.</>}</div>
+                {how === "ai" && <span className="row wrap small" style={{ gap: 8 }}><CreditLine /><span className="muted">Finding students costs a small amount per page (see Settings → What things cost).</span></span>}
                 <FileUpload purpose="class_sheets" label="Class scan (PDF or ZIP)" onChange={(u, b) => { setUpl(u); setUplBusy(b); }} />
                 {earlier.length > 0 && (
-                  <div className="small">Or use an earlier upload: {earlier.map((u) => <button key={u.id} type="button" className="btn-link" style={{ marginRight: 10 }} onClick={() => setDocId(u.id)}>{u.title} ({u.pages} pages)</button>)}</div>
+                  <div className="small">Or use an earlier upload: {earlier.map((u) => <button key={u.id} type="button" className="btn-link" style={{ marginRight: 10 }} onClick={() => how === "ai" ? nav(`/app/tests/${t.id}/review/${u.id}`) : setDocId(u.id)}>{u.title} ({u.pages} pages)</button>)}</div>
                 )}
               </>
             )}

@@ -413,6 +413,61 @@ try {
   await p.goto(BASE + `/app/tests/${draftT.id}`);
   ok(await visible(p.locator(".next-banner:not(.done)")), `banner for an unfinished test (${await p.locator(".next-banner").innerText().catch(() => "")})`);
 
+  // ------------------------------------------------------------------ Class scan → review pages → mark
+  log("▸ Upload a class scan, review pages, approve and mark");
+  const MOCK = process.env.MOCK_URL ?? "http://localhost:4999";
+  const sb = (await call("POST", "/batches", { token: admin, body: { name: "Scan class" } })).data.id;
+  await call("POST", "/students/bulk", { token: admin, body: { batch_id: sb, csv: "Asha One,1\nBina Two,2\nChirag Three,3\nDev Four,4" } });
+  const sp = (await call("POST", "/papers", { token: admin, body: { title: "Scan paper", duration_min: 30, sections: [{ name: "A", instructions: "", questions: [mk("q1", "Solve $x+1=2$", 4)] }] } })).data.id;
+  await call("POST", `/papers/${sp}/approve`, { token: admin, body: {} });
+  const stid = (await call("POST", "/tests", { token: admin, body: { title: "Scan UI test", paper_id: sp, mode: "offline", batch_ids: [sb] } })).data.id;
+  const sdoc = await pdfLib.PDFDocument.create();
+  const sharp = require("sharp");
+  for (let i = 0; i < 8; i++) {
+    const jpg = await sharp({ create: { width: 600, height: 800, channels: 3, background: i % 2 ? "#f6f6f6" : "#ffffff" } }).jpeg().toBuffer();
+    sdoc.addPage([600, 800]).drawImage(await sdoc.embedJpg(jpg), { x: 0, y: 0, width: 600, height: 800 });
+  }
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ identify: { per: 2, unreadable: [5] } }) });
+  await fp.goto(BASE + `/app/tests/${stid}`);
+  await fp.getByRole("button", { name: "⇪ Upload answer sheets" }).click();
+  const wz = fp.getByRole("dialog");
+  ok(await visible(wz.getByText("AI finds each student (recommended)")), "wizard offers AI matching");
+  await wz.locator("input[type=file]").setInputFiles({ name: "class.pdf", mimeType: "application/pdf", buffer: Buffer.from(await sdoc.save()) });
+  await fp.waitForURL(/\/review\//, { timeout: 30000 });
+  ok(true, "upload goes to the review screen");
+  ok(await visible(fp.getByRole("region", { name: "Asha One" }), 60000), "students appear as the AI reads the pages");
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ identify: null }) });
+  ok(await visible(fp.locator(".review-stats .badge", { hasText: "4 students found" })) && await visible(fp.locator(".review-stats .badge", { hasText: "1 page without a student" })), "summary of what was found");
+  const lost = fp.getByRole("region", { name: "Pages without a student" });
+  ok(await visible(lost), "an unreadable page is shown first, for the teacher");
+  ok(await visible(fp.getByRole("region", { name: "Chirag Three" }).locator(".map-n", { hasText: "6" })), "the next page went to Chirag");
+  ok(/AI read: "Asha One"/.test(await fp.getByRole("region", { name: "Asha One" }).innerText()), "shows what the AI read");
+  await shot(fp, "p4-review");
+  await lost.locator(".map-thumb").first().click();
+  const vw = fp.getByRole("dialog", { name: "Page 5" });
+  ok(await visible(vw.locator("img")), "page viewer shows the page");
+  await fp.keyboard.press("ArrowRight");
+  ok(await visible(fp.getByRole("dialog", { name: "Page 6" })), "arrow keys move between pages");
+  await fp.keyboard.press("ArrowLeft");
+  await fp.getByRole("dialog", { name: "Page 5" }).getByLabel("Student for this page").selectOption({ label: "3. Chirag Three" });
+  await fp.getByRole("dialog", { name: "Page 5" }).getByRole("button", { name: "Move this page" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: "Page 5 moved." })), "page moved");
+  await fp.keyboard.press("Escape");
+  await sleep(500);
+  ok(!(await fp.getByRole("region", { name: "Pages without a student" }).count()), "no pages left without a student");
+  ok((await fp.getByRole("region", { name: "Chirag Three" }).locator(".map-n").allInnerTexts()).map((x) => parseInt(x)).join() === "5,6", "Chirag has pages 5 and 6");
+  await fp.getByRole("region", { name: "Asha One" }).getByRole("button", { name: "Approve" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: "1 student approved (2 pages)." })), "approve one student");
+  await fp.getByLabel("Skip approved").check();
+  ok(!(await fp.getByRole("region", { name: "Asha One" }).count()), "skip approved hides them");
+  await fp.getByRole("button", { name: "✓ Approve all & mark" }).click();
+  await fp.waitForURL(new RegExp(`/app/tests/${stid}$`));
+  ok(await visible(fp.locator(".toast", { hasText: /approved .* Marking has started/ })), "approve all & mark goes back to the test");
+  const marked = await (async () => { for (let i = 0; i < 100; i++) { const d = (await call("GET", `/tests/${stid}`, { token: admin })).data; if (d.attempts.every((a) => a.status === "evaluated")) return d; await sleep(500); } return null; })();
+  ok(marked && marked.attempts.every((a) => a.files === 2), "every student marked from their own 2 pages");
+  await fp.reload();
+  ok(await visible(fp.locator(".upload-list").getByRole("link", { name: "Review pages" })), "the upload can be reviewed again from the test page");
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();

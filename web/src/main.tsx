@@ -29,6 +29,7 @@ import { CbtExam, MyTests } from "./pages/app/Student";
 import { PracticePlayer } from "./pages/app/Insights";
 import Platform from "./pages/app/Platform";
 import Practice from "./pages/app/Practice";
+import ReviewMapping from "./pages/app/ReviewMapping";
 
 // The preview runs inside a frame without real URLs, so it keeps routes in memory.
 const Router = ({ children }: { children: React.ReactNode }) =>
@@ -64,6 +65,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="papers/:id" element={<PaperDetail />} />
             <Route path="tests" element={<TestList />} />
             <Route path="tests/:id" element={<TestDetail />} />
+            <Route path="tests/:id/review/:docId" element={<ReviewMapping />} />
             <Route path="attempts/:id" element={<AttemptReview />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="my" element={<MyTests />} />
