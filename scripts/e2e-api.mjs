@@ -835,6 +835,12 @@ section("Credits: platform key, monthly free credits, charges, refunds");
   const mine = (await call("GET", "/credits", { token: admin })).data;
   ok(mine.balance.own_key && !mine.history.some((h) => h.kind === "charge"), "institute with its own key is never charged");
   ok(!(await call("GET", "/credits", { token: admin })).data.history.some((h) => h.kind === "grant"), "credits are per institute");
+  // Plan badge (app shell) and the Practice Questions overview.
+  ok((await call("GET", "/me", { token: c })).data.org.plan === "credits", "an institute on the platform key has the credits plan");
+  ok((await call("GET", "/me", { token: admin })).data.org.plan === "own_key", "an institute with its own key has the own-key plan");
+  const po = await expect("practice overview", 200, "GET", "/practice/overview", { token: admin });
+  ok(Array.isArray(po.data) && po.data.every((r) => typeof r.students === "number" && r.title), `practice overview lists tests (${po.data.length})`);
+  ok(!(await call("GET", "/practice/overview", { token: c })).data.some((r) => po.data.some((x) => x.id === r.id)), "practice overview is per institute");
 }
 
 section("Courses, subjects, folders");

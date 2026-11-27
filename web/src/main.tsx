@@ -9,6 +9,7 @@ import "./site.css";
 // Lets CSS hide scroll-reveal elements only when JS can reveal them again.
 document.documentElement.classList.add("js");
 import { AuthProvider } from "./lib/auth";
+import { ToastProvider } from "./components/toast";
 import SiteLayout from "./pages/site/SiteLayout";
 import Home from "./pages/site/Home";
 import About from "./pages/site/About";
@@ -24,6 +25,7 @@ import { Analytics, StudentReport } from "./pages/app/Analytics";
 import { CbtExam, MyTests } from "./pages/app/Student";
 import { PracticePlayer } from "./pages/app/Insights";
 import Platform from "./pages/app/Platform";
+import Practice from "./pages/app/Practice";
 
 // The preview runs inside a frame without real URLs, so it keeps routes in memory.
 const Router = ({ children }: { children: React.ReactNode }) =>
@@ -33,6 +35,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Router>
       {DEMO && <DemoBanner />}
+      <ToastProvider>
       <AuthProvider>
         <Routes>
           <Route element={<SiteLayout />}>
@@ -61,11 +64,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="analytics" element={<Analytics />} />
             <Route path="my" element={<MyTests />} />
             <Route path="my/report" element={<StudentReport self />} />
+            <Route path="practice" element={<Practice />} />
             <Route path="practice/:id" element={<PracticePlayer />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
+      </ToastProvider>
     </Router>
   </React.StrictMode>,
 );

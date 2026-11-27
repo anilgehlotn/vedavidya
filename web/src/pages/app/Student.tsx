@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, DEMO, download, fmtDateTime, pct } from "../../lib/api";
 import type { Question } from "../../lib/types";
-import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, useApi } from "../../components/ui";
+import { Empty, ErrorBox, ErrorState, Loading, Modal, PageTitle, ScoreBadge, SkeletonCards, useApi } from "../../components/ui";
 import { FixitList } from "./Insights";
 
 interface MyTest { id: string; title: string; mode: "cbt" | "offline"; scheduled_at: string | null; duration_min: number; results_published: number; subject: string | null; total_marks: number; attempt_id: string; status: string; score: number | null; max_score: number | null }
@@ -29,15 +29,15 @@ function ReportButton({ t }: { t: MyTest }) {
 export function MyTests() {
   const tests = useApi<MyTest[]>("/my/tests");
   const nav = useNavigate();
-  if (tests.loading) return <Loading />;
-  const list = tests.data ?? [];
+  if (tests.loading) return <><PageTitle title="My tests" sub="Upcoming online tests and your results" /><SkeletonCards count={3} /></>;
+  if (!tests.data) return <><PageTitle title="My tests" /><div className="card"><ErrorState error={tests.error} onRetry={() => tests.reload()} /></div></>;
+  const list = tests.data;
   const live = list.filter((t) => t.mode === "cbt" && (t.status === "pending" || t.status === "in_progress"));
   const done = list.filter((t) => !live.includes(t));
   return (
     <>
       <PageTitle title="My tests" sub="Upcoming online tests and your results" />
       <FixitList />
-      <ErrorBox error={tests.error} />
       {live.length > 0 && (
         <div className="grid g2" style={{ marginBottom: 20 }}>
           {live.map((t) => {
@@ -68,7 +68,7 @@ export function MyTests() {
               </div>
             );
           })}</div>
-        ) : <Empty title="No results yet" />}
+        ) : <Empty title="No results yet" icon="tests">Your online tests and published results will appear here.</Empty>}
       </div>
     </>
   );
@@ -112,7 +112,7 @@ export function CbtExam() {
   useEffect(() => { if (exam && left === 0 && !submitting) submit(); }, [left]);
 
   if (error) return <div className="main"><PageTitle title="Online test" /><ErrorBox error={error} /><Link to="/app/my" className="btn btn-ghost" style={{ marginTop: 14 }}>← Back</Link></div>;
-  if (!exam) return <Loading label="Loading your test…" />;
+  if (!exam) return <div className="main"><Loading lines={6} label="Loading your test…" /></div>;
 
   const qs = exam.sections.flatMap((s) => s.questions.map((q) => ({ ...q, section: s.name })));
   const q = qs[cur];

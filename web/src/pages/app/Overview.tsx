@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
-import { BarList, ErrorBox, Loading, PageTitle, ScoreBadge, useApi, Empty } from "../../components/ui";
+import { BarList, ErrorState, PageSkeleton, PageTitle, ScoreBadge, useApi, Empty } from "../../components/ui";
 import { fmtDate } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 
@@ -10,11 +10,11 @@ interface Data {
 }
 
 export default function Overview() {
-  const { data, error, loading } = useApi<Data>("/overview");
+  const { data, error, loading, reload } = useApi<Data>("/overview");
   const { user, org } = useAuth();
   const nav = useNavigate();
-  if (loading) return <Loading />;
-  if (!data) return <ErrorBox error={error} />;
+  if (loading) return <PageSkeleton />;
+  if (!data) return <><PageTitle title="Home" /><div className="card"><ErrorState error={error} onRetry={() => reload()} /></div></>;
   const s = data.stats;
   return (
     <>
@@ -27,7 +27,7 @@ export default function Overview() {
           <div key={l as string} className="card stat"><div className="label">{l}</div><div className="value">{v}</div></div>
         ))}
       </div>
-      <div className="grid" style={{ gridTemplateColumns: "minmax(0,2fr) minmax(0,1fr)", gap: 16 }}>
+      <div className="grid split">
         <div className="card">
           <div className="row between card-pad" style={{ paddingBottom: 8 }}><b>Recent tests</b><Link to="/app/tests" className="btn-link small">View all →</Link></div>
           {data.recentTests.length ? (
@@ -43,11 +43,11 @@ export default function Overview() {
                 </tr>))}
               </tbody>
             </table></div>
-          ) : <Empty title="No tests yet"><Link to="/app/tests?new=1" className="btn-link">Create your first test</Link></Empty>}
+          ) : <Empty title="No tests yet" icon="tests" action={<Link to="/app/tests?new=1" className="btn btn-primary btn-sm">+ New test</Link>}>Create a test for a class, add the paper, then upload the answer sheets.</Empty>}
         </div>
         <div className="card card-pad">
           <div className="row between" style={{ marginBottom: 16 }}><b>Batch performance</b><Link to="/app/analytics" className="btn-link small">Analytics →</Link></div>
-          <BarList items={data.batchPerf.filter((b) => b.avg_pct != null).map((b) => ({ label: b.name, value: Math.round(b.avg_pct!), sub: `${Math.round(b.avg_pct!)}% avg` }))} />
+          {!data.batchPerf.some((b) => b.avg_pct != null) ? <Empty title="No results yet" icon="chart">Batch averages appear once tests are marked.</Empty> : <BarList items={data.batchPerf.filter((b) => b.avg_pct != null).map((b) => ({ label: b.name, value: Math.round(b.avg_pct!), sub: `${Math.round(b.avg_pct!)}% avg` }))} />}
         </div>
       </div>
     </>

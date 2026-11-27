@@ -1,6 +1,6 @@
 export type Role = "admin" | "teacher" | "student";
 export interface User { id: string; org_id: string; role: Role; name: string; email: string | null; is_super_admin?: boolean }
-export interface Org { id: string; name: string; city: string | null }
+export interface Org { id: string; name: string; city: string | null; is_demo?: number; plan?: "demo" | "own_key" | "credits" }
 
 export interface RubricStep { step: string; marks: number }
 export interface Question {

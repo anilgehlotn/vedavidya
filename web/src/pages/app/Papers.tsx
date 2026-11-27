@@ -2,7 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, fmtDate } from "../../lib/api";
 import type { Paper, Question, Section } from "../../lib/types";
-import { Empty, ErrorBox, Loading, Modal, PageTitle, useApi } from "../../components/ui";
+import { Empty, ErrorBox, ErrorState, Loading, Modal, PageSkeleton, PageTitle, SkeletonTable, useApi } from "../../components/ui";
+import { useRun, useToast } from "../../components/toast";
 import { ImportPaperForm } from "./PaperImport";
 
 const STATUS: Record<Paper["status"], [string, string]> = { generating: ["Generating", "amber"], draft: ["Draft", ""], approved: ["Approved", "green"], failed: ["Failed", "red"] };
@@ -21,6 +22,7 @@ export function PaperList() {
   const papers = useApi<Paper[]>("/papers");
   const nav = useNavigate();
   const [importing, setImporting] = useState(false);
+  const run = useRun();
   useEffect(() => {
     if (!papers.data?.some((p) => p.status === "generating")) return;
     const t = setInterval(() => papers.reload(true), 3000);
@@ -30,15 +32,17 @@ export function PaperList() {
     <>
       <PageTitle title="Question papers" sub="Generate with AI, or write your own">
         <button className="btn btn-ghost" onClick={async () => {
-          const r = await api<{ id: string }>("/papers", { body: { title: "Untitled paper", duration_min: 60, sections: [{ name: "Section A", instructions: "", questions: [] }] } });
-          nav(`/app/papers/${r.id}?edit=1`);
+          const r = await run(() => api<{ id: string }>("/papers", { body: { title: "Untitled paper", duration_min: 60, sections: [{ name: "Section A", instructions: "", questions: [] }] } }));
+          if (r) nav(`/app/papers/${r.id}?edit=1`);
         }}>Blank paper</button>
         <button className="btn btn-ghost" onClick={() => setImporting(true)}>⇪ Upload a paper</button>
         <Link to="/app/papers/new" className="btn btn-primary">✦ Generate with AI</Link>
       </PageTitle>
       {importing && <ImportPaperModal onClose={() => setImporting(false)} />}
       <div className="card">
-        {papers.loading ? <Loading /> : papers.data?.length ? (
+        {papers.loading ? <div className="card-pad"><SkeletonTable rows={5} cols={5} /></div>
+          : papers.error && !papers.data ? <ErrorState error={papers.error} onRetry={() => papers.reload()} />
+          : papers.data?.length ? (
           <div className="table-wrap"><table className="t">
             <thead><tr><th>Paper</th><th>Board / Class</th><th>Marks</th><th>Created</th><th>Status</th></tr></thead>
             <tbody>{papers.data.map((p) => (
@@ -51,7 +55,8 @@ export function PaperList() {
               </tr>))}
             </tbody>
           </table></div>
-        ) : <Empty title="No papers yet"><Link to="/app/papers/new" className="btn-link">Generate your first paper</Link></Empty>}
+        ) : <Empty title="No question papers yet" icon="paper" action={<div className="row wrap" style={{ justifyContent: "center" }}><button className="btn btn-ghost btn-sm" onClick={() => setImporting(true)}>⇪ Upload a paper</button><Link to="/app/papers/new" className="btn btn-primary btn-sm">✦ Generate with AI</Link></div>}>
+            Upload a printed paper for the AI to read, or describe one and let the AI write it.</Empty>}
       </div>
     </>
   );
@@ -102,7 +107,7 @@ export function PaperGenerate() {
       {ai.data && !ai.data.configured && (
         <div className="error-box" style={{ marginBottom: 16 }}>{ai.data.demo ? "AI is switched off in the public demo institute." : <>AI isn't set up yet. An admin can add the Claude API key in <Link to="/app/settings">Settings</Link>.</>}</div>
       )}
-      <form className="grid" style={{ gridTemplateColumns: "minmax(0,1.4fr) minmax(0,1fr)", gap: 16, alignItems: "start" }} onSubmit={submit}>
+      <form className="grid split split-wide" style={{ alignItems: "start" }} onSubmit={submit}>
         <div className="card card-pad stack">
           <div className="row wrap small"><span className="muted">Presets:</span>{Object.keys(PRESETS).map((k) => (
             <button type="button" key={k} className="btn btn-ghost btn-sm" onClick={() => { setSections(PRESETS[k].sections); setF({ ...f, board: PRESETS[k].board, duration_min: PRESETS[k].duration }); }}>{k}</button>))}
@@ -220,6 +225,8 @@ export function PaperDetail() {
   const [draft, setDraft] = useState<Paper | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const run = useRun();
+  const toast = useToast();
 
   useEffect(() => {
     if (paper.data?.status !== "generating") return;
@@ -228,8 +235,8 @@ export function PaperDetail() {
   }, [paper.data?.status]);
   useEffect(() => { if (edit && paper.data) setDraft(structuredClone(paper.data)); }, [edit, paper.data?.id]);
 
-  if (paper.loading) return <Loading />;
-  if (!paper.data) return <ErrorBox error={paper.error} />;
+  if (paper.loading) return <PageSkeleton />;
+  if (!paper.data) return <><PageTitle title="Question paper" /><div className="card"><ErrorState error={paper.error} onRetry={() => paper.reload()} /></div></>;
   const p = paper.data;
 
   if (p.status === "generating") return (
@@ -245,8 +252,8 @@ export function PaperDetail() {
     setSaving(true); setError(null);
     try {
       await api(`/papers/${p.id}`, { method: "PUT", body: { title: draft.title, subject: draft.subject ?? undefined, board: draft.board ?? undefined, class_level: draft.class_level ?? undefined, language: draft.language, duration_min: draft.duration_min, instructions: draft.instructions ?? undefined, sections: draft.sections } });
-      setEdit(false); paper.reload();
-    } catch (err) { setError((err as Error).message); }
+      toast.success("Paper saved."); setEdit(false); paper.reload();
+    } catch (err) { setError((err as Error).message); toast.error("The paper couldn't be saved. See the message above."); }
     finally { setSaving(false); }
   };
 
@@ -255,7 +262,7 @@ export function PaperDetail() {
     const setSection = (i: number, s: Section) => setDraft({ ...draft, sections: draft.sections.map((x, j) => (j === i ? s : x)) });
     return (
       <>
-        <PageTitle title="Edit paper" sub={`${draft.sections.reduce((t, s) => t + s.questions.reduce((a, q) => a + q.marks, 0), 0)} marks`}>
+        <PageTitle title="Edit paper" crumbs={[{ label: "Assessments" }, { label: "Question Papers", to: "/app/papers" }, { label: p.title, to: `/app/papers/${p.id}` }]} sub={`${draft.sections.reduce((t, s) => t + s.questions.reduce((a, q) => a + q.marks, 0), 0)} marks`}>
           <button className="btn btn-ghost" onClick={() => setEdit(false)}>Cancel</button>
           <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save paper"}</button>
         </PageTitle>
@@ -291,10 +298,10 @@ export function PaperDetail() {
       <PageTitle title={p.title} sub={<>{[p.subject, p.board, p.class_level, p.language].filter(Boolean).join(" · ")} · <b>{p.total_marks} marks</b> · {p.duration_min} min</>}>
         <span className={`badge ${STATUS[p.status][1]}`}>{STATUS[p.status][0]}</span>
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
-        <button className="btn btn-ghost no-print" onClick={async () => { const r = await api<{ id: string }>(`/papers/${p.id}/clone`, { body: {} }); nav(`/app/papers/${r.id}`); }}>Duplicate</button>
+        <button className="btn btn-ghost no-print" onClick={async () => { const r = await run(() => api<{ id: string }>(`/papers/${p.id}/clone`, { body: {} }), "Copy made. You're now looking at the copy."); if (r) nav(`/app/papers/${r.id}`); }}>Duplicate</button>
         <button className="btn btn-ghost no-print" onClick={() => setEdit(true)}>Edit</button>
-        <button className="btn btn-danger no-print" onClick={async () => { if (confirm("Delete this paper?")) { try { await api(`/papers/${p.id}`, { method: "DELETE" }); nav("/app/papers"); } catch (e) { alert((e as Error).message); } } }}>Delete</button>
-        {p.status === "draft" && <button className="btn btn-primary no-print" onClick={async () => { await api(`/papers/${p.id}/approve`, { body: {} }); paper.reload(); }}>Approve</button>}
+        <button className="btn btn-danger no-print" onClick={async () => { if (confirm("Delete this paper?")) { if (await run(() => api(`/papers/${p.id}`, { method: "DELETE" }), `"${p.title}" was deleted.`)) nav("/app/papers"); } }}>Delete</button>
+        {p.status === "draft" && <button className="btn btn-primary no-print" onClick={async () => { if (await run(() => api(`/papers/${p.id}/approve`, { body: {} }), "Paper approved. It can now be used in tests.")) paper.reload(); }}>Approve</button>}
         {p.status !== "failed" && <Link to={`/app/tests?new=1&paper=${p.id}`} className="btn btn-primary no-print">Use in a test →</Link>}
       </PageTitle>
       {p.status === "failed" && <div className="error-box" style={{ marginBottom: 16 }}>Generation failed: {p.error} <Link to="/app/papers/new" className="btn-link">Try again</Link></div>}

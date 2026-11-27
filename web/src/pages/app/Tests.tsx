@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from "rea
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, blobUrl, fetchBlob, csvCell, DEMO, download, fmtDate, fmtDateTime, pct } from "../../lib/api";
 import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/types";
-import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, StatusBadge, useApi } from "../../components/ui";
+import { Empty, ErrorBox, ErrorState, Loading, Modal, PageSkeleton, PageTitle, ScoreBadge, SkeletonTable, StatusBadge, useApi } from "../../components/ui";
+import { useToast } from "../../components/toast";
 import { useAuth } from "../../lib/auth";
 import { checkFile, uploadFile, type UploadedFile } from "../../lib/chunkUpload";
 import { FileUpload } from "../../components/FileUpload";
@@ -39,7 +40,9 @@ export function TestList() {
         <button className="btn btn-primary" onClick={() => setParams({ new: "1", ...(params.get("paper") ? { paper: params.get("paper")! } : {}) })}>+ New test</button>
       </PageTitle>
       <div className="card">
-        {tests.loading ? <Loading /> : tests.data?.length ? (
+        {tests.loading ? <div className="card-pad"><SkeletonTable rows={5} cols={5} /></div>
+          : tests.error && !tests.data ? <ErrorState error={tests.error} onRetry={() => tests.reload()} />
+          : tests.data?.length ? (
           <div className="table-wrap"><table className="t">
             <thead><tr><th>Test</th><th>Class</th><th>Date</th><th>Marked</th><th>Next step</th></tr></thead>
             <tbody>{tests.data.map((t) => {
@@ -55,7 +58,7 @@ export function TestList() {
             })}
             </tbody>
           </table></div>
-        ) : <Empty title="No tests yet"><button className="btn btn-primary" style={{ marginTop: 10 }} onClick={() => setParams({ new: "1" })}>+ Create your first test</button></Empty>}
+        ) : <Empty title="No tests yet" icon="tests" action={<button className="btn btn-primary btn-sm" onClick={() => setParams({ new: "1" })}>+ Create your first test</button>}>Create a test for a class, add the paper, then upload the answer sheets after the exam.</Empty>}
       </div>
       {params.has("new") && <NewTestModal paperId={params.get("paper")} onClose={() => setParams({})} />}
     </>
@@ -96,7 +99,7 @@ function NewTestModal({ paperId, onClose }: { paperId: string | null; onClose: (
 
   return (
     <Modal title="New test" onClose={onClose}>
-      {batches.data && !batches.data.length ? <Empty title="Add a class first"><Link to="/app/batches" className="btn-link">Create a class (batch) and add students</Link></Empty> : (
+      {batches.data && !batches.data.length ? <Empty title="Add a class first" icon="batches" action={<Link to="/app/batches" className="btn btn-primary btn-sm">Go to batches</Link>}>A test is given to one or more classes (batches). Create one and add its students.</Empty> : (
         <form className="stack" onSubmit={create}>
           <div className="field"><span>1. Which class?</span>
             <div className="row wrap">{batches.data?.map((b) => (
@@ -233,8 +236,11 @@ export function TestDetail() {
   const t = useApi<TestDetailData>(`/tests/${id}`);
   const { org, user } = useAuth();
   const nav = useNavigate();
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const toast = useToast();
+  const setMsg = (m: string) => toast.success(m);
+  const [err, setErrText] = useState<string | null>(null);
+  const setErr = (e: string | null) => { setErrText(e); if (e) toast.error(e); };
+  const wasBusy = useRef(false);
   const [filter, setFilter] = useState<"all" | "check" | AttemptStatus>("all");
   const [bulk, setBulk] = useState(false);
   const [wizard, setWizard] = useState(false);
@@ -247,14 +253,15 @@ export function TestDetail() {
   const reading = t.data?.paper?.status === "generating";
   const ins = useInsights(id!, Boolean(busy));
   useEffect(() => {
-    if (!busy) setMsg((m) => (m?.startsWith("Marking") ? "All sheets are marked. Check any sheet below, then publish." : m));
+    if (busy) wasBusy.current = true;
+    else if (wasBusy.current) { wasBusy.current = false; toast.success("All sheets are marked. Check any flagged sheet below, then publish."); }
     if (!busy && !reading && !processing) return;
     const i = setInterval(() => t.reload(true), 3000);
     return () => clearInterval(i);
   }, [busy, reading, processing]);
 
-  if (t.loading) return <Loading />;
-  if (!t.data) return <ErrorBox error={t.error} />;
+  if (t.loading) return <PageSkeleton />;
+  if (!t.data) return <><PageTitle title="Test" /><div className="card"><ErrorState error={t.error} onRetry={() => t.reload()} /></div></>;
   const d = t.data;
   const scored = d.attempts.filter((a) => a.score != null);
   const avg = scored.length ? Math.round(scored.reduce((s, a) => s + pct(a.score, a.max_score)!, 0) / scored.length) : null;
@@ -280,7 +287,9 @@ export function TestDetail() {
   };
   const publish = async (publish: boolean) => {
     if (publish && toCheck && !confirm(`${toCheck} answer${toCheck > 1 ? "s" : ""} on ${sheetsToCheck} sheet${sheetsToCheck > 1 ? "s" : ""} still need your check. Publish anyway?`)) return;
-    const r = await api<{ practice_queued: number }>(`/tests/${d.id}/publish`, { body: { publish } });
+    let r: { practice_queued: number };
+    try { r = await api<{ practice_queued: number }>(`/tests/${d.id}/publish`, { body: { publish } }); }
+    catch (e) { setErr((e as Error).message); return; }
     setMsg(publish ? `Results published. Students see them when they log in, and parent links are active.${r.practice_queued ? ` Fix-it practice is being prepared for ${r.practice_queued} student${r.practice_queued === 1 ? "" : "s"}.` : ""}` : "Results hidden from students.");
     ins.reload(true);
     t.reload(true);
@@ -345,8 +354,7 @@ export function TestDetail() {
         {d.results_published && !DEMO ? <button className="btn btn-ghost" onClick={downloadLinks}>⤓ Report links</button> : null}
       </PageTitle>
       {pdfBusy && <div className="ok-box" style={{ marginBottom: 14 }}><span className="spinner" /> Making the PDF…</div>}
-      {msg && <div className="ok-box" style={{ marginBottom: 14 }}>{msg}</div>}
-      {err && <div className="error-box" style={{ marginBottom: 14 }}>{err}</div>}
+      {err && <div className="error-box" role="alert" style={{ marginBottom: 14 }}><div className="row between" style={{ alignItems: "flex-start" }}><span>{err}</span><button className="btn-link" style={{ color: "inherit" }} onClick={() => setErrText(null)} aria-label="Dismiss">×</button></div></div>}
 
       <div className="card card-pad steps" style={{ marginBottom: 16 }}>
         <PaperStep t={d} state={s1} onChange={() => { setMsg("Question paper added."); t.reload(true); }} />
@@ -435,12 +443,12 @@ export function TestDetail() {
             </tr>))}
           </tbody>
         </table></div>
-        {!list.length && <Empty title="No students here" />}
+        {!list.length && <Empty title={filter === "all" ? "No students in this test" : "No sheets match this filter"} icon="student">{filter === "all" ? "Add students to the test's batch, then they appear here." : "Pick another filter above."}</Empty>}
       </div>
       {(!d.results_published || user?.role === "admin") && !DEMO && (
         <div style={{ marginTop: 20 }}><button className="btn btn-danger btn-sm" onClick={async () => {
           if (!confirm("Delete this test and all its results? This can't be undone.")) return;
-          try { await api(`/tests/${d.id}`, { method: "DELETE" }); nav("/app/tests"); } catch (e) { setErr((e as Error).message); }
+          try { await api(`/tests/${d.id}`, { method: "DELETE" }); setMsg(`"${d.title}" was deleted.`); nav("/app/tests"); } catch (e) { setErr((e as Error).message); }
         }}>Delete test</button></div>
       )}
     </>
@@ -477,10 +485,10 @@ export function AttemptReview() {
   const [edits, setEdits] = useState<Record<string, number>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [page, setPage] = useState<number | null>(null);
-  const [saved, setSaved] = useState<string | null>(null);
   const [saveErr, setSaveErr] = useState<string | null>(null);
-  if (a.loading) return <Loading />;
-  if (!a.data) return <ErrorBox error={a.error} />;
+  const toast = useToast();
+  if (a.loading) return <PageSkeleton />;
+  if (!a.data) return <><PageTitle title="Answer sheet" /><div className="card"><ErrorState error={a.error} onRetry={() => a.reload()} /></div></>;
   const d = a.data;
   const ev = d.evaluation;
   const questions = d.paper.sections.flatMap((s) => s.questions);
@@ -498,8 +506,8 @@ export function AttemptReview() {
     setSaveErr(null);
     try {
       const r = await api<{ score: number }>(`/attempts/${d.id}/evaluation`, { method: "PUT", body: { questions: Object.entries(edits).map(([question_id, marks_awarded]) => ({ question_id, marks_awarded, note: notes[question_id]?.trim() || undefined })) } });
-      setEdits({}); setNotes({}); setSaved(`Saved - new total ${r.score}/${d.max_score}`); a.reload(true);
-    } catch (e) { setSaveErr((e as Error).message); }
+      setEdits({}); setNotes({}); toast.success(`Saved - new total ${r.score}/${d.max_score}`); a.reload(true);
+    } catch (e) { setSaveErr((e as Error).message); toast.error((e as Error).message); }
   };
 
   return (
@@ -511,7 +519,6 @@ export function AttemptReview() {
         {!DEMO && d.score != null && <button className="btn btn-primary no-print" onClick={() => download(`/attempts/${d.id}/report.pdf`, `${d.test_title.replace(/\W+/g, "_")}_${d.student_name.replace(/\W+/g, "_")}.pdf`).catch((e) => setSaveErr(e.message))}>⤓ Report card PDF</button>}
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
       </PageTitle>
-      {saved && <div className="ok-box" style={{ marginBottom: 14 }}>{saved}</div>}
       {saveErr && <div className="error-box" style={{ marginBottom: 14 }}>{saveErr}</div>}
       {invalid && <div className="error-box" style={{ marginBottom: 14 }}>A mark is outside what that question allows (see the red box). Fix it to save.</div>}
       {d.files > 0 && ev && d.score != null && (
@@ -553,7 +560,7 @@ export function AttemptReview() {
           {ev.gaps.length > 0 && <div className="card card-pad"><b>Revise these</b><div className="row wrap" style={{ marginTop: 10 }}>{ev.gaps.map((g) => <span key={g} className="badge red">{g}</span>)}</div></div>}
         </div>
       )}
-      {!ev ? <div className="card"><Empty title="Not evaluated yet" /></div> : (
+      {!ev ? <div className="card"><Empty title="Not marked yet" icon="tests">Marks and feedback appear here once this sheet has been marked.</Empty></div> : (
         <div className="stack" style={{ gap: 12 }}>
           {ev.questions.map((qe, i) => {
             const q = qById.get(qe.question_id) as Question | undefined;

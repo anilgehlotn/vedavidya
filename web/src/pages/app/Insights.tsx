@@ -2,7 +2,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate } from "../../lib/api";
-import { Empty, ErrorBox, Loading, PageTitle, useApi } from "../../components/ui";
+import { Empty, ErrorBox, ErrorState, Loading, PageTitle, useApi } from "../../components/ui";
+import { useToast } from "../../components/toast";
 
 export const MISTAKES: Record<string, { label: string; color: string; tip: string }> = {
   concept: { label: "Concept not clear", color: "var(--red)", tip: "Re-learn the idea, then try 3 fresh questions on it." },
@@ -65,9 +66,10 @@ export function useInsights(testId: string, live: boolean) {
 export function TestInsights({ testId, ins, published, onReload }: { testId: string; ins: Insights; published: boolean; onReload: () => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const act = async (path: string) => {
+  const toast = useToast();
+  const act = async (path: string, ok: string) => {
     setBusy(true); setErr(null);
-    try { await api(path, { body: {} }); onReload(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+    try { await api(path, { body: {} }); toast.info(ok); onReload(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
   const weakest = [...ins.questions].filter((q) => q.avg_pct !== null).sort((a, b) => (a.avg_pct ?? 0) - (b.avg_pct ?? 0)).slice(0, 6);
   const p = ins.practice;
@@ -102,7 +104,7 @@ export function TestInsights({ testId, ins, published, onReload }: { testId: str
           <div><b>Re-teach brief</b><p className="small muted" style={{ marginTop: 4 }}>The class's main misconceptions, with a real (anonymised) wrong answer and a 10-minute plan for your next class.</p></div>
           {ins.brief_status === "generating"
             ? <span className="badge amber"><span className="dot pulse" /> Writing…</span>
-            : <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(`/tests/${testId}/brief`)}>{ins.brief ? "↻ Write again" : "✦ Create re-teach brief"}</button>}
+            : <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(`/tests/${testId}/brief`, "Writing the re-teach brief. It appears here in about a minute.")}>{ins.brief ? "↻ Write again" : "✦ Create re-teach brief"}</button>}
         </div>
         {ins.brief_status === "failed" && <div className="error-box" style={{ marginTop: 10 }}>{ins.brief_error}</div>}
         {ins.brief && (
@@ -126,7 +128,7 @@ export function TestInsights({ testId, ins, published, onReload }: { testId: str
         <div className="card card-pad">
           <div className="row between wrap">
             <div><b>Fix-it practice</b><p className="small muted" style={{ marginTop: 4 }}>Each student who lost marks gets practice on exactly their mistakes, and a check-up a week later that measures improvement.</p></div>
-            {(p.failed > 0 || p.students === 0) && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(`/tests/${testId}/practice`)}>{p.students === 0 ? "✦ Create Fix-it practice" : `↻ Retry ${p.failed} failed`}</button>}
+            {(p.failed > 0 || p.students === 0) && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(`/tests/${testId}/practice`, "Preparing Fix-it practice for the students who lost marks.")}>{p.students === 0 ? "✦ Create Fix-it practice" : `↻ Retry ${p.failed} failed`}</button>}
           </div>
           {p.students > 0 && (
             <div className="grid g4" style={{ marginTop: 14 }}>
@@ -215,8 +217,9 @@ export function PracticePlayer() {
   const [num, setNum] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  if (set.loading) return <Loading />;
-  if (!set.data) return <><ErrorBox error={set.error} /><Link to="/app/my" className="btn btn-ghost" style={{ marginTop: 14 }}>← Back</Link></>;
+  const crumbs = [{ label: "My tests", to: "/app/my" }];
+  if (set.loading) return <Loading lines={5} label="Loading your practice…" />;
+  if (!set.data) return <><PageTitle title="Practice" crumbs={crumbs} /><div className="card"><ErrorState error={set.error} onRetry={() => set.reload()} /></div><Link to="/app/my" className="btn btn-ghost" style={{ marginTop: 14 }}>← Back to my tests</Link></>;
   const d = set.data;
   const qs = d.questions;
   const firstOpen = qs.findIndex((q) => q.given === undefined);
@@ -242,7 +245,7 @@ export function PracticePlayer() {
     const pct = Math.round((correct / qs.length) * 100);
     return (
       <>
-        <PageTitle title={d.kind === "checkup" ? "Check-up complete" : "Practice complete"} sub={`${d.test_title} · ${d.subject ?? ""}`} />
+        <PageTitle crumbs={crumbs} title={d.kind === "checkup" ? "Check-up complete" : "Practice complete"} sub={`${d.test_title} · ${d.subject ?? ""}`} />
         <div className="card card-pad stack" style={{ maxWidth: 560 }}>
           <div className="value" style={{ fontSize: 44 }}>{correct}/{qs.length}</div>
           {d.kind === "checkup" && d.baseline_pct !== null
@@ -261,7 +264,7 @@ export function PracticePlayer() {
   const shown = q.given !== undefined;
   return (
     <>
-      <PageTitle title={d.kind === "checkup" ? "Check-up" : "Fix-it practice"} sub={`${d.test_title} · ${d.subject ?? ""}`}>
+      <PageTitle crumbs={crumbs} title={d.kind === "checkup" ? "Check-up" : "Fix-it practice"} sub={`${d.test_title} · ${d.subject ?? ""}`}>
         <span className="badge violet">{answered}/{qs.length} done · {correct} correct</span>
       </PageTitle>
       {d.focus && answered === 0 && <div className="card card-pad" style={{ marginBottom: 14, maxWidth: 720 }}>{d.focus}</div>}
@@ -301,4 +304,4 @@ export function PracticePlayer() {
   );
 }
 
-export function EmptyPractice() { return <Empty title="No practice yet" />; }
+export function EmptyPractice() { return <Empty title="No practice yet" icon="practice">Practice appears after your teacher publishes a test's results.</Empty>; }

@@ -5,7 +5,8 @@ import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, csvCell, fmtDate, setToken } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
-import { Empty, ErrorBox, Loading, Modal, PageTitle, useApi } from "../../components/ui";
+import { Empty, ErrorBox, ErrorState, Loading, Modal, PageTitle, SkeletonCards, SkeletonTable, useApi } from "../../components/ui";
+import { useRun, useToast } from "../../components/toast";
 
 interface Centre { id: string; name: string; city: string | null; batch_count: number }
 interface Batch { id: string; name: string; course: string | null; start_date: string | null; centre_id: string | null; centre_name: string | null; teacher_id: string | null; teacher_name: string | null; student_count: number }
@@ -28,16 +29,19 @@ export function Batches() {
   const c = useForm({ name: "", city: "" });
   const b = useForm({ name: "", course: "", centre_id: "", teacher_id: "", start_date: "" });
   const courses = useApi<Course[]>("/courses");
+  const run = useRun();
+  const toast = useToast();
 
   const saveCentre = async (e: FormEvent) => {
     e.preventDefault();
-    try { await api("/centres", { body: c.f }); setModal(null); c.setF({ name: "", city: "" }); centres.reload(); } catch (err) { setError((err as Error).message); }
+    try { await api("/centres", { body: c.f }); toast.success(`Centre "${c.f.name}" created.`); setModal(null); c.setF({ name: "", city: "" }); centres.reload(); } catch (err) { setError((err as Error).message); }
   };
   const saveBatch = async (e: FormEvent) => {
     e.preventDefault();
     const existing = typeof modal === "object" && modal?.batch;
     try {
       await api(existing ? `/batches/${existing.id}` : "/batches", { method: existing ? "PUT" : "POST", body: { ...b.f, start_date: b.f.start_date || null } });
+      toast.success(existing ? "Batch saved." : `Batch "${b.f.name}" created.`);
       setModal(null); batches.reload(); centres.reload(); courses.reload(true);
     } catch (err) { setError((err as Error).message); }
   };
@@ -47,18 +51,21 @@ export function Batches() {
   };
   const del = async (path: string, what: string) => {
     if (!confirm(`Delete this ${what}? This can't be undone.`)) return;
-    await api(path, { method: "DELETE" }); centres.reload(); batches.reload();
+    if (await run(() => api(path, { method: "DELETE" }), `The ${what} was deleted.`)) { centres.reload(); batches.reload(); }
   };
 
-  if (batches.loading || centres.loading) return <Loading />;
+  const head = (
+    <PageTitle title="Centres & batches" sub="How your institute is organised">
+      {isAdmin && <><button className="btn btn-ghost" onClick={() => { setError(null); setModal("centre"); }}>+ Centre</button><button className="btn btn-primary" onClick={() => openBatch()}>+ Batch</button></>}
+    </PageTitle>
+  );
+  if (batches.loading || centres.loading) return <>{head}<SkeletonCards count={3} /></>;
+  if (!batches.data || !centres.data) return <>{head}<div className="card"><ErrorState error={batches.error ?? centres.error} onRetry={() => { batches.reload(); centres.reload(); }} /></div></>;
   return (
     <>
-      <PageTitle title="Centres & batches" sub="How your institute is organised">
-        {isAdmin && <><button className="btn btn-ghost" onClick={() => { setError(null); setModal("centre"); }}>+ Centre</button><button className="btn btn-primary" onClick={() => openBatch()}>+ Batch</button></>}
-      </PageTitle>
-      <ErrorBox error={batches.error ?? centres.error} />
+      {head}
       <CoursesCard isAdmin={isAdmin} />
-      {(centres.data ?? []).length === 0 && <div className="card"><Empty title="Add your first centre">A centre is a physical branch. Batches belong to centres.</Empty></div>}
+      {(centres.data ?? []).length === 0 && <div className="card"><Empty title="Add your first centre" icon="institute" action={isAdmin ? <button className="btn btn-primary btn-sm" onClick={() => { setError(null); setModal("centre"); }}>+ Centre</button> : undefined}>A centre is a physical branch. Batches belong to centres.</Empty></div>}
       <div className="stack">
         {[...(centres.data ?? []), { id: "", name: "No centre", city: null, batch_count: 0 }].map((ctr) => {
           const list = (batches.data ?? []).filter((x) => (x.centre_id ?? "") === ctr.id);
@@ -131,9 +138,12 @@ export function Students() {
   const [q, setQ] = useState("");
   const [modal, setModal] = useState<null | "add" | "bulk" | { edit: Student }>(null);
   const [creds, setCreds] = useState<{ name: string; username: string; password: string; roll_no?: string | null }[] | null>(null);
+  const [skipped, setSkipped] = useState<{ line: number; reason: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const s = useForm({ name: "", roll_no: "", phone: "", email: "", batch_id: "", parent_name: "", parent_phone: "", parent_email: "" });
   const [bulk, setBulk] = useState({ batch_id: "", csv: "" });
+  const run = useRun();
+  const toast = useToast();
 
   const open = (st?: Student) => {
     setError(null);
@@ -144,8 +154,8 @@ export function Students() {
   const save = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      if (typeof modal === "object" && modal) await api(`/students/${modal.edit.id}`, { method: "PUT", body: s.f });
-      else { const r = await api<{ name: string; username: string; password: string }>("/students", { body: s.f }); setCreds([r]); }
+      if (typeof modal === "object" && modal) { await api(`/students/${modal.edit.id}`, { method: "PUT", body: s.f }); toast.success(`${s.f.name} saved.`); }
+      else { const r = await api<{ name: string; username: string; password: string }>("/students", { body: s.f }); setCreds([r]); toast.success(`${s.f.name} added. Their login is shown below.`); }
       setModal(null); students.reload();
     } catch (err) { setError((err as Error).message); }
   };
@@ -153,25 +163,27 @@ export function Students() {
     e.preventDefault();
     try {
       const r = await api<{ created: { name: string; username: string; password: string }[]; skipped: { line: number; reason: string }[] }>("/students/bulk", { body: bulk });
-      setCreds(r.created); setModal(null); students.reload();
-      if (r.skipped.length) alert(`${r.created.length} added. Not added:\n` + r.skipped.map((x) => `Line ${x.line}: ${x.reason}`).join("\n"));
+      setCreds(r.created); setSkipped(r.skipped); setModal(null); students.reload();
+      if (r.created.length) toast.success(`${r.created.length} student${r.created.length === 1 ? "" : "s"} added.`);
+      if (r.skipped.length) toast.error(`${r.skipped.length} line${r.skipped.length === 1 ? " was" : "s were"} not added. See the list below.`);
     }
     catch (err) { setError((err as Error).message); }
   };
   const batchLogins = async () => {
     const b = batches.data?.find((x) => x.id === batchId);
     if (!confirm(`Create new passwords for every student in ${b?.name ?? "this batch"}? Their old passwords will stop working.`)) return;
-    const r = await api<{ created: { name: string; username: string; password: string; roll_no: string | null }[] }>("/students/reset-logins", { body: { batch_id: batchId } });
-    setCreds(r.created);
+    const r = await run(() => api<{ created: { name: string; username: string; password: string; roll_no: string | null }[] }>("/students/reset-logins", { body: { batch_id: batchId } }),
+      (x) => `New passwords made for ${x.created.length} students.`);
+    if (r) setCreds(r.created);
   };
   const reset = async (st: Student) => {
     if (!confirm(`Generate a new password for ${st.name}?`)) return;
-    const r = await api<{ username: string; password: string }>(`/students/${st.id}/reset-password`, { body: {} });
-    setCreds([{ name: st.name, ...r }]);
+    const r = await run(() => api<{ username: string; password: string }>(`/students/${st.id}/reset-password`, { body: {} }), `New password made for ${st.name}.`);
+    if (r) setCreds([{ name: st.name, ...r }]);
   };
   const remove = async (st: Student) => {
     if (!confirm(`Remove ${st.name}? Their results will be deleted too.`)) return;
-    await api(`/students/${st.id}`, { method: "DELETE" }); students.reload();
+    if (await run(() => api(`/students/${st.id}`, { method: "DELETE" }), `${st.name} was removed.`)) students.reload();
   };
   const list = (students.data ?? []).filter((x) => !q || `${x.name} ${x.username} ${x.phone ?? ""} ${x.roll_no ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   const downloadCreds = () => {
@@ -192,6 +204,12 @@ export function Students() {
           <option value="">All batches</option>{batches.data?.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
       </div>
+      {skipped.length > 0 && (
+        <div className="error-box" style={{ marginBottom: 14 }}>
+          <div className="row between"><b>Not added</b><button className="btn-link" onClick={() => setSkipped([])}>Dismiss</button></div>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>{skipped.map((x) => <li key={x.line}>Line {x.line}: {x.reason}</li>)}</ul>
+        </div>
+      )}
       {creds && (
         <div className="card card-pad" style={{ marginBottom: 14, borderColor: "#bfe6d1" }}>
           <div className="row between"><b>Login details - share these with students (shown once). Students sign in at {location.host}/login</b><div className="row"><button className="btn btn-ghost btn-sm" onClick={downloadCreds}>Download CSV</button><button className="btn-link" onClick={() => setCreds(null)}>Dismiss</button></div></div>
@@ -199,7 +217,9 @@ export function Students() {
         </div>
       )}
       <div className="card">
-        {students.loading ? <Loading /> : list.length ? (
+        {students.loading ? <div className="card-pad"><SkeletonTable rows={6} cols={5} /></div>
+          : students.error && !students.data ? <ErrorState error={students.error} onRetry={() => students.reload()} />
+          : list.length ? (
           <div className="table-wrap"><table className="t">
             <thead><tr><th>Roll</th><th>Name</th><th>Batch</th><th>Username</th><th>Parent</th><th></th></tr></thead>
             <tbody>{list.map((st) => (
@@ -216,7 +236,8 @@ export function Students() {
               </tr>))}
             </tbody>
           </table></div>
-        ) : <Empty title="No students found">Add students one by one or paste a list with “Bulk add”.</Empty>}
+        ) : q ? <Empty title={`No students match "${q}"`} icon="search">Try a different name, roll number or phone.</Empty>
+          : <Empty title="No students yet" icon="student" action={<button className="btn btn-primary btn-sm" onClick={() => open()}>+ Student</button>}>Add students one by one or paste a list with “Bulk add”.</Empty>}
       </div>
 
       {modal && modal !== "bulk" && (
@@ -259,9 +280,11 @@ export function StaffPage() {
   const [creds, setCreds] = useState<{ email: string; password: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const t = useForm({ name: "", email: "", phone: "", subject: "", role: "teacher" });
+  const run = useRun();
+  const toast = useToast();
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    try { setCreds(await api("/teachers", { body: t.f })); setOpen(false); staff.reload(); } catch (err) { setError((err as Error).message); }
+    try { setCreds(await api("/teachers", { body: t.f })); toast.success(`${t.f.name} added. Their login is shown above the list.`); setOpen(false); staff.reload(); } catch (err) { setError((err as Error).message); }
   };
   return (
     <>
@@ -270,14 +293,15 @@ export function StaffPage() {
       </PageTitle>
       {creds && <div className="ok-box" style={{ marginBottom: 14 }}>Login: <b>{creds.email}</b> · temporary password: <b>{creds.password}</b> (share it privately; they can change it in Settings) <button className="btn-link" onClick={() => setCreds(null)}>Dismiss</button></div>}
       <div className="card">
-        {staff.loading ? <Loading /> : (
+        {staff.loading ? <div className="card-pad"><SkeletonTable rows={3} cols={4} /></div>
+          : !staff.data ? <ErrorState error={staff.error} onRetry={() => staff.reload()} /> : (
           <div className="table-wrap"><table className="t">
             <thead><tr><th>Name</th><th>Role</th><th>Subject</th><th>Email</th><th></th></tr></thead>
             <tbody>{staff.data?.map((s) => (
               <tr key={s.id}><td><b>{s.name}</b></td><td><span className={`badge ${s.role === "admin" ? "violet" : ""}`} style={{ textTransform: "capitalize" }}>{s.role}</span></td><td>{s.subject ?? "—"}</td><td>{s.email}</td>
                 <td style={{ textAlign: "right" }}>{user!.role === "admin" && s.id !== user!.id && <div className="row" style={{ justifyContent: "flex-end" }}>
-                  <button className="btn btn-ghost btn-sm" onClick={async () => { if (confirm(`Create a new password for ${s.name}? They will be signed out.`)) setCreds(await api(`/teachers/${s.id}/reset-password`, { body: {} })); }}>Reset password</button>
-                  <button className="btn btn-danger btn-sm" onClick={async () => { if (confirm(`Remove ${s.name}?`)) { await api(`/teachers/${s.id}`, { method: "DELETE" }); staff.reload(); } }}>Remove</button>
+                  <button className="btn btn-ghost btn-sm" onClick={async () => { if (confirm(`Create a new password for ${s.name}? They will be signed out.`)) { const r = await run(() => api<{ email: string; password: string }>(`/teachers/${s.id}/reset-password`, { body: {} }), `New password made for ${s.name}.`); if (r) setCreds(r); } }}>Reset password</button>
+                  <button className="btn btn-danger btn-sm" onClick={async () => { if (confirm(`Remove ${s.name}?`)) { if (await run(() => api(`/teachers/${s.id}`, { method: "DELETE" }), `${s.name} was removed.`)) staff.reload(); } }}>Remove</button>
                 </div>}</td></tr>))}
             </tbody>
           </table></div>
@@ -308,31 +332,39 @@ export function Notices() {
   const batches = useApi<Batch[]>(isStaff ? "/batches" : null);
   const n = useForm({ title: "", body: "", batch_id: "" });
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = useRun();
+  const toast = useToast();
   const post = async (e: FormEvent) => {
     e.preventDefault();
-    await api("/notices", { body: n.f }); setOpen(false); n.setF({ title: "", body: "", batch_id: "" }); notices.reload();
+    setError(null);
+    try { await api("/notices", { body: n.f }); toast.success("Notice posted."); setOpen(false); n.setF({ title: "", body: "", batch_id: "" }); notices.reload(); }
+    catch (err) { setError((err as Error).message); }
   };
   return (
     <>
       <PageTitle title="Notice board" sub="Announcements for students and staff">{isStaff && <button className="btn btn-primary" onClick={() => setOpen(true)}>+ Post notice</button>}</PageTitle>
-      {notices.loading ? <Loading /> : notices.data?.length ? (
+      {notices.loading ? <SkeletonCards count={2} height={90} />
+        : notices.error && !notices.data ? <div className="card"><ErrorState error={notices.error} onRetry={() => notices.reload()} /></div>
+        : notices.data?.length ? (
         <div className="stack">{notices.data.map((x) => (
           <div key={x.id} className="card card-pad">
             <div className="row between"><b style={{ fontSize: 17 }}>{x.title}</b>
               <div className="row"><span className="badge">{x.batch_name ?? "Everyone"}</span><span className="small muted">{fmtDate(x.created_at)}</span>
-                {isStaff && <button className="btn-link small" style={{ color: "var(--red)" }} onClick={async () => { await api(`/notices/${x.id}`, { method: "DELETE" }); notices.reload(); }}>Delete</button>}</div>
+                {isStaff && <button className="btn-link small" style={{ color: "var(--red)" }} onClick={async () => { if (!confirm(`Delete the notice "${x.title}"?`)) return; if (await run(() => api(`/notices/${x.id}`, { method: "DELETE" }), "Notice deleted.")) notices.reload(); }}>Delete</button>}</div>
             </div>
             <p style={{ marginTop: 8, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{x.body}</p>
           </div>))}
         </div>
-      ) : <div className="card"><Empty title="No notices yet" /></div>}
+      ) : <div className="card"><Empty title="No notices yet" icon="notices" action={isStaff ? <button className="btn btn-primary btn-sm" onClick={() => setOpen(true)}>+ Post notice</button> : undefined}>
+          {isStaff ? "Post announcements for everyone or for one batch." : "Announcements from your institute will appear here."}</Empty></div>}
       {open && (
         <Modal title="Post a notice" onClose={() => setOpen(false)}>
           <form className="stack" onSubmit={post}>
             <label className="field"><span>Title</span><input className="input" required value={n.f.title} onChange={n.set("title")} /></label>
             <label className="field"><span>Audience</span><select className="input" value={n.f.batch_id} onChange={n.set("batch_id")}><option value="">Everyone</option>{batches.data?.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
             <label className="field"><span>Message</span><textarea className="input" rows={5} required value={n.f.body} onChange={n.set("body")} /></label>
-            <button className="btn btn-primary">Post</button>
+            <ErrorBox error={error} /><button className="btn btn-primary">Post</button>
           </form>
         </Modal>
       )}
@@ -344,20 +376,20 @@ export function Settings() {
   const { user, org, refresh } = useAuth();
   const o = useForm({ name: org?.name ?? "", city: org?.city ?? "" });
   const p = useForm({ current: "", next: "" });
-  const [msg, setMsg] = useState<{ ok?: string; err?: string }>({});
+  const toast = useToast();
   return (
     <>
       <PageTitle title="Settings" />
       <div className="grid g2">
         {user!.role === "admin" && (
-          <form className="card card-pad stack" onSubmit={async (e) => { e.preventDefault(); try { await api("/organisation", { method: "PUT", body: o.f }); await refresh(); setMsg({ ok: "Institute saved" }); } catch (err) { setMsg({ err: (err as Error).message }); } }}>
+          <form className="card card-pad stack" onSubmit={async (e) => { e.preventDefault(); try { await api("/organisation", { method: "PUT", body: o.f }); await refresh(); toast.success("Institute details saved."); } catch (err) { toast.error((err as Error).message); } }}>
             <b>Institute</b>
             <label className="field"><span>Name</span><input className="input" value={o.f.name} onChange={o.set("name")} /></label>
             <label className="field"><span>City</span><input className="input" value={o.f.city} onChange={o.set("city")} /></label>
             <button className="btn btn-primary" style={{ alignSelf: "flex-start" }}>Save</button>
           </form>
         )}
-        <form className="card card-pad stack" onSubmit={async (e) => { e.preventDefault(); try { const r = await api<{ token: string }>("/auth/change-password", { body: p.f }); setToken(r.token); p.setF({ current: "", next: "" }); setMsg({ ok: "Password changed" }); } catch (err) { setMsg({ err: (err as Error).message }); } }}>
+        <form className="card card-pad stack" onSubmit={async (e) => { e.preventDefault(); try { const r = await api<{ token: string }>("/auth/change-password", { body: p.f }); setToken(r.token); p.setF({ current: "", next: "" }); toast.success("Password changed. Other devices have been signed out."); } catch (err) { toast.error((err as Error).message); } }}>
           <b>Change password</b>
           <label className="field"><span>Current password</span><input className="input" type="password" required value={p.f.current} onChange={p.set("current")} /></label>
           <label className="field"><span>New password (8+ characters)</span><input className="input" type="password" minLength={8} required value={p.f.next} onChange={p.set("next")} /></label>
@@ -365,8 +397,6 @@ export function Settings() {
         </form>
         {user!.role !== "student" && <AiEngineCard isAdmin={user!.role === "admin"} />}
       </div>
-      {msg.ok && <div className="ok-box" style={{ marginTop: 14 }}>{msg.ok}</div>}
-      {msg.err && <div className="error-box" style={{ marginTop: 14 }}>{msg.err}</div>}
     </>
   );
 }
@@ -389,9 +419,11 @@ function AiModeCard({ isAdmin, status, onChange }: { isAdmin: boolean; status: A
   const onCredits = !status.own_key && status.platform_available && !status.demo;
   const credits = useCredits();
   const [err, setErr] = useState<string | null>(null);
+  const toast = useToast();
   const pick = async (mode: AiMode) => {
     setErr(null);
-    try { onChange(await api<AiStatus>("/settings/ai/mode", { method: "PUT", body: { mode } })); } catch (e) { setErr((e as Error).message); }
+    try { onChange(await api<AiStatus>("/settings/ai/mode", { method: "PUT", body: { mode } })); toast.success(`Marking quality: ${MODES.find((m) => m.id === mode)!.title.replace(" (recommended)", "")}.`); }
+    catch (e) { setErr((e as Error).message); }
   };
   const u = usage.data;
   return (
@@ -412,7 +444,7 @@ function AiModeCard({ isAdmin, status, onChange }: { isAdmin: boolean; status: A
       <ErrorBox error={err} />
       <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
         <div className="row between"><b>This month's AI cost</b>{u && <span className="small muted">{new Date(u.month + "-01").toLocaleDateString("en-IN", { month: "long", year: "numeric" })}</span>}</div>
-        {!u ? <Loading /> : !u.items.length ? <p className="small muted">No AI used yet this month.</p> : (
+        {usage.loading ? <Loading lines={2} /> : !u ? <ErrorState error={usage.error} onRetry={() => usage.reload()} /> : !u.items.length ? <p className="small muted">No AI used yet this month.</p> : (
           <>
             <div className="row wrap" style={{ gap: 24, margin: "10px 0" }}>
               <div><div className="small muted">Estimated total</div><b style={{ fontSize: 22 }}>{inr(u.total_usd)}</b> <span className="small muted">(${u.total_usd.toFixed(2)})</span></div>
@@ -434,13 +466,15 @@ function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
   const st = useApi<AiStatus>("/settings/ai");
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState<null | "save" | "test" | "remove">(null);
-  const [msg, setMsg] = useState<{ ok?: string; err?: string }>({});
+  const [msg, setMsg] = useState<{ err?: string }>({});
+  const toast = useToast();
+  const { refresh } = useAuth();
   const act = async (kind: "save" | "test" | "remove") => {
     setBusy(kind); setMsg({});
     try {
-      if (kind === "save") { const r = await api<AiStatus & { model_name: string }>("/settings/ai", { method: "PUT", body: { key } }); st.setData(r); setKey(""); setMsg({ ok: `Connected to ${r.model_name}. AI marking and paper generation are ready.` }); }
-      if (kind === "test") { const r = await api<{ model_name: string }>("/settings/ai/test", { body: {} }); setMsg({ ok: `Working. Connected to ${r.model_name}.` }); }
-      if (kind === "remove") { st.setData(await api<AiStatus>("/settings/ai", { method: "DELETE" })); setMsg({ ok: "API key removed." }); }
+      if (kind === "save") { const r = await api<AiStatus & { model_name: string }>("/settings/ai", { method: "PUT", body: { key } }); st.setData(r); setKey(""); void refresh(); toast.success(`Connected to ${r.model_name}. AI marking and paper generation are ready.`); }
+      if (kind === "test") { const r = await api<{ model_name: string }>("/settings/ai/test", { body: {} }); toast.success(`Working. Connected to ${r.model_name}.`); }
+      if (kind === "remove") { st.setData(await api<AiStatus>("/settings/ai", { method: "DELETE" })); void refresh(); toast.success("API key removed."); }
     } catch (e) { setMsg({ err: (e as Error).message }); }
     finally { setBusy(null); }
   };
@@ -465,7 +499,7 @@ function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
       <div className="row between"><b>AI engine</b>
         {s && (s.demo ? <span className="badge">Off in the demo</span> : s.own_key ? <span className="badge green">● Your own Claude key {s.hint}</span>
           : s.platform_available ? <span className="badge green">● Veda Vidya AI · credits</span> : <span className="badge red">● Not set up</span>)}</div>
-      {!s ? <Loading /> : s.demo ? (
+      {st.loading ? <Loading /> : !s ? <ErrorState error={st.error} onRetry={() => st.reload()} /> : s.demo ? (
         <p className="small muted">AI is switched off in the public demo institute. Create your own institute (Log in → Create an institute) to use it.</p>
       ) : (
         <>
@@ -477,8 +511,7 @@ function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
           ))}
         </>
       )}
-      {msg.ok && <div className="ok-box">{msg.ok}</div>}
-      {msg.err && <div className="error-box">{msg.err}</div>}
+      {msg.err && <div className="error-box" role="alert">{msg.err}</div>}
       {s && !s.demo && <AiModeCard isAdmin={isAdmin} status={s} onChange={(n) => st.setData(n)} />}
     </div>
   );

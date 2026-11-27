@@ -86,12 +86,16 @@ try {
   await shot(p, "settings-credits");
 
   log("▸ Platform page (super-admin only)");
-  ok(!(await p.getByRole("link", { name: "Platform" }).count()), "an institute admin has no Platform link");
+  await p.getByRole("button", { name: "Institute" }).click();
+  ok(await visible(p.getByRole("menuitem", { name: "Batches" })) && !(await p.getByRole("menuitem", { name: "Platform" }).count()), "an institute admin has no Platform link");
+  await p.keyboard.press("Escape");
   ok((await call("GET", "/admin/orgs", { token: admin })).status === 403, "an institute admin can't call the platform API");
   const r = await pageAs(root);
   await r.goto(BASE + "/app/platform");
   ok(await visible(r.getByRole("heading", { name: "Platform" })), "Platform page opens for the super-admin");
-  ok(await visible(r.getByRole("link", { name: "Platform" })), "super-admin sees the Platform link");
+  await r.getByRole("button", { name: "Institute" }).click();
+  ok(await visible(r.getByRole("menuitem", { name: "Platform" })), "super-admin sees the Platform link");
+  await r.keyboard.press("Escape");
   const row = r.locator("tr", { hasText: `UI Academy ${s}` });
   ok(await visible(row), "the new institute is listed");
   ok((await row.innerText()).includes(String(credits)), "its balance is shown");

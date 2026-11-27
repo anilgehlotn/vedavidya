@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { BarList, Columns, Empty, ErrorBox, LineChart, Loading, PageTitle, ScoreBadge, useApi } from "../../components/ui";
+import { BarList, Columns, Empty, ErrorState, LineChart, PageSkeleton, PageTitle, ScoreBadge, SkeletonStats, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
 import { MistakeBars, TopTip } from "./Insights";
 
@@ -30,8 +30,9 @@ export function Analytics() {
   const subject = params.get("subject") ?? "";
   const data = useApi<BatchData>(batchId ? `/analytics/batch/${batchId}${subject ? `?subject=${encodeURIComponent(subject)}` : ""}` : null);
 
-  if (batches.loading) return <Loading />;
-  if (!batches.data?.length) return <><PageTitle title="Analytics" /><div className="card"><Empty title="Create a batch and run a test to see analytics" /></div></>;
+  if (batches.loading) return <PageSkeleton />;
+  if (!batches.data) return <><PageTitle title="Analytics" /><div className="card"><ErrorState error={batches.error} onRetry={() => batches.reload()} /></div></>;
+  if (!batches.data.length) return <><PageTitle title="Analytics" /><div className="card"><Empty title="Nothing to analyse yet" icon="chart" action={<Link to="/app/batches" className="btn btn-primary btn-sm">Go to batches</Link>}>Create a batch and run a test to see score trends, topics and the leaderboard.</Empty></div></>;
   const d = data.data;
   return (
     <>
@@ -41,8 +42,8 @@ export function Analytics() {
           {batches.data.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
       </PageTitle>
-      <ErrorBox error={data.error} />
-      {data.loading || !d ? <Loading /> : !d.trend.length ? <div className="card"><Empty title="No evaluated tests for this batch yet" /></div> : (
+      {data.loading ? <SkeletonStats /> : !d ? <div className="card"><ErrorState error={data.error} onRetry={() => data.reload()} /></div>
+        : !d.trend.length ? <div className="card"><Empty title="No marked tests for this batch yet" icon="chart">Analytics appear once a test for this batch has been marked.</Empty></div> : (
         <>
           <div className="grid g4" style={{ marginBottom: 16 }}>
             <div className="card stat"><div className="label">Tests analysed</div><div className="value">{d.trend.length}</div></div>
@@ -94,12 +95,12 @@ export function StudentReport({ self }: { self?: boolean }) {
   const id = self ? user!.id : params.id!;
   const [subject, setSubject] = useState("");
   const r = useApi<StudentData>(`/analytics/student/${id}${subject ? `?subject=${encodeURIComponent(subject)}` : ""}`);
-  if (r.loading) return <Loading />;
-  if (!r.data) return <ErrorBox error={r.error} />;
+  if (r.loading) return <PageSkeleton />;
+  if (!r.data) return <><PageTitle title={self ? "My report card" : "Student report"} crumbs={self ? [] : undefined} /><div className="card"><ErrorState error={r.error} onRetry={() => r.reload()} /></div></>;
   const d = r.data;
   return (
     <>
-      <PageTitle title={self ? "My report card" : d.student.name} sub={`${d.student.batch_name ?? ""} · Roll ${d.student.roll_no ?? "—"} · ${d.trend.length} tests`}>
+      <PageTitle title={self ? "My report card" : d.student.name} crumbs={self ? [] : undefined} sub={`${d.student.batch_name ?? ""} · Roll ${d.student.roll_no ?? "—"} · ${d.trend.length} tests`}>
         <SubjectPicker subjects={d.subjects} value={subject} onChange={setSubject} />
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
       </PageTitle>
@@ -107,7 +108,7 @@ export function StudentReport({ self }: { self?: boolean }) {
         <div className="card card-pad" style={{ marginBottom: 16 }}><b>By subject</b>
           <div style={{ marginTop: 14 }}><BarList items={d.subjects.map((x) => ({ label: x.subject, value: x.avg, sub: `${x.avg}% · ${x.tests} test${x.tests === 1 ? "" : "s"}` }))} /></div></div>
       )}
-      {!d.trend.length ? <div className="card"><Empty title="No published results yet" /></div> : (
+      {!d.trend.length ? <div className="card"><Empty title="No published results yet" icon="report">{self ? "Your scores appear here once your teacher publishes a test's results." : "Scores appear once a test with this student is published."}</Empty></div> : (
         <>
           <div className="grid g3" style={{ marginBottom: 16 }}>
             <div className="card stat"><div className="label">Average score</div><div className="value">{d.average}%</div></div>

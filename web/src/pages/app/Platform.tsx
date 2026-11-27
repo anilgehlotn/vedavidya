@@ -1,7 +1,8 @@
 // Platform owner (super-admin) page: every institute's credits, free monthly credits, prices and backups.
 import { useState } from "react";
 import { api, fmtDate } from "../../lib/api";
-import { Empty, ErrorBox, Loading, PageTitle, useApi } from "../../components/ui";
+import { Empty, ErrorState, Loading, PageTitle, SkeletonTable, useApi } from "../../components/ui";
+import { useToast } from "../../components/toast";
 
 interface OrgRow { id: string; name: string; city: string | null; created_at: string; is_demo: number; own_key: boolean; students: number; used_this_month: number; monthly_free_credits: number | null;
   balance: { free: number; paid: number; total: number; monthly_free: number } | null }
@@ -18,10 +19,12 @@ export default function Platform() {
   const orgs = useApi<OrgRow[]>("/admin/orgs");
   const settings = useApi<PlatformSettings>("/admin/settings");
   const backups = useApi<{ backups: Backup[] }>("/admin/backups");
-  const [msg, setMsg] = useState<{ ok?: string; err?: string }>({});
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
   const act = async (fn: () => Promise<unknown>, ok: string) => {
-    setMsg({});
-    try { await fn(); setMsg({ ok }); orgs.reload(true); settings.reload(true); backups.reload(true); } catch (e) { setMsg({ err: (e as Error).message }); }
+    setBusy(true);
+    try { await fn(); toast.success(ok); orgs.reload(true); settings.reload(true); backups.reload(true); } catch (e) { toast.error((e as Error).message); }
+    finally { setBusy(false); }
   };
   const addCredits = (o: OrgRow) => {
     const a = prompt(`Credits to add for ${o.name} (use a minus sign to remove):`, "500");
@@ -39,15 +42,13 @@ export default function Platform() {
   return (
     <>
       <PageTitle title="Platform" sub="Institutes, credits and backups (only you can see this)">
-        <button className="btn btn-ghost" onClick={() => act(() => api("/admin/backup", { body: {} }), "Backup saved.")}>Back up now</button>
+        <button className="btn btn-ghost" disabled={busy} onClick={() => act(() => api("/admin/backup", { body: {} }), "Backup saved.")}>Back up now</button>
       </PageTitle>
-      {msg.ok && <div className="ok-box" style={{ marginBottom: 14 }}>{msg.ok}</div>}
-      {msg.err && <div className="error-box" style={{ marginBottom: 14 }}>{msg.err}</div>}
       {settings.data && !settings.data.platform_key && <div className="error-box" style={{ marginBottom: 14 }}>The platform Claude key isn't set (PLATFORM_CLAUDE_KEY). Until it is, only institutes with their own key can use AI.</div>}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-pad" style={{ paddingBottom: 0 }}><b>Institutes</b></div>
-        {orgs.loading ? <Loading /> : !orgs.data?.length ? <Empty title="No institutes yet" /> : (
+        {orgs.loading ? <div className="card-pad"><SkeletonTable rows={3} cols={5} /></div> : orgs.error && !orgs.data ? <ErrorState error={orgs.error} onRetry={() => orgs.reload()} /> : !orgs.data?.length ? <Empty title="No institutes yet" /> : (
           <div className="table-wrap"><table className="t">
             <thead><tr><th>Institute</th><th>Students</th><th>Credits left</th><th>Used this month</th><th>Free / month</th><th></th></tr></thead>
             <tbody>{orgs.data.map((o) => (
@@ -69,7 +70,7 @@ export default function Platform() {
       <div className="grid g2">
         <div className="card card-pad stack">
           <b>Prices and free credits</b>
-          {settings.loading ? <Loading /> : settings.data && (
+          {settings.loading ? <Loading lines={6} /> : !settings.data ? <ErrorState error={settings.error} onRetry={() => settings.reload()} /> : (
             <form className="stack" onSubmit={(e) => {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
@@ -98,12 +99,11 @@ export default function Platform() {
         <div className="card card-pad stack">
           <b>Backups</b>
           <p className="small muted" style={{ margin: 0 }}>A copy of the database is made every day; the newest 14 are kept.</p>
-          {backups.loading ? <Loading /> : !backups.data?.backups.length ? <p className="small muted">No backups yet.</p> : (
+          {backups.loading ? <Loading /> : backups.error && !backups.data ? <ErrorState error={backups.error} onRetry={() => backups.reload()} /> : !backups.data?.backups.length ? <p className="small muted">No backups yet. The first daily copy is made shortly after the server starts.</p> : (
             <div className="table-wrap"><table className="t"><tbody>
               {backups.data.backups.map((b) => <tr key={b.file}><td className="small">{b.file}</td><td className="small" style={{ textAlign: "right" }}>{Math.round(b.size / 1024)} KB</td></tr>)}
             </tbody></table></div>
           )}
-          <ErrorBox error={backups.error} />
         </div>
       </div>
     </>

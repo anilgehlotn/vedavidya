@@ -5,6 +5,7 @@ import { api } from "../../lib/api";
 import type { UploadedFile } from "../../lib/chunkUpload";
 import { FileUpload } from "../../components/FileUpload";
 import { ErrorBox } from "../../components/ui";
+import { useToast } from "../../components/toast";
 import { CreditLine } from "./Credits";
 
 type KeyMode = "auto" | "in_paper" | "separate";
@@ -28,6 +29,7 @@ export function ImportPaperForm({ defaults, showMeta, onCreated, onCancel }: {
   const [meta, setMeta] = useState({ subject: defaults?.subject ?? "", class_level: defaults?.class_level ?? "", board: "CBSE", duration_min: "60" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
   const ready = paper.length > 0 && !paperBusy && !keyBusy && (mode !== "separate" || key.length > 0);
 
   const submit = async () => {
@@ -37,6 +39,7 @@ export function ImportPaperForm({ defaults, showMeta, onCreated, onCancel }: {
         paper_uploads: paper.map((p) => p.id), key_uploads: mode === "separate" ? key.map((k) => k.id) : [], key_mode: mode,
         subject: meta.subject || undefined, class_level: meta.class_level || undefined, board: meta.board || undefined, duration_min: Number(meta.duration_min) || undefined,
       } });
+      toast.info("The AI is reading your paper. This usually takes 1–3 minutes.");
       await onCreated(r.id);
     } catch (e) { setError((e as Error).message); setBusy(false); }
   };

@@ -121,6 +121,21 @@ export function recoverPractice() {
 }
 
 // ---------------- Student side ----------------
+/** Practice Questions page: Fix-it practice for every test, newest first (counts and average improvement). */
+practiceRoutes.get("/practice/overview", staff, (req, res) => {
+  const rows = all<any>(`SELECT t.id, t.title, t.created_at, t.subject,
+      sum(ps.kind = 'practice') AS students,
+      sum(ps.kind = 'practice' AND ps.status = 'generating') AS preparing,
+      sum(ps.kind = 'practice' AND ps.status = 'failed') AS failed,
+      sum(ps.kind = 'practice' AND ps.status = 'done') AS completed,
+      sum(ps.kind = 'checkup' AND ps.status = 'done') AS checkup_done,
+      round(avg(CASE WHEN ps.kind = 'checkup' AND ps.status = 'done' THEN ps.baseline_pct END)) AS baseline_avg,
+      round(avg(CASE WHEN ps.kind = 'checkup' AND ps.status = 'done' AND ps.max_score > 0 THEN ps.score * 100.0 / ps.max_score END)) AS checkup_avg
+    FROM practice_sets ps JOIN tests t ON t.id = ps.test_id
+    WHERE ps.org_id = ? GROUP BY t.id ORDER BY t.created_at DESC LIMIT 200`, req.user!.org_id);
+  res.json(rows);
+});
+
 practiceRoutes.get("/my/practice", student, (req, res) => {
   const rows = all<any>(`SELECT ps.id, ps.kind, ps.status, ps.score, ps.max_score, ps.available_at, ps.completed_at, ps.focus, ps.test_id,
       t.title AS test_title, p.subject, json_array_length(ps.questions) AS count, ps.answers

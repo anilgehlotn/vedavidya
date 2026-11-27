@@ -1,5 +1,5 @@
 // The institute's AI credits: balance (monthly free + granted), what each action costs, and the history.
-import { ErrorBox, Loading, useApi } from "../../components/ui";
+import { ErrorState, Loading, useApi } from "../../components/ui";
 import { fmtDateTime } from "../../lib/api";
 
 export interface CreditInfo {
@@ -28,7 +28,7 @@ export function CreditLine({ action, units = 1 }: { action?: string; units?: num
 export function CreditsPanel() {
   const c = useCredits();
   if (c.loading) return <Loading />;
-  if (!c.data) return <ErrorBox error={c.error} />;
+  if (!c.data) return <ErrorState error={c.error} onRetry={() => c.reload()} title="Credits couldn't be loaded" />;
   const { balance: b, prices, labels, history } = c.data;
   if (b.own_key) return <p className="small muted" style={{ margin: 0 }}>Your institute uses its own Claude key, so AI usage is billed to your Anthropic account and no credits are used.</p>;
   const resets = new Date(b.resets_on + "T00:00:00Z").toLocaleDateString("en-IN", { day: "numeric", month: "long" });

@@ -70,7 +70,10 @@ publicRoutes.post("/auth/register", signupLimit, (req, res) => {
 });
 
 publicRoutes.get("/me", requireAuth, (req, res) => {
-  const org = one("SELECT id, name, city, is_demo FROM orgs WHERE id = ?", req.user!.org_id);
+  const o = one<{ id: string; name: string; city: string | null; is_demo: number; own_key: number }>(
+    "SELECT id, name, city, is_demo, claude_key_enc IS NOT NULL AS own_key FROM orgs WHERE id = ?", req.user!.org_id);
+  // plan: shown as a badge under the avatar. "demo" (public demo), "own_key" (institute pays Anthropic), "credits" (Veda Vidya AI).
+  const org = o && { id: o.id, name: o.name, city: o.city, is_demo: o.is_demo, plan: o.is_demo ? "demo" : o.own_key ? "own_key" : "credits" };
   res.json({ user: { ...req.user, is_super_admin: isSuperAdmin(req.user!.id) }, org });
 });
 
