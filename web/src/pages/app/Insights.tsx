@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, fmtDate } from "../../lib/api";
 import { Empty, ErrorBox, ErrorState, Loading, PageTitle, useApi } from "../../components/ui";
 import { useToast } from "../../components/toast";
+import { MathText } from "../../components/MathText";
 
 export const MISTAKES: Record<string, { label: string; color: string; tip: string }> = {
   concept: { label: "Concept not clear", color: "var(--red)", tip: "Re-learn the idea, then try 3 fresh questions on it." },
@@ -271,7 +272,7 @@ export function PracticePlayer() {
       <div className="card card-pad stack" style={{ maxWidth: 720 }}>
         <div className="bar"><i style={{ width: `${(idx / qs.length) * 100}%` }} /></div>
         <div className="row wrap small"><b>Question {idx + 1} of {qs.length}</b><span className="badge">{q.topic}</span>{q.targets && <span className="muted">Fixes: {q.targets}</span>}</div>
-        <div className="q-text" style={{ fontSize: 17 }}>{q.text}</div>
+        <div className="q-text" style={{ fontSize: 17 }}><MathText text={q.text} /></div>
         {q.type === "mcq" ? (
           <div className="stack" style={{ gap: 8 }}>
             {q.options.map((o, i) => {
@@ -279,7 +280,7 @@ export function PracticePlayer() {
               return (
                 <button key={i} disabled={shown} onClick={() => setChoice(i)} className={`cbt-opt ${state === "sel" ? "sel" : ""}`}
                   style={state === "right" ? { borderColor: "var(--green)", background: "var(--green-soft)" } : state === "wrong" ? { borderColor: "var(--red)", background: "var(--red-soft)" } : undefined}>
-                  <span className="k">{String.fromCharCode(65 + i)}</span>{o}
+                  <span className="k">{String.fromCharCode(65 + i)}</span><MathText text={o} className="inline" />
                 </button>
               );
             })}

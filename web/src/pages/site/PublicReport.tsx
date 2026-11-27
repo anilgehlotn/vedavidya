@@ -2,6 +2,7 @@ import { useParams } from "react-router-dom";
 import { ErrorBox, Loading, Logo, useApi } from "../../components/ui";
 import type { Section, SheetEvaluation } from "../../lib/types";
 import { lazy, Suspense } from "react";
+import { MathText } from "../../components/MathText";
 const SheetView = lazy(() => import("../app/SheetView").then((m) => ({ default: m.SheetView })));
 
 interface Report { org_name: string; student_name: string; test_title: string; subject: string | null; score: number; max_score: number; rank: number; evaluation: SheetEvaluation | null; sections: Section[];
@@ -28,7 +29,7 @@ export default function PublicReport() {
             <div><div className="small muted">Rank</div><b style={{ fontSize: 28 }}>#{d.rank}</b></div>
           </div>
         </div>
-        {d.evaluation?.overall_feedback && <p style={{ marginTop: 14, color: "var(--ink-2)" }}>{d.evaluation.overall_feedback}</p>}
+        {d.evaluation?.overall_feedback && <div style={{ marginTop: 14, color: "var(--ink-2)" }}><MathText text={d.evaluation.overall_feedback} /></div>}
         {!!d.evaluation?.gaps.length && <div className="row wrap" style={{ marginTop: 12 }}><span className="small muted">Focus areas:</span>{d.evaluation.gaps.map((g) => <span key={g} className="badge red">{g}</span>)}</div>}
       </div>
       {d.files > 0 && d.evaluation ? (
@@ -42,7 +43,7 @@ export default function PublicReport() {
           <tbody>{d.evaluation?.questions.map((qe, i) => (
             <tr key={qe.question_id}><td>Q{i + 1}</td><td className="small">{qs.get(qe.question_id)?.topic}</td>
               <td><span className={`badge ${qe.marks_awarded >= qe.max_marks ? "green" : qe.marks_awarded > 0 ? "amber" : "red"}`}>{qe.marks_awarded}/{qe.max_marks}</span></td>
-              <td className="small">{qe.feedback}</td></tr>))}
+              <td className="small"><MathText text={qe.feedback} className="inline" /></td></tr>))}
           </tbody>
         </table></div>
       </div>}

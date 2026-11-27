@@ -13,6 +13,7 @@ import { FixitCell, MistakeBars, MISTAKES, TestInsights, TopTip, useInsights } f
 import { CreditLine } from "./Credits";
 import { ClassUploadWizard, PaperStep, Step, type ClassUpload } from "./TestFlow";
 import { SendReportsModal } from "./SendReports";
+import { MathText } from "../../components/MathText";
 // The corrected-sheet viewer (with maths rendering) loads only when a marked sheet is opened.
 const SheetView = lazy(() => import("./SheetView").then((m) => ({ default: m.SheetView })));
 
@@ -848,7 +849,7 @@ export function AttemptReview() {
       })()}
       {ev && (ev.overall_feedback || ev.gaps.length > 0) && (
         <div className="grid g2" style={{ marginBottom: 16 }}>
-          {ev.overall_feedback && <div className="card card-pad"><b>Overall feedback</b><p className="muted" style={{ marginTop: 6 }}>{ev.overall_feedback}</p>
+          {ev.overall_feedback && <div className="card card-pad"><b>Overall feedback</b><div className="muted" style={{ marginTop: 6 }}><MathText text={ev.overall_feedback} /></div>
             {ev.strengths.length > 0 && <div className="row wrap" style={{ marginTop: 10 }}>{ev.strengths.map((s) => <span key={s} className="badge green">✓ {s}</span>)}</div>}</div>}
           {ev.gaps.length > 0 && <div className="card card-pad"><b>Revise these</b><div className="row wrap" style={{ marginTop: 10 }}>{ev.gaps.map((g) => <span key={g} className="badge red">{g}</span>)}</div></div>}
         </div>
@@ -882,7 +883,7 @@ export function AttemptReview() {
                       {editable && qe.second_check === "changed" && <span className="badge blue" title={`First marked ${qe.first_marks}; a second, stronger AI model gave ${qe.marks_awarded}`}>Corrected by second check (was {qe.first_marks})</span>}
                       {qe.attempted && qe.marks_awarded < qe.max_marks && qe.mistake_type && qe.mistake_type !== "none" && MISTAKES[qe.mistake_type] &&
                         <span className="badge" style={{ color: MISTAKES[qe.mistake_type].color }}>{MISTAKES[qe.mistake_type].label}</span>}</div>
-                    <div className="q-text">{q?.text}</div>
+                    <div className="q-text"><MathText text={q?.text} /></div>
                   </div>
                   <div className="row" style={{ flex: "none" }}>
                     {editable ? (
@@ -902,14 +903,14 @@ export function AttemptReview() {
                 {qe.steps.length > 0 && (
                   <div style={{ marginTop: 10 }}>{qe.steps.map((s, j) => (
                     <div key={j} className="row between small" style={{ padding: "6px 0", borderBottom: "1px solid var(--line)" }}>
-                      <span>{s.step}{s.comment && <span className="muted"> - {s.comment}</span>}</span>
+                      <span><MathText text={s.step} className="inline" />{s.comment && <span className="muted"> - <MathText text={s.comment} className="inline" /></span>}</span>
                       <span className={`badge ${s.awarded >= s.max_marks ? "green" : s.awarded > 0 ? "amber" : "red"}`}>{s.awarded}/{s.max_marks}</span>
                     </div>))}
                   </div>
                 )}
                 {editable && qe.needs_review && !d.reviewed && qe.check_note && <div className="small" style={{ marginTop: 10, padding: "8px 12px", borderRadius: 10, background: "var(--amber-soft)", color: "var(--amber)" }}>⚠ {qe.check_note}</div>}
-                {qe.mistake_note && qe.marks_awarded < qe.max_marks && <p className="small" style={{ marginTop: 10 }}><b>Mistake:</b> {qe.mistake_note}</p>}
-                {qe.feedback && <p className="small" style={{ marginTop: 10 }}><b>Feedback:</b> {qe.feedback}</p>}
+                {qe.mistake_note && qe.marks_awarded < qe.max_marks && <p className="small" style={{ marginTop: 10 }}><b>Mistake:</b> <MathText text={qe.mistake_note} className="inline" /></p>}
+                {qe.feedback && <p className="small" style={{ marginTop: 10 }}><b>Feedback:</b> <MathText text={qe.feedback} className="inline" /></p>}
               </div>
             );
           })}

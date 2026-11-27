@@ -44,7 +44,10 @@ export class LocalDiskStorage implements Storage {
   async exists(key: string) { try { await fsp.access(this.full(key)); return true; } catch { return false; } }
   async size(key: string) { try { return (await fsp.stat(this.full(key))).size; } catch { return null; } }
   async remove(keys: string[]) {
-    for (const k of keys) { try { await fsp.rm(this.full(k), { force: true }); } catch { /* bad key: nothing to delete */ } }
+    const dirs = new Set<string>();
+    for (const k of keys) { try { const f = this.full(k); await fsp.rm(f, { force: true }); dirs.add(path.dirname(f)); } catch { /* bad key: nothing to delete */ } }
+    // Tidy up folders left empty (rmdir refuses non-empty ones; never above the storage root).
+    for (const d of dirs) if (d.startsWith(this.root + path.sep)) await fsp.rmdir(d).catch(() => {});
   }
   async withLocalFile<T>(key: string, fn: (p: string) => Promise<T>) { return fn(this.full(key)); }
   send(res: Response, key: string, opts: { contentType?: string; maxAge?: number } = {}) {

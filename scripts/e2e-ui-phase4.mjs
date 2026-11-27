@@ -90,7 +90,7 @@ try {
   const cards = p.locator(".batch-card");
   ok(await visible(cards), "batches show as cards");
   const total = await cards.count();
-  ok(total === 3, `all demo batches (${total})`);
+  ok(total === 4, `all demo batches (${total})`);
   ok(/Students/.test(await cards.first().innerText()) && /Average/.test(await cards.first().innerText()), "cards show students, tests and average");
   await p.getByLabel("Search batches").fill("alpha");
   ok(await cards.count() === 1, "search narrows the cards");

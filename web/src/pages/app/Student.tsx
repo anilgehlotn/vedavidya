@@ -5,6 +5,7 @@ import { api, DEMO, download, fmtDateTime, pct } from "../../lib/api";
 import type { Question } from "../../lib/types";
 import { Empty, ErrorBox, ErrorState, Loading, Modal, PageTitle, ScoreBadge, SkeletonCards, useApi } from "../../components/ui";
 import { FixitList } from "./Insights";
+import { MathText } from "../../components/MathText";
 
 interface MyTest { id: string; title: string; mode: "cbt" | "offline"; scheduled_at: string | null; duration_min: number; results_published: number; subject: string | null; total_marks: number; attempt_id: string; status: string; score: number | null; max_score: number | null }
 
@@ -130,12 +131,12 @@ export function CbtExam() {
         </div>
         <div className="card card-pad grow" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
           <div className="small muted">Question {cur + 1} of {qs.length} · {q.type === "mcq" ? "Single correct" : "Numerical answer"}</div>
-          <div className="q-text" style={{ fontSize: 18 }}>{q.text}</div>
+          <div className="q-text" style={{ fontSize: 18 }}><MathText text={q.text} /></div>
           {q.type === "mcq" ? (
             <div className="stack" style={{ gap: 10 }}>
               {q.options.map((o, i) => (
                 <button key={i} className={`cbt-opt ${r.answer === i ? "sel" : ""}`} onClick={() => setAnswer(r.answer === i ? null : i)}>
-                  <span className="k">{String.fromCharCode(65 + i)}</span>{o}
+                  <span className="k">{String.fromCharCode(65 + i)}</span><MathText text={o} className="inline" />
                 </button>))}
             </div>
           ) : (
