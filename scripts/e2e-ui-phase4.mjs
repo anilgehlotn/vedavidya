@@ -209,6 +209,60 @@ try {
   await jctx.close();
   ok((await call("GET", `/students?batch_id=${evId}`, { token: admin })).data.some((x) => x.name === "Link Joiner" && x.roll_no === "41"), "the joiner is in the batch");
 
+  // ------------------------------------------------------------------ Question papers list
+  log("▸ Question Papers list");
+  await p.goto(BASE + "/app/papers");
+  const pcards = p.locator(".paper-card");
+  ok(await visible(pcards), "papers show as cards");
+  const demoPapers = (await call("GET", "/papers", { token: demo })).data;
+  ok(await pcards.count() === demoPapers.length, `every paper has a card (${demoPapers.length})`);
+  const approved = demoPapers.find((x) => x.status === "approved");
+  if (approved) ok(await visible(p.locator(".paper-card", { hasText: approved.title }).locator(".approved-tick")), "approved papers have a tick");
+  ok(/marks/.test(await pcards.first().innerText()) && /questions/.test(await pcards.first().innerText()), "cards show marks and questions");
+  await p.getByLabel("Search papers").fill(demoPapers[0].title.slice(0, 8));
+  ok(await pcards.count() >= 1 && await pcards.count() <= demoPapers.length, "search");
+  await p.getByLabel("Search papers").fill("");
+  await shot(p, "p4-papers");
+
+  const fp = await pageAs(admin);
+  for (const t of ["Algebra basics", "Light and optics"]) await call("POST", "/papers", { token: admin, body: { title: t, subject: "Science", duration_min: 30, sections: [{ name: "A", instructions: "", questions: [] }] } });
+  await fp.goto(BASE + "/app/papers");
+  ok(await visible(fp.locator(".paper-card", { hasText: "Algebra basics" })), "composed paper listed");
+  ok(await visible(fp.locator(".paper-card", { hasText: "Algebra basics" }).locator(".badge", { hasText: "Written here" })), "source badge");
+  ok(/2/.test(await fp.getByRole("button", { name: /Written here/ }).innerText()), "chip shows a count");
+  fp.once("dialog", (d) => d.accept("Term 1"));
+  await fp.getByRole("button", { name: "+ New" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: 'Folder "Term 1" created.' })), "folder created");
+  ok(await visible(fp.locator(".state", { hasText: "This folder is empty" })), "new folder opens, empty");
+  await fp.locator(".folder-nav").getByRole("button", { name: /All papers/ }).click();
+  const alg = fp.locator(".paper-card", { hasText: "Algebra basics" });
+  await alg.getByRole("button", { name: /More actions/ }).click();
+  await fp.getByRole("menuitem", { name: /Folder, course/ }).click();
+  await fp.getByRole("dialog").getByLabel("Folder").selectOption({ label: "Term 1" });
+  await fp.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: "Paper updated." })), "moved to a folder");
+  ok(await visible(alg.locator(".tag", { hasText: "Term 1" })), "card shows its folder");
+  await fp.locator(".folder-nav").getByRole("button", { name: /Term 1/ }).click();
+  await sleep(300);
+  ok(await fp.locator(".paper-card").count() === 1, `folder filter (${await fp.locator(".paper-card").count()} cards, url ${fp.url()})`);
+  await fp.locator(".folder-nav").getByRole("button", { name: /Not in a folder/ }).click();
+  ok(await fp.locator(".paper-card").count() === 1 && await visible(fp.locator(".paper-card", { hasText: "Light and optics" })), "'Not in a folder' filter");
+  await fp.locator(".folder-nav").getByRole("button", { name: /All papers/ }).click();
+  await fp.locator(".paper-card", { hasText: "Light and optics" }).getByRole("button", { name: /More actions/ }).click();
+  await fp.getByRole("menuitem", { name: "Duplicate" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: 'Copy of "Light and optics" made.' })), "duplicate");
+  await sleep(500);
+  ok(await fp.locator(".paper-card").count() === 3, "copy listed");
+  fp.once("dialog", (d) => d.accept());
+  await fp.locator(".folder-nav li", { hasText: "Term 1" }).hover();
+  await fp.getByRole("button", { name: "Delete Term 1" }).click();
+  ok(await visible(fp.locator(".toast", { hasText: 'Folder "Term 1" deleted.' })), "folder deleted");
+  await sleep(400);
+  ok(await fp.locator(".paper-card").count() === 3, "its papers stay");
+  await fp.getByRole("button", { name: "✎ Compose" }).click();
+  await fp.waitForURL(/\/app\/papers\/[^/]+\?edit=1/);
+  ok(true, "Compose opens a blank paper in the editor");
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();

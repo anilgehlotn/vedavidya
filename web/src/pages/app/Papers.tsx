@@ -9,59 +9,6 @@ import { ImportPaperForm } from "./PaperImport";
 const STATUS: Record<Paper["status"], [string, string]> = { generating: ["Generating", "amber"], draft: ["Draft", ""], approved: ["Approved", "green"], failed: ["Failed", "red"] };
 const TYPE_LABEL: Record<Question["type"], string> = { mcq: "MCQ", numeric: "Numerical", short: "Short answer", long: "Long answer" };
 
-function ImportPaperModal({ onClose }: { onClose: () => void }) {
-  const nav = useNavigate();
-  return (
-    <Modal title="Import a question paper" onClose={onClose}>
-      <ImportPaperForm showMeta onCancel={onClose} onCreated={(id) => nav(`/app/papers/${id}`)} />
-    </Modal>
-  );
-}
-
-export function PaperList() {
-  const papers = useApi<Paper[]>("/papers");
-  const nav = useNavigate();
-  const [importing, setImporting] = useState(false);
-  const run = useRun();
-  useEffect(() => {
-    if (!papers.data?.some((p) => p.status === "generating")) return;
-    const t = setInterval(() => papers.reload(true), 3000);
-    return () => clearInterval(t);
-  }, [papers.data]);
-  return (
-    <>
-      <PageTitle title="Question papers" sub="Generate with AI, or write your own">
-        <button className="btn btn-ghost" onClick={async () => {
-          const r = await run(() => api<{ id: string }>("/papers", { body: { title: "Untitled paper", duration_min: 60, sections: [{ name: "Section A", instructions: "", questions: [] }] } }));
-          if (r) nav(`/app/papers/${r.id}?edit=1`);
-        }}>Blank paper</button>
-        <button className="btn btn-ghost" onClick={() => setImporting(true)}>⇪ Upload a paper</button>
-        <Link to="/app/papers/new" className="btn btn-primary">✦ Generate with AI</Link>
-      </PageTitle>
-      {importing && <ImportPaperModal onClose={() => setImporting(false)} />}
-      <div className="card">
-        {papers.loading ? <div className="card-pad"><SkeletonTable rows={5} cols={5} /></div>
-          : papers.error && !papers.data ? <ErrorState error={papers.error} onRetry={() => papers.reload()} />
-          : papers.data?.length ? (
-          <div className="table-wrap"><table className="t">
-            <thead><tr><th>Paper</th><th>Board / Class</th><th>Marks</th><th>Created</th><th>Status</th></tr></thead>
-            <tbody>{papers.data.map((p) => (
-              <tr key={p.id} className="click" onClick={() => nav(`/app/papers/${p.id}`)}>
-                <td><b>{p.title}</b><div className="small muted">{p.subject} · {p.language}</div></td>
-                <td className="small">{[p.board, p.class_level].filter(Boolean).join(" · ") || "—"}</td>
-                <td>{p.total_marks} <span className="muted small">/ {p.duration_min} min</span></td>
-                <td className="small">{fmtDate(p.created_at)}</td>
-                <td><span className={`badge ${STATUS[p.status][1]}`}>{p.status === "generating" && <span className="dot pulse" />}{STATUS[p.status][0]}</span></td>
-              </tr>))}
-            </tbody>
-          </table></div>
-        ) : <Empty title="No question papers yet" icon="paper" action={<div className="row wrap" style={{ justifyContent: "center" }}><button className="btn btn-ghost btn-sm" onClick={() => setImporting(true)}>⇪ Upload a paper</button><Link to="/app/papers/new" className="btn btn-primary btn-sm">✦ Generate with AI</Link></div>}>
-            Upload a printed paper for the AI to read, or describe one and let the AI write it.</Empty>}
-      </div>
-    </>
-  );
-}
-
 interface SectionSpec { name: string; type: Question["type"]; count: number; marks_each: number; negative_marks: number }
 const PRESETS: Record<string, { board: string; sections: SectionSpec[]; duration: number }> = {
   "CBSE board pattern": { board: "CBSE", duration: 180, sections: [
