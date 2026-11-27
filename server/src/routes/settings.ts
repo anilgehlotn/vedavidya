@@ -60,7 +60,7 @@ settingsRoutes.put("/settings/ai/mode", adminOnly, (req, res) => {
 });
 
 const TASK_LABEL: Record<string, string> = { paper: "Reading / writing question papers", marking: "Marking answer sheets", recheck: "Second checks of doubtful answers",
-  tagging: "Naming sub-topics", practice: "Fix-it practice", brief: "Re-teach briefs" };
+  tagging: "Naming sub-topics", practice: "Fix-it practice", brief: "Re-teach briefs", identify: "Finding students on scanned pages" };
 const costOf = (model: string, r: { input: number; output: number; cache_read: number; cache_write: number }) => {
   const p = PRICES[model] ?? PRICES["claude-opus-5-5"]; // unknown model: estimate high rather than low
   return (r.input * p.in + r.output * p.out + r.cache_read * p.cacheRead + r.cache_write * p.cacheWrite) / 1e6;

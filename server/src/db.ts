@@ -334,3 +334,22 @@ CREATE TABLE IF NOT EXISTS question_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_suggestions_paper ON question_suggestions(paper_id, created_at);
 `);
+
+// ---- Phase 4: class answer-sheet uploads mapped to students (AI reads the name/roll on each page; the teacher approves) ----
+addColumn("documents", "identify", "INTEGER DEFAULT 0"); // 1 = find the student on each page with AI
+db.exec(`
+CREATE TABLE IF NOT EXISTS sheet_pages (
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page_no INTEGER NOT NULL,
+  test_id TEXT NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+  attempt_id TEXT REFERENCES attempts(id) ON DELETE SET NULL,
+  first_page INTEGER NOT NULL DEFAULT 0,      -- the page starts a student's sheet
+  name_written TEXT, roll_written TEXT,        -- what the AI read in the page header
+  confidence TEXT,                             -- high | medium | low
+  method TEXT NOT NULL DEFAULT 'ai',           -- ai | order | teacher
+  approved INTEGER NOT NULL DEFAULT 0,         -- the pages were given to the student
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (document_id, page_no)
+);
+CREATE INDEX IF NOT EXISTS idx_sheet_pages_test ON sheet_pages(test_id);
+`);

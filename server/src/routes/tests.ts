@@ -4,7 +4,10 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import { all, json, one, run, uid } from "../db.js";
 import { staff, requireRole } from "../auth.js";
-import { evaluateSheet, AiError, aiProblem, modelFor } from "../ai/claude.js";
+import { evaluateSheet, identifyPages, AiError, aiProblem, modelFor } from "../ai/claude.js";
+import sharp from "sharp";
+import { groupPages } from "../lib/sheetmap.js";
+import { CreditError } from "../lib/credits.js";
 import { storage } from "../lib/storage.js";
 import { enqueueJob, latestJob, PermanentError, registerJob } from "../lib/jobs.js";
 import { createDocument, deleteDocuments, documentPages, documentsOfTest, getDocument, onDocumentReady } from "../lib/documents.js";
@@ -249,7 +252,19 @@ onDocumentReady("student_sheet", async (doc) => {
 }, (doc, message) => {
   if (doc.attempt_id) run("UPDATE attempts SET error = ? WHERE id = ?", `Upload failed: ${message}`, doc.attempt_id);
 });
-onDocumentReady("class_sheets", () => { /* waits for the teacher to assign pages to students */ });
+// A class upload: with "find students" on, the AI reads each page's header next; otherwise the teacher assigns pages.
+onDocumentReady("class_sheets", (doc) => {
+  if (!(doc as { identify?: number }).identify || !doc.test_id) return;
+  const pages = documentPages(doc.id);
+  run("INSERT OR IGNORE INTO sheet_pages (document_id, page_no, test_id) SELECT ?, page_no, ? FROM document_pages WHERE document_id = ?", doc.id, doc.test_id, doc.id);
+  let chargeRef: string | null = null;
+  try { chargeRef = charge(doc.org_id, "identify_pages", `identify:${doc.id}`, { units: pages.length, userId: one<{ created_by: string | null }>("SELECT created_by FROM documents WHERE id = ?", doc.id)?.created_by ?? undefined }); }
+  catch (e) {
+    if (e instanceof CreditError) { run("UPDATE documents SET error = ? WHERE id = ?", `Students weren't found automatically: ${e.message} You can still give pages to students by roll-number order.`, doc.id); return; }
+    throw e;
+  }
+  enqueueJob("identify_pages", { document_id: doc.id, org_id: doc.org_id, charge_ref: chargeRef }, { orgId: doc.org_id, dedupeKey: `identify:${doc.id}` });
+});
 
 const UploadIds = z.object({ upload_ids: z.array(z.string().max(60)).min(1, "Choose at least one file").max(400) });
 const offlineAttempt = (id: string, orgId: string) =>
@@ -317,12 +332,15 @@ testRoutes.post("/tests/:id/bulk-files", staff, wrap(async (req, res) => {
 // A whole class's scanned sheets: one PDF (or a ZIP of PDFs/photos). Pages are rendered in the background,
 // then the teacher assigns page ranges to students (or confirms the suggested split).
 testRoutes.post("/tests/:id/sheets", staff, wrap(async (req, res) => {
-  const { upload_id } = z.object({ upload_id: z.string().max(60) }).parse(req.body);
+  const { upload_id, identify } = z.object({ upload_id: z.string().max(60), identify: z.boolean().optional() }).parse(req.body);
   const t = one<any>("SELECT * FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
   if (t.mode !== "offline") return res.status(400).json({ error: "Online tests don't take uploaded sheets" });
   const [u] = takeUploads([upload_id], req.user!, "class_sheets");
-  const id = await createDocument({ orgId: req.user!.org_id, userId: req.user!.id, purpose: "class_sheets", uploads: [u], testId: t.id });
+  if (identify) { const problem = aiProblem(req.user!.org_id); if (problem) return res.status(400).json({ error: problem }); }
+  const id = await createDocument({ orgId: req.user!.org_id, userId: req.user!.id, purpose: "class_sheets", uploads: [u], testId: t.id, process: false });
+  if (identify) run("UPDATE documents SET identify = 1 WHERE id = ?", id);
+  enqueueJob("process_document", { document_id: id }, { orgId: req.user!.org_id, dedupeKey: `doc:${id}` });
   res.json({ document_id: id });
 }));
 
@@ -381,6 +399,138 @@ testRoutes.delete("/documents/:id", staff, wrap(async (req, res) => {
   if (inUse) return res.status(409).json({ error: "Some pages of this upload are already given to students. Re-upload those students' sheets first." });
   await deleteDocuments([d.id]);
   res.json({ ok: true });
+}));
+
+// ---------------- Finding students on a class scan, and the teacher's review of it ----------------
+const IDENTIFY_BATCH = 8; // pages per AI request
+registerJob<{ document_id: string; org_id: string; charge_ref: string | null }>("identify_pages", {
+  concurrency: 2,
+  run: async ({ document_id, org_id }) => {
+    const d = getDocument(document_id);
+    if (!d || !d.test_id) return;
+    const roster = all<{ id: string; name: string; roll: string | null }>(`SELECT a.id, u.name, e.roll_no AS roll FROM attempts a JOIN users u ON u.id = a.student_id
+      LEFT JOIN enrollments e ON e.student_id = u.id WHERE a.test_id = ? ORDER BY CAST(e.roll_no AS INTEGER), u.name`, d.test_id);
+    const pages = documentPages(document_id);
+    const reads: { n: number; first_page: boolean; student_id: string; confidence: "high" | "medium" | "low"; name_written: string; roll_written: string }[] = [];
+    for (let i = 0; i < pages.length; i += IDENTIFY_BATCH) {
+      const batch = [];
+      for (const p of pages.slice(i, i + IDENTIFY_BATCH)) {
+        if (!p.storage_key || /\.pdf$/i.test(p.storage_key)) continue;
+        // Only the top third of the page: the header with name and roll number. Small and cheap to send.
+        const img = sharp(await storage.read(p.storage_key)).rotate();
+        const meta = await img.metadata();
+        const h = Math.max(1, Math.round((meta.height ?? 1000) * 0.33));
+        batch.push({ n: p.page_no, image: await img.extract({ left: 0, top: 0, width: meta.width ?? 1000, height: Math.min(h, meta.height ?? h) }).resize({ width: 900, withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer() });
+      }
+      if (!batch.length) continue;
+      const out = await identifyPages(org_id, roster, batch);
+      const asked = new Set(batch.map((b) => b.n));
+      for (const r of out.pages ?? []) if (asked.has(r.page)) reads.push({ n: r.page, first_page: r.first_page, student_id: r.student_id, confidence: r.confidence, name_written: r.name_written, roll_written: r.roll_written });
+      // Pages the model skipped: unknown continuation pages.
+      for (const n of asked) if (!reads.some((r) => r.n === n)) reads.push({ n, first_page: false, student_id: "", confidence: "low", name_written: "", roll_written: "" });
+    }
+    const map = groupPages(reads, new Set(roster.map((r) => r.id)));
+    for (const m of map)
+      run(`UPDATE sheet_pages SET attempt_id = ?, first_page = ?, name_written = ?, roll_written = ?, confidence = ?, method = 'ai', updated_at = CURRENT_TIMESTAMP
+        WHERE document_id = ? AND page_no = ? AND approved = 0`, m.attempt_id, m.first_page || (m.group >= 0 && map.find((x) => x.group === m.group) === m) ? 1 : 0,
+        m.name_written || null, m.roll_written || null, m.confidence, document_id, m.n);
+  },
+  onFail: ({ document_id, org_id, charge_ref }, msg) => {
+    run("UPDATE documents SET error = ? WHERE id = ?", `Students couldn't be found automatically (${msg}). You can give pages to students by roll-number order instead.`, document_id);
+    refund(org_id, charge_ref, "Refund: finding students on a class scan didn't finish");
+  },
+});
+
+/** The page → student mapping of a class upload, for the Review Mapping screen. */
+testRoutes.get("/documents/:id/mapping", staff, (req, res) => {
+  const d = docInOrg(req.params.id, req.user!.org_id);
+  if (!d || d.purpose !== "class_sheets" || !d.test_id) return res.status(404).json({ error: "Upload not found" });
+  const job = latestJob(`identify:${d.id}`);
+  const pages = documentPages(d.id);
+  const rows = new Map(all<any>("SELECT * FROM sheet_pages WHERE document_id = ?", d.id).map((r) => [r.page_no, r]));
+  const students = all<any>(`SELECT a.id AS attempt_id, u.name, e.roll_no, a.status, a.score, json_array_length(coalesce(a.files, '[]')) AS files
+    FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN enrollments e ON e.student_id = u.id WHERE a.test_id = ? ORDER BY CAST(e.roll_no AS INTEGER), u.name`, d.test_id);
+  res.json({
+    document: { id: d.id, title: d.title, status: d.status, error: d.error, identify: Boolean((d as { identify?: number }).identify) },
+    identifying: Boolean(job && (job.status === "queued" || job.status === "processing")) || (Boolean((d as { identify?: number }).identify) && d.status !== "completed" && d.status !== "failed"),
+    pages: pages.map((p) => {
+      const r = rows.get(p.page_no);
+      return { n: p.page_no, width: p.width, height: p.height, attempt_id: r?.attempt_id ?? null, first_page: Boolean(r?.first_page), name_written: r?.name_written ?? null,
+        roll_written: r?.roll_written ?? null, confidence: r?.confidence ?? null, method: r?.method ?? null, approved: Boolean(r?.approved) };
+    }),
+    students,
+  });
+});
+
+/** Teacher changes: give pages to a student (or nobody). Approved pages can be changed too (they are given again on approve). */
+testRoutes.put("/documents/:id/mapping", staff, (req, res) => {
+  const b = z.object({ pages: z.array(z.object({ n: z.number().int().min(1), attempt_id: z.string().max(60).nullable(), first_page: z.boolean().optional() })).min(1).max(2000) }).parse(req.body);
+  const d = docInOrg(req.params.id, req.user!.org_id);
+  if (!d || d.purpose !== "class_sheets" || !d.test_id) return res.status(404).json({ error: "Upload not found" });
+  if (d.status !== "completed") return res.status(409).json({ error: "This upload is still being processed." });
+  const valid = new Set(all<{ id: string }>("SELECT id FROM attempts WHERE test_id = ?", d.test_id).map((a) => a.id));
+  const have = new Set(documentPages(d.id).map((p) => p.page_no));
+  for (const p of b.pages) {
+    if (!have.has(p.n)) return res.status(400).json({ error: `Page ${p.n} doesn't exist in this upload.` });
+    if (p.attempt_id && !valid.has(p.attempt_id)) return res.status(400).json({ error: "A student in the list is not in this test." });
+  }
+  for (const p of b.pages) {
+    run("INSERT OR IGNORE INTO sheet_pages (document_id, page_no, test_id) VALUES (?,?,?)", d.id, p.n, d.test_id);
+    run(`UPDATE sheet_pages SET attempt_id = ?, method = 'teacher', approved = 0, first_page = coalesce(?, first_page), updated_at = CURRENT_TIMESTAMP WHERE document_id = ? AND page_no = ?`,
+      p.attempt_id, p.first_page == null ? null : p.first_page ? 1 : 0, d.id, p.n);
+  }
+  res.json({ ok: true });
+});
+
+/** No AI: give pages in roll-number order, `pages_per_student` each (students without a sheet can be skipped). */
+testRoutes.post("/documents/:id/map-by-order", staff, (req, res) => {
+  const b = z.object({ pages_per_student: z.number().int().min(1).max(40), skip_attempt_ids: z.array(z.string().max(60)).max(1000).default([]) }).parse(req.body);
+  const d = docInOrg(req.params.id, req.user!.org_id);
+  if (!d || d.purpose !== "class_sheets" || !d.test_id) return res.status(404).json({ error: "Upload not found" });
+  if (d.status !== "completed") return res.status(409).json({ error: "This upload is still being processed." });
+  const order = all<{ id: string }>(`SELECT a.id FROM attempts a JOIN users u ON u.id = a.student_id LEFT JOIN enrollments e ON e.student_id = u.id
+    WHERE a.test_id = ? ORDER BY CAST(e.roll_no AS INTEGER), u.name`, d.test_id).map((a) => a.id).filter((id) => !b.skip_attempt_ids.includes(id));
+  const pages = documentPages(d.id);
+  pages.forEach((p, i) => {
+    const who = order[Math.floor(i / b.pages_per_student)] ?? null;
+    run("INSERT OR IGNORE INTO sheet_pages (document_id, page_no, test_id) VALUES (?,?,?)", d.id, p.page_no, d.test_id);
+    run(`UPDATE sheet_pages SET attempt_id = ?, first_page = ?, method = 'order', confidence = NULL, approved = 0, updated_at = CURRENT_TIMESTAMP WHERE document_id = ? AND page_no = ?`,
+      who, i % b.pages_per_student === 0 ? 1 : 0, d.id, p.page_no);
+  });
+  res.json({ students: Math.min(order.length, Math.ceil(pages.length / b.pages_per_student)), extra_pages: Math.max(0, pages.length - order.length * b.pages_per_student) });
+});
+
+/**
+ * Approve: each student (all mapped ones, or `attempt_ids`) gets exactly their mapped pages, in page order.
+ * With `mark`, their sheets are queued for AI marking straight away (paid with credits).
+ */
+testRoutes.post("/documents/:id/approve", staff, wrap(async (req, res) => {
+  const b = z.object({ attempt_ids: z.array(z.string().max(60)).max(1000).optional(), mark: z.boolean().optional() }).parse(req.body ?? {});
+  const d = docInOrg(req.params.id, req.user!.org_id);
+  if (!d || d.purpose !== "class_sheets" || !d.test_id) return res.status(404).json({ error: "Upload not found" });
+  if (d.status !== "completed") return res.status(409).json({ error: "This upload is still being processed." });
+  const keyOf = new Map(documentPages(d.id).map((p) => [p.page_no, p.storage_key]));
+  const rows = all<{ page_no: number; attempt_id: string }>("SELECT page_no, attempt_id FROM sheet_pages WHERE document_id = ? AND attempt_id IS NOT NULL ORDER BY page_no", d.id)
+    .filter((r) => !b.attempt_ids || b.attempt_ids.includes(r.attempt_id));
+  const byStudent = new Map<string, number[]>();
+  for (const r of rows) byStudent.set(r.attempt_id, [...(byStudent.get(r.attempt_id) ?? []), r.page_no]);
+  if (!byStudent.size) return res.status(400).json({ error: "No pages are given to students yet." });
+  for (const [aid, pgs] of byStudent) {
+    const att = one<{ status: string }>("SELECT status FROM attempts WHERE id = ? AND test_id = ?", aid, d.test_id);
+    if (att?.status === "evaluating") return res.status(409).json({ error: "One of these sheets is being marked right now. Wait for it to finish." });
+    if (pgs.length > 40) return res.status(400).json({ error: "A student has more than 40 pages. Check the mapping." });
+  }
+  if (b.mark) {
+    const paperIssue = paperProblem(paperFor(d.test_id));
+    if (paperIssue) return res.status(400).json({ error: paperIssue });
+    requireCredits(req.user!.org_id, [...byStudent.values()].reduce((t, pg) => t + priceOf(req.user!.org_id, "mark_sheet", 1, pg.length), 0));
+  }
+  for (const [aid, pgs] of byStudent) {
+    await setAttemptPages(aid, pgs.map((n) => keyOf.get(n)!));
+    run("UPDATE sheet_pages SET approved = 1, updated_at = CURRENT_TIMESTAMP WHERE document_id = ? AND attempt_id = ?", d.id, aid);
+  }
+  if (b.mark) enqueue([...byStudent.keys()], req.user!.id);
+  res.json({ students: byStudent.size, pages: rows.length, marking: Boolean(b.mark) });
 }));
 
 // One page of an answer sheet: staff of the institute, or the student once results are published.

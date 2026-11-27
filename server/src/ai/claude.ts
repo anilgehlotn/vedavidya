@@ -6,7 +6,7 @@ import path from "node:path";
 import { one, run } from "../db.js";
 import { storage } from "../lib/storage.js";
 import { decrypt } from "../secrets.js";
-import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, SubtopicTags, Question, type Section } from "./schemas.js";
+import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, SubtopicTags, Question, PageIdentification, type Section } from "./schemas.js";
 
 // ---- Which model does which job ----
 // "mixed" (default): the strongest model writes question papers and answer keys (one request per test, and an
@@ -17,12 +17,12 @@ export const MODELS = {
   sonnet: process.env.CLAUDE_MODEL_MID ?? "claude-sonnet-5-5",
   haiku: process.env.CLAUDE_MODEL_FAST ?? "claude-haiku-5-5",
 };
-export type AiTask = "paper" | "marking" | "recheck" | "tagging" | "practice" | "brief";
+export type AiTask = "paper" | "marking" | "recheck" | "tagging" | "practice" | "brief" | "identify";
 export type AiMode = "mixed" | "sonnet" | "opus";
 export const AI_MODES: Record<AiMode, Record<AiTask, string | null>> = {
-  mixed: { paper: MODELS.opus, marking: MODELS.haiku, recheck: MODELS.sonnet, tagging: MODELS.haiku, practice: MODELS.sonnet, brief: MODELS.sonnet },
-  sonnet: { paper: MODELS.sonnet, marking: MODELS.sonnet, recheck: null, tagging: MODELS.sonnet, practice: MODELS.sonnet, brief: MODELS.sonnet },
-  opus: { paper: MODELS.opus, marking: MODELS.opus, recheck: null, tagging: MODELS.opus, practice: MODELS.opus, brief: MODELS.opus },
+  mixed: { paper: MODELS.opus, marking: MODELS.haiku, recheck: MODELS.sonnet, tagging: MODELS.haiku, practice: MODELS.sonnet, brief: MODELS.sonnet, identify: MODELS.haiku },
+  sonnet: { paper: MODELS.sonnet, marking: MODELS.sonnet, recheck: null, tagging: MODELS.sonnet, practice: MODELS.sonnet, brief: MODELS.sonnet, identify: MODELS.sonnet },
+  opus: { paper: MODELS.opus, marking: MODELS.opus, recheck: null, tagging: MODELS.opus, practice: MODELS.opus, brief: MODELS.opus, identify: MODELS.sonnet },
 };
 /** USD per million tokens (input, output, cache read, cache write), used for the cost estimate in Settings. */
 export const PRICES: Record<string, { in: number; out: number; cacheRead: number; cacheWrite: number }> = {
@@ -319,6 +319,29 @@ export async function assistQuestion(orgId: string, ctx: { subject: string | nul
         `Keep id "${q.id}", type "${q.type}", marks ${q.marks} and negative_marks ${q.negative_marks}.\n` +
         `The question now (JSON):\n${JSON.stringify(q)}`,
     }],
+  });
+}
+
+/**
+ * Finds the student on each scanned answer-sheet page from its header (name / roll number written at the top).
+ * `pages` are the tops of the pages (cropped, small). Returns what was read and the matching roster id, if any.
+ */
+export async function identifyPages(orgId: string, roster: { id: string; name: string; roll: string | null }[], pages: { n: number; image: Buffer }[]) {
+  const content: Anthropic.Beta.BetaContentBlockParam[] = pages.flatMap((p) => [
+    { type: "text" as const, text: `Page ${p.n}:` },
+    { type: "image" as const, source: { type: "base64" as const, media_type: "image/jpeg" as const, data: p.image.toString("base64") } },
+  ]);
+  content.push({
+    type: "text",
+    text: `Find the student on each answer-sheet page.\nThese are the tops of scanned pages, in order. A student's first page usually has their name and/or roll number written in a header box; ` +
+      `their later pages usually don't. For every page above say whether it starts a new student's sheet, what name and roll number are written (empty if none), ` +
+      `and which student in the class list it belongs to (student_id, or empty if you can't tell). Match names loosely (spelling, initials, Hindi script) and roll numbers exactly.\n` +
+      `Class list (JSON): ${JSON.stringify(roster.map((r) => ({ student_id: r.id, name: r.name, roll: r.roll })))}`,
+  });
+  return structured<import("./schemas.js").PageIdentification>(orgId, {
+    task: "identify", effort: "low", format: zodOutputFormat(PageIdentification),
+    system: "You read the header of scanned answer sheets to find whose sheet each page is. Never guess a student without evidence on the page: use an empty student_id and low confidence instead.",
+    content,
   });
 }
 

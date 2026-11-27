@@ -122,3 +122,16 @@ export const ReteachBrief = z.object({
   next_steps: z.array(z.string()),
 });
 export type ReteachBrief = z.infer<typeof ReteachBrief>;
+
+/** Whose sheet each scanned page is (read from the page header). */
+export const PageIdentification = z.object({
+  pages: z.array(z.object({
+    page: z.number().describe("The page number given above the image"),
+    first_page: z.boolean().describe("True if this page starts a student's answer sheet (name/roll header filled in)"),
+    name_written: z.string().describe("Name written on the page, as read; empty if none"),
+    roll_written: z.string().describe("Roll number written on the page; empty if none"),
+    student_id: z.string().describe("student_id from the class list this page belongs to; empty if unknown"),
+    confidence: z.enum(["high", "medium", "low"]),
+  })),
+});
+export type PageIdentification = z.infer<typeof PageIdentification>;

@@ -981,6 +981,58 @@ section("Import with my own marking rules, course, subject and folder");
   await call("DELETE", `/batches/${rb}`, { token: admin });
 }
 
+section("Class scan: AI finds each student, teacher reviews, approves and marks");
+{
+  const MOCK = process.env.MOCK_URL ?? "http://localhost:4999";
+  const { PDFDocument } = require("pdf-lib");
+  const cb = (await call("POST", "/batches", { token: admin, body: { name: `Scan ${Date.now()}` } })).data.id;
+  await call("POST", "/students/bulk", { token: admin, body: { batch_id: cb, csv: "Scan One,1\nScan Two,2\nScan Three,3\nScan Four,4" } });
+  const ct = (await expect("scan test", 200, "POST", "/tests", { token: teacher, body: { title: "Scan test", paper_id: aiPaper.id, mode: "offline", batch_ids: [cb] } })).data.id;
+  const roster = (await call("GET", `/tests/${ct}`, { token: teacher })).data.attempts;
+  const pdf = await PDFDocument.create();
+  for (let i = 0; i < 8; i++) { const img = await pdf.embedJpg(await jpeg(600, 800, `page ${i + 1}`)); pdf.addPage([600, 800]).drawImage(img, { x: 0, y: 0, width: 600, height: 800 }); }
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ identify: { per: 2, unreadable: [5] } }) });
+  const [up] = await uploadAll(API, teacher, [["class-scan.pdf", Buffer.from(await pdf.save())]], "class_sheets");
+  const doc = (await expect("upload class scan with find-students", 200, "POST", `/tests/${ct}/sheets`, { token: teacher, body: { upload_id: up, identify: true } })).data.document_id;
+  const map = await poll(() => call("GET", `/documents/${doc}/mapping`, { token: teacher }).then((x) => x.data), (m) => m.document?.status === "completed" && !m.identifying && m.pages.some((p) => p.confidence));
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ identify: null }) });
+  ok(map.pages.length === 8 && map.students.length === 4, "8 pages, 4 students");
+  const who = (n) => map.pages.find((p) => p.n === n).attempt_id;
+  const byRoll = (r) => roster.find((a) => String(a.roll_no) === String(r)).id;
+  ok(who(1) === byRoll(1) && who(2) === byRoll(1) && who(3) === byRoll(2) && who(4) === byRoll(2) && who(7) === byRoll(4) && who(8) === byRoll(4), "readable students mapped, with their second pages");
+  ok(who(5) === null && who(6) === byRoll(3), "an unreadable first page stays for the teacher; the next page, read as roll 3, goes to roll 3");
+  ok(map.pages.find((p) => p.n === 1).first_page && map.pages.find((p) => p.n === 1).name_written === "Scan One" && !map.pages.find((p) => p.n === 2).first_page, "first pages and what was read are kept");
+  const recent = await (await fetch(`${MOCK}/__recent`)).json();
+  ok(recent.some((r) => /Find the student on each answer-sheet page/.test(r.text) && /Scan Three/.test(r.text)), "the AI was given the class list");
+  await expect("another institute can't see the mapping", 404, "GET", `/documents/${doc}/mapping`, { token: otherAdmin });
+  await expect("can't give pages to a student from another test", 400, "PUT", `/documents/${doc}/mapping`, { token: teacher, body: { pages: [{ n: 5, attempt_id: "att_nope" }] } });
+  await expect("teacher fixes pages 5-6", 200, "PUT", `/documents/${doc}/mapping`, { token: teacher, body: { pages: [{ n: 5, attempt_id: byRoll(3), first_page: true }, { n: 6, attempt_id: byRoll(3) }] } });
+  const fixed = (await call("GET", `/documents/${doc}/mapping`, { token: teacher })).data;
+  ok(fixed.pages.find((p) => p.n === 5).method === "teacher" && fixed.pages.every((p) => p.attempt_id), "every page now has a student");
+  const ap = await expect("approve one student first", 200, "POST", `/documents/${doc}/approve`, { token: teacher, body: { attempt_ids: [byRoll(1)] } });
+  ok(ap.data.students === 1 && ap.data.pages === 2, "one student approved");
+  let td = (await call("GET", `/tests/${ct}`, { token: teacher })).data;
+  ok(td.attempts.find((a) => a.id === byRoll(1)).files === 2 && td.attempts.find((a) => a.id === byRoll(2)).files === 0, "only approved students get pages");
+  const ap2 = await expect("approve all and mark", 200, "POST", `/documents/${doc}/approve`, { token: teacher, body: { mark: true } });
+  ok(ap2.data.students === 4 && ap2.data.marking, "all approved, marking started");
+  td = await poll(() => call("GET", `/tests/${ct}`, { token: teacher }).then((x) => x.data), (d) => d.attempts.every((a) => a.status === "evaluated" || a.status === "failed"));
+  ok(td.attempts.every((a) => a.status === "evaluated" && a.files === 2), "every student marked from their 2 pages");
+  ok((await call("GET", `/documents/${doc}/mapping`, { token: teacher })).data.pages.every((p) => p.approved), "pages show as approved");
+  // Without AI: roll-number order.
+  const pdf2 = await PDFDocument.create();
+  for (let i = 0; i < 6; i++) { const img = await pdf2.embedJpg(await jpeg(600, 800, `p${i}`)); pdf2.addPage([600, 800]).drawImage(img, { x: 0, y: 0, width: 600, height: 800 }); }
+  const [up2] = await uploadAll(API, teacher, [["scan2.pdf", Buffer.from(await pdf2.save())]], "class_sheets");
+  const doc2 = (await expect("upload without find-students", 200, "POST", `/tests/${ct}/sheets`, { token: teacher, body: { upload_id: up2 } })).data.document_id;
+  await poll(() => call("GET", `/documents/${doc2}/mapping`, { token: teacher }).then((x) => x.data), (m) => m.document?.status === "completed");
+  const ord = await expect("map by roll order, 2 pages each, skipping roll 2", 200, "POST", `/documents/${doc2}/map-by-order`, { token: teacher, body: { pages_per_student: 2, skip_attempt_ids: [byRoll(2)] } });
+  ok(ord.data.students === 3 && ord.data.extra_pages === 0, "3 students by order");
+  const m2 = (await call("GET", `/documents/${doc2}/mapping`, { token: teacher })).data;
+  ok(m2.pages.find((p) => p.n === 3).attempt_id === byRoll(3) && m2.pages.every((p) => p.method === "order"), "roll 2 skipped, roll 3 gets pages 3-4");
+  await call("DELETE", `/tests/${ct}`, { token: admin });
+  for (const st of (await call("GET", `/students?batch_id=${cb}`, { token: admin })).data) await call("DELETE", `/students/${st.id}`, { token: admin });
+  await call("DELETE", `/batches/${cb}`, { token: admin });
+}
+
 section("Manage tests: stats and results summary");
 {
   const st = await expect("test stats", 200, "GET", "/tests/stats", { token: teacher });

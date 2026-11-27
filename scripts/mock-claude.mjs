@@ -105,6 +105,20 @@ function evaluationFrom(text, pages = 1) {
   };
 }
 
+// The mock can't read handwriting: it pretends the class was scanned in roll order with mode.identify.per pages each
+// (default 2). Pages listed in mode.identify.unreadable come back unknown.
+function identifyFrom(text) {
+  const roster = JSON.parse(text.split("Class list (JSON): ")[1]);
+  const pages = [...text.matchAll(/^Page (\d+):$/gm)].map((m) => Number(m[1]));
+  const per = mode.identify?.per ?? 2, unreadable = new Set(mode.identify?.unreadable ?? []);
+  return { pages: pages.map((n) => {
+    const st = roster[Math.floor((n - 1) / per)];
+    const first = (n - 1) % per === 0;
+    if (!st || unreadable.has(n)) return { page: n, first_page: first, name_written: "", roll_written: "", student_id: "", confidence: "low" };
+    return { page: n, first_page: first, name_written: first ? st.name : "", roll_written: first ? String(st.roll ?? "") : "", student_id: st.student_id, confidence: first ? "high" : "medium" };
+  }) };
+}
+
 function assistFrom(text) {
   const q = JSON.parse(text.split("The question now (JSON):\n")[1]);
   const rewrite = /Write a new version of this question/.test(text);
@@ -179,7 +193,8 @@ http.createServer((req, res) => {
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
       recent.push({ model: body.model, system: String(body.system ?? "").slice(0, 2000), text: text.slice(0, 20000) });
       if (recent.length > 30) recent.shift();
-      const out = /Improve one question of a paper/.test(text) ? assistFrom(text)
+      const out = /Find the student on each answer-sheet page/.test(text) ? identifyFrom(text)
+        : /Improve one question of a paper/.test(text) ? assistFrom(text)
         : /Name the exact sub-topic of every question/.test(text) ? tagsFrom(text)
         : /Create a Fix-it practice plan/.test(text) ? practiceFrom(text)
         : /Write the re-teach brief/.test(text) ? briefFrom(text)
