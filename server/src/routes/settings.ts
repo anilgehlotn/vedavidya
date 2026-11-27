@@ -5,7 +5,7 @@ import { all, one, run } from "../db.js";
 import { adminOnly, staff } from "../auth.js";
 import { encrypt, decrypt } from "../secrets.js";
 import { verifyKey, forgetClients, aiModeOf, AI_MODES, PRICES, PLATFORM_KEY, type AiMode } from "../ai/claude.js";
-import { ACTION_LABEL, balance, history, prices } from "../lib/credits.js";
+import { ACTION_LABEL, balance, history, modeMultipliers, orgPrices, prices } from "../lib/credits.js";
 import { rateLimit } from "../ratelimit.js";
 
 export const settingsRoutes = Router();
@@ -83,5 +83,6 @@ settingsRoutes.get("/settings/ai/usage", staff, (req, res) => {
 settingsRoutes.get("/credits", staff, (req, res) => {
   const org = req.user!.org_id;
   const before = Number(req.query.before) || undefined;
-  res.json({ balance: balance(org), prices: prices(), labels: ACTION_LABEL, history: history(org, Math.min(200, Number(req.query.limit) || 50), before) });
+  res.json({ balance: balance(org), prices: orgPrices(org), mode_multipliers: modeMultipliers(),
+    mark_by_mode: Object.fromEntries(Object.entries(modeMultipliers()).map(([m, x]) => [m, Math.round(prices().mark_sheet * x * 100) / 100])), labels: ACTION_LABEL, history: history(org, Math.min(200, Number(req.query.limit) || 50), before) });
 });

@@ -79,7 +79,10 @@ try {
   ok(/Free this month/.test(panelText) && /Added by Veda Vidya/.test(panelText), "panel shows free and added buckets");
   ok(/Generating a question paper/.test(panelText) && /Marking an answer sheet/.test(panelText), "history lists the paper and the marking");
   await p.getByText("What things cost").click();
-  ok(await visible(p.getByText(/\+1 per 8 pages over 8/)), "price list opens");
+  ok(await visible(p.getByText(/per sheet of up to 8 pages/)), "price list opens");
+  const modes = p.locator(".mode-opt");
+  ok(/1 credit per sheet/.test(await modes.nth(0).innerText()) && /5 credits per sheet/.test(await modes.nth(1).innerText()) && /10 credits per sheet/.test(await modes.nth(2).innerText()),
+    "marking quality options show credits per sheet");
   await shot(p, "settings-credits");
 
   log("▸ Platform page (super-admin only)");
@@ -138,12 +141,17 @@ try {
   const att = td.attempts[0];
   const ev = (await call("GET", `/attempts/${att.id}`, { token: admin })).data;
   const q = ev.evaluation.questions[0];
-  const newMarks = q.marks_awarded === q.max_marks ? q.max_marks - 1 : q.marks_awarded + 1;
+  const newMarks = q.marks_awarded >= q.max_marks ? q.max_marks - 1 : q.max_marks; // always a real change, always allowed
   await p.goto(BASE + `/app/attempts/${att.id}`);
   const markInput = p.locator(`input[type=number]`).first();
   ok(await visible(markInput), "mark boxes are shown");
   ok(!(await p.getByPlaceholder(/Method is correct/).count()), "no note box before a mark changes");
+  await markInput.fill(String(q.max_marks + 1));
+  ok(await visible(p.getByText(/A mark is outside what that question allows/)), "a mark above the maximum is flagged");
+  ok(await p.getByRole("button", { name: "Save changes" }).isDisabled(), "Save is blocked while a mark is out of range");
+  ok((await markInput.getAttribute("aria-invalid")) === "true", "the box is marked invalid for screen readers");
   await markInput.fill(String(newMarks));
+  ok(!(await p.getByText(/A mark is outside/).count()), "the warning clears once the mark is fixed");
   const noteBox = p.getByPlaceholder(/Method is correct/);
   ok(await visible(noteBox), "a note box appears once the mark changes");
   await noteBox.fill("Units missing in the final answer");

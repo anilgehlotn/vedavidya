@@ -370,7 +370,7 @@ export function TestDetail() {
               {marking > 0 ? <><span className="spinner" /><span className="small"><b>Marking {marking} sheet{marking > 1 ? "s" : ""}…</b> {scored.length} done. You can leave this page.</span></>
                 : <button className={`btn ${toEvaluate ? "btn-primary" : "btn-ghost"}`} disabled={!toEvaluate || DEMO} onClick={() => evaluate()}>✦ Mark {toEvaluate || ""} answer sheet{toEvaluate === 1 ? "" : "s"}</button>}
               {toEvaluate > 0 && !marking && d.paper_problem && <span className="small" style={{ color: "var(--amber)" }}>{d.paper_problem}</span>}
-              {toEvaluate > 0 && !marking && !d.paper_problem && !DEMO && <CreditLine cost={toEvaluate} />}
+              {toEvaluate > 0 && !marking && !d.paper_problem && !DEMO && <CreditLine action="mark_sheet" units={toEvaluate} />}
               {scored.length > 0 && !marking && <span className="small">{scored.length} marked · average <b>{avg}%</b>. Open any sheet to check or change marks.</span>}
               {toCheck > 0 && <button className="btn btn-ghost btn-sm" style={{ borderColor: "var(--amber)", color: "var(--amber)" }} onClick={() => setFilter("check")}>⚠ {toCheck} answer{toCheck > 1 ? "s" : ""} need your check</button>}
             </div>
@@ -478,6 +478,7 @@ export function AttemptReview() {
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [page, setPage] = useState<number | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
   if (a.loading) return <Loading />;
   if (!a.data) return <ErrorBox error={a.error} />;
   const d = a.data;
@@ -485,22 +486,34 @@ export function AttemptReview() {
   const questions = d.paper.sections.flatMap((s) => s.questions);
   const qById = new Map(questions.map((q) => [q.id, q]));
   const dirty = Object.keys(edits).length > 0;
+  /** A typed mark outside the question's range (the browser doesn't stop typing it). */
+  const outOfRange = (qid: string) => {
+    if (!(qid in edits)) return false;
+    const v = edits[qid], q = qById.get(qid), max = ev?.questions.find((x) => x.question_id === qid)?.max_marks ?? q?.marks ?? 0;
+    return !Number.isFinite(v) || v > max || v < -(q?.negative_marks ?? 0);
+  };
+  const invalid = Object.keys(edits).some(outOfRange);
 
   const save = async () => {
-    const r = await api<{ score: number }>(`/attempts/${d.id}/evaluation`, { method: "PUT", body: { questions: Object.entries(edits).map(([question_id, marks_awarded]) => ({ question_id, marks_awarded, note: notes[question_id]?.trim() || undefined })) } });
-    setEdits({}); setNotes({}); setSaved(`Saved - new total ${r.score}/${d.max_score}`); a.reload(true);
+    setSaveErr(null);
+    try {
+      const r = await api<{ score: number }>(`/attempts/${d.id}/evaluation`, { method: "PUT", body: { questions: Object.entries(edits).map(([question_id, marks_awarded]) => ({ question_id, marks_awarded, note: notes[question_id]?.trim() || undefined })) } });
+      setEdits({}); setNotes({}); setSaved(`Saved - new total ${r.score}/${d.max_score}`); a.reload(true);
+    } catch (e) { setSaveErr((e as Error).message); }
   };
 
   return (
     <>
       <PageTitle title={d.student_name} sub={<>{d.test_title} {editable && <>· <Link className="btn-link" to={`/app/tests/${d.test_id}`}>Back to test</Link></>}</>}>
         <div className="card stat" style={{ padding: "10px 18px" }}><div className="label">Total</div><div className="value" style={{ fontSize: 24 }}>{d.score}<span className="muted" style={{ fontSize: 16 }}>/{d.max_score}</span></div></div>
-        {editable && dirty && <button className="btn btn-primary" onClick={save}>Save changes</button>}
+        {editable && dirty && <button className="btn btn-primary" onClick={save} disabled={invalid} title={invalid ? "A mark is outside the allowed range" : undefined}>Save changes</button>}
         {editable && !dirty && !d.reviewed && ev?.questions.some((q) => q.needs_review) && <button className="btn btn-primary" onClick={save}>✓ Marks look right</button>}
-        {!DEMO && d.score != null && <button className="btn btn-primary no-print" onClick={() => download(`/attempts/${d.id}/report.pdf`, `${d.test_title.replace(/\W+/g, "_")}_${d.student_name.replace(/\W+/g, "_")}.pdf`).catch((e) => setSaved(e.message))}>⤓ Report card PDF</button>}
+        {!DEMO && d.score != null && <button className="btn btn-primary no-print" onClick={() => download(`/attempts/${d.id}/report.pdf`, `${d.test_title.replace(/\W+/g, "_")}_${d.student_name.replace(/\W+/g, "_")}.pdf`).catch((e) => setSaveErr(e.message))}>⤓ Report card PDF</button>}
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
       </PageTitle>
       {saved && <div className="ok-box" style={{ marginBottom: 14 }}>{saved}</div>}
+      {saveErr && <div className="error-box" style={{ marginBottom: 14 }}>{saveErr}</div>}
+      {invalid && <div className="error-box" style={{ marginBottom: 14 }}>A mark is outside what that question allows (see the red box). Fix it to save.</div>}
       {d.files > 0 && ev && d.score != null && (
         <Suspense fallback={<Loading />}><SheetView pages={d.files} pageTypes={d.page_types} ev={ev} questions={questions} sections={d.paper.sections} score={d.score} max={d.max_score ?? 0}
           title={`${d.test_title} - ${d.student_name}`} answersHidden={d.paper.answers_hidden} staff={editable}
@@ -562,7 +575,8 @@ export function AttemptReview() {
                   <div className="row" style={{ flex: "none" }}>
                     {editable ? (
                       <input className="input" type="number" step={0.5} min={-(q?.negative_marks ?? 0)} max={qe.max_marks} value={marks}
-                        style={{ width: 80, fontWeight: 700, borderColor: qe.question_id in edits ? "var(--accent)" : undefined }}
+                        aria-invalid={outOfRange(qe.question_id) || undefined} aria-label={`Marks for this question, out of ${qe.max_marks}`}
+                        style={{ width: 80, fontWeight: 700, borderColor: outOfRange(qe.question_id) ? "var(--red)" : qe.question_id in edits ? "var(--accent)" : undefined }}
                         onChange={(e) => setEdits({ ...edits, [qe.question_id]: Number(e.target.value) })} />
                     ) : <b style={{ fontSize: 18 }}>{marks}</b>}
                     <span className="muted">/ {qe.max_marks}</span>

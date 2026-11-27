@@ -23,6 +23,10 @@ export const ACTION_LABEL: Record<CreditAction, string> = {
 };
 export const DEFAULT_MONTHLY_FREE = 300;
 
+/** Marking costs more when an institute picks stronger models (Settings → Marking quality): roughly what the AI costs us. */
+export type Mode = "mixed" | "sonnet" | "opus";
+export const DEFAULT_MODE_MULTIPLIERS: Record<Mode, number> = { mixed: 1, sonnet: 5, opus: 10 };
+
 /** Thrown when an institute can't pay for an AI action. Shown to the user as is (HTTP 402). */
 export class CreditError extends PermanentError { status = 402; }
 
@@ -30,8 +34,16 @@ const setting = (key: string) => one<{ value: string }>("SELECT value FROM platf
 export function prices(): Record<CreditAction, number> {
   try { return { ...DEFAULT_PRICES, ...JSON.parse(setting("prices") ?? "{}") }; } catch { return { ...DEFAULT_PRICES }; }
 }
+export function modeMultipliers(): Record<Mode, number> {
+  try { return { ...DEFAULT_MODE_MULTIPLIERS, ...JSON.parse(setting("mode_multipliers") ?? "{}") }; } catch { return { ...DEFAULT_MODE_MULTIPLIERS }; }
+}
+const modeOf = (orgId: string): Mode => {
+  const m = one<{ ai_mode: string | null }>("SELECT ai_mode FROM orgs WHERE id = ?", orgId)?.ai_mode;
+  return m === "sonnet" || m === "opus" ? m : "mixed";
+};
 export const platformMonthlyFree = () => Number(setting("monthly_free") ?? DEFAULT_MONTHLY_FREE);
-export function setPlatformSettings(p: { prices?: Partial<Record<CreditAction, number>>; monthly_free?: number }) {
+export function setPlatformSettings(p: { prices?: Partial<Record<CreditAction, number>>; monthly_free?: number; mode_multipliers?: Partial<Record<Mode, number>> }) {
+  if (p.mode_multipliers) run("INSERT INTO platform_settings (key, value) VALUES ('mode_multipliers', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...modeMultipliers(), ...p.mode_multipliers }));
   if (p.prices) run("INSERT INTO platform_settings (key, value) VALUES ('prices', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...prices(), ...p.prices }));
   if (p.monthly_free != null) run("INSERT INTO platform_settings (key, value) VALUES ('monthly_free', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", String(p.monthly_free));
 }
@@ -40,12 +52,19 @@ export const orgMonthlyFree = (orgId: string) => {
   return v ?? platformMonthlyFree();
 };
 
-/** Price of an action; marking costs more for very long sheets. */
-export function priceOf(action: CreditAction, units = 1, pages = 0) {
+/**
+ * Price of an action for an institute. Marking costs more for very long sheets (+1 per 8 pages over 8)
+ * and is multiplied by the institute's marking-quality mode (Mixed ×1, Sonnet ×5, Opus ×10 by default).
+ */
+export function priceOf(orgId: string, action: CreditAction, units = 1, pages = 0) {
   const base = prices()[action];
-  const extra = action === "mark_sheet" && pages > 8 ? Math.ceil((pages - 8) / 8) : 0;
-  return Math.max(0, (base + extra) * units);
+  if (action !== "mark_sheet") return round(Math.max(0, base * units));
+  const extra = pages > 8 ? Math.ceil((pages - 8) / 8) : 0;
+  return round(Math.max(0, (base + extra) * modeMultipliers()[modeOf(orgId)] * units));
 }
+/** What each action costs this institute right now (marking: per sheet of up to 8 pages). */
+export const orgPrices = (orgId: string) =>
+  Object.fromEntries((Object.keys(DEFAULT_PRICES) as CreditAction[]).map((a) => [a, priceOf(orgId, a)])) as Record<CreditAction, number>;
 
 const thisMonth = () => new Date().toISOString().slice(0, 7);
 const round = (n: number) => Math.round(n * 100) / 100;
@@ -83,7 +102,7 @@ export const usesOwnKey = (orgId: string) => Boolean(one<{ k: string | null }>("
  */
 export function charge(orgId: string, action: CreditAction, ref: string, opts: { units?: number; pages?: number; amount?: number; userId?: string; note?: string } = {}): string | null {
   if (usesOwnKey(orgId)) return null;
-  const amount = round(opts.amount ?? priceOf(action, opts.units ?? 1, opts.pages ?? 0));
+  const amount = round(opts.amount ?? priceOf(orgId, action, opts.units ?? 1, opts.pages ?? 0));
   if (amount <= 0) return null;
   const b = balance(orgId);
   if (b.total < amount) throw new CreditError(notEnough(amount, b));

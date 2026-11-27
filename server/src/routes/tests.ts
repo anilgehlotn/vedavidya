@@ -482,7 +482,7 @@ testRoutes.post("/tests/:id/evaluate", staff, (req, res) => {
   const ids = all<{ id: string; files: string; status: string }>("SELECT id, files, status FROM attempts WHERE test_id = ?", req.params.id)
     .filter((a) => allowed.includes(a.status) && json<string[]>(a.files, []).length && (!only || only.includes(a.id))).map((a) => a.id);
   // All or nothing: check the whole batch can be paid before queuing any of it.
-  requireCredits(req.user!.org_id, ids.reduce((t, id) => t + priceOf("mark_sheet", 1, sheetPages(id)), 0));
+  requireCredits(req.user!.org_id, ids.reduce((t, id) => t + priceOf(req.user!.org_id, "mark_sheet", 1, sheetPages(id)), 0));
   enqueue(ids, req.user!.id);
   const pid = one<{ paper_id: string }>("SELECT paper_id FROM tests WHERE id = ?", req.params.id)?.paper_id;
   if (pid) void ensureSubtopics(pid);
@@ -512,6 +512,13 @@ testRoutes.put("/attempts/:id/evaluation", staff, (req, res) => {
   const qById = new Map(questionsOf(paper?.sections ?? []).map((q) => [q.id, q]));
   const meta = (ev as SheetEvaluation & { meta?: { model?: string | null; recheck_model?: string | null } }).meta;
   const pages = json<string[]>(a.files, []);
+  // Check every mark first, so a bad one changes (and logs) nothing.
+  const order = [...qById.keys()];
+  for (const e of edits) {
+    const q = qById.get(e.question_id);
+    if (q && (e.marks_awarded > q.marks || e.marks_awarded < -(q.negative_marks ?? 0)))
+      return res.status(400).json({ error: `Question ${order.indexOf(q.id) + 1}: marks must be between ${-(q.negative_marks ?? 0)} and ${q.marks}.` });
+  }
   for (const e of edits) {
     const qe = ev.questions.find((q) => q.question_id === e.question_id) as (CheckedQ & { ai_marks?: number; teacher_override?: boolean; teacher_note?: string }) | undefined;
     if (!qe) continue;

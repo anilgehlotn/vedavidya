@@ -66,7 +66,7 @@ export function ImportPaperForm({ defaults, showMeta, onCreated, onCancel }: {
       )}
       <ErrorBox error={error} />
       <div className="row between wrap" style={{ gap: 10 }}>
-        <CreditLine cost={15} />
+        <CreditLine action="paper_import" />
         <div className="row" style={{ marginLeft: "auto" }}>
         {onCancel && <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>}
         <button type="button" className="btn btn-primary" disabled={!ready || busy} onClick={submit}>

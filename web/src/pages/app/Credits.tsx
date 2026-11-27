@@ -5,6 +5,8 @@ import { fmtDateTime } from "../../lib/api";
 export interface CreditInfo {
   balance: { free: number; paid: number; total: number; monthly_free: number; resets_on: string; own_key: boolean };
   prices: Record<string, number>; labels: Record<string, string>;
+  /** Credits to mark one sheet (up to 8 pages) in each marking-quality mode. */
+  mark_by_mode: Record<"mixed" | "sonnet" | "opus", number>;
   history: { id: number; kind: string; bucket: string; amount: number; action: string | null; note: string | null; created_at: string }[];
 }
 
@@ -13,10 +15,11 @@ const fmt = (n: number) => (Math.round(n * 100) / 100).toLocaleString("en-IN");
 
 export function useCredits() { return useApi<CreditInfo>("/credits"); }
 
-/** Small balance line, e.g. for upload windows: "Credits: 240 · this costs about 15". */
-export function CreditLine({ cost }: { cost?: number }) {
+/** Small balance line, e.g. for upload windows: "Credits: 240 · this uses about 15". The cost comes from the server's prices. */
+export function CreditLine({ action, units = 1 }: { action?: string; units?: number }) {
   const c = useCredits();
   if (!c.data) return null;
+  const cost = action && c.data.prices[action] != null ? Math.round(c.data.prices[action] * units * 100) / 100 : undefined;
   if (c.data.balance.own_key) return <span className="small muted">Using your own Claude key: no credits needed</span>;
   const short = cost != null && c.data.balance.total < cost;
   return <span className="small" style={{ color: short ? "var(--red)" : "var(--ink-2)" }}>Credits: <b>{fmt(c.data.balance.total)}</b>{cost != null && ` · this uses about ${cost}`}{short && " (not enough)"}</span>;
@@ -41,7 +44,7 @@ export function CreditsPanel() {
       <details>
         <summary className="small" style={{ cursor: "pointer", fontWeight: 600 }}>What things cost</summary>
         <div className="table-wrap" style={{ marginTop: 8 }}><table className="t">
-          <tbody>{Object.entries(prices).map(([k, v]) => <tr key={k}><td className="small">{labels[k] ?? k}</td><td className="small" style={{ textAlign: "right" }}>{v} credit{v === 1 ? "" : "s"}{k === "mark_sheet" ? " (+1 per 8 pages over 8)" : ""}</td></tr>)}</tbody>
+          <tbody>{Object.entries(prices).map(([k, v]) => <tr key={k}><td className="small">{labels[k] ?? k}</td><td className="small" style={{ textAlign: "right" }}>{fmt(v)} credit{v === 1 ? "" : "s"}{k === "mark_sheet" ? " per sheet of up to 8 pages (longer sheets cost more; depends on Marking quality below)" : ""}</td></tr>)}</tbody>
         </table></div>
       </details>
       <div>

@@ -2,7 +2,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { all, one, run } from "../db.js";
 import { z } from "zod";
-import { balance, grant, platformMonthlyFree, prices, setPlatformSettings, DEFAULT_PRICES, type CreditAction } from "../lib/credits.js";
+import { balance, grant, platformMonthlyFree, prices, setPlatformSettings, DEFAULT_PRICES, DEFAULT_MODE_MULTIPLIERS, modeMultipliers, type CreditAction } from "../lib/credits.js";
 import { PLATFORM_KEY } from "../ai/claude.js";
 import { listBackups, runBackup } from "../lib/backup.js";
 import { jobCounts } from "../lib/jobs.js";
@@ -45,15 +45,16 @@ adminRoutes.post("/admin/orgs/:id/credits", superAdmin, (req, res) => {
   grant(req.params.id, b.amount, b.note, req.user!.id);
   res.json(balance(req.params.id));
 });
-adminRoutes.get("/admin/settings", superAdmin, (_req, res) => res.json({ prices: prices(), default_prices: DEFAULT_PRICES, monthly_free: platformMonthlyFree(), platform_key: Boolean(PLATFORM_KEY) }));
+adminRoutes.get("/admin/settings", superAdmin, (_req, res) => res.json({ prices: prices(), default_prices: DEFAULT_PRICES, mode_multipliers: modeMultipliers(), default_mode_multipliers: DEFAULT_MODE_MULTIPLIERS, monthly_free: platformMonthlyFree(), platform_key: Boolean(PLATFORM_KEY) }));
 adminRoutes.put("/admin/settings", superAdmin, (req, res) => {
   const price = z.number().min(0).max(1000);
   const b = z.object({
     prices: z.object(Object.fromEntries(Object.keys(DEFAULT_PRICES).map((k) => [k, price.optional()])) as Record<CreditAction, z.ZodOptional<typeof price>>).optional(),
     monthly_free: z.number().min(0).max(1_000_000).optional(),
+    mode_multipliers: z.object({ mixed: z.number().min(0).max(100).optional(), sonnet: z.number().min(0).max(100).optional(), opus: z.number().min(0).max(100).optional() }).optional(),
   }).parse(req.body);
   setPlatformSettings(b as never);
-  res.json({ prices: prices(), monthly_free: platformMonthlyFree() });
+  res.json({ prices: prices(), mode_multipliers: modeMultipliers(), monthly_free: platformMonthlyFree() });
 });
 /** Teacher corrections of AI marks (for improving the marking). Newest first. */
 adminRoutes.get("/admin/corrections", superAdmin, (req, res) => {

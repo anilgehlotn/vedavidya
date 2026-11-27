@@ -1,6 +1,6 @@
 // Centres & batches, students, staff, notices and settings.
 import { CoursesCard, type Course } from "./Courses";
-import { CreditsPanel } from "./Credits";
+import { CreditsPanel, useCredits } from "./Credits";
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, csvCell, fmtDate, setToken } from "../../lib/api";
@@ -386,6 +386,8 @@ const MODES: { id: AiMode; title: string; desc: string; cost: string }[] = [
 /** Which models the institute uses, and this month's estimated AI bill. */
 function AiModeCard({ isAdmin, status, onChange }: { isAdmin: boolean; status: AiStatus; onChange: (s: AiStatus) => void }) {
   const usage = useApi<AiUsage>("/settings/ai/usage");
+  const onCredits = !status.own_key && status.platform_available && !status.demo;
+  const credits = useCredits();
   const [err, setErr] = useState<string | null>(null);
   const pick = async (mode: AiMode) => {
     setErr(null);
@@ -400,7 +402,9 @@ function AiModeCard({ isAdmin, status, onChange }: { isAdmin: boolean; status: A
           <label key={m.id} className={`mode-opt ${status.mode === m.id ? "on" : ""}`}>
             <input type="radio" name="ai-mode" checked={status.mode === m.id} disabled={!isAdmin || status.demo} onChange={() => pick(m.id)} />
             <span className="grow"><b>{m.title}</b><span className="small muted" style={{ display: "block" }}>{m.desc}</span></span>
-            <span className="small" style={{ whiteSpace: "nowrap" }}>{m.cost}</span>
+            <span className="small" style={{ whiteSpace: "nowrap" }}>{onCredits
+              ? (credits.data ? `${credits.data.mark_by_mode[m.id]} credit${credits.data.mark_by_mode[m.id] === 1 ? "" : "s"} per sheet` : "")
+              : m.cost}</span>
           </label>
         ))}
       </div>
@@ -465,7 +469,7 @@ function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
         <p className="small muted">AI is switched off in the public demo institute. Create your own institute (Log in → Create an institute) to use it.</p>
       ) : (
         <>
-          {!s.own_key && s.platform_available && <CreditsPanel />}
+          {!s.own_key && s.platform_available && <CreditsPanel key={s.mode} />}
           {!s.own_key && !s.platform_available && <p className="small muted" style={{ margin: 0 }}>{isAdmin ? "AI isn't switched on for your institute yet. Add your own Claude key below." : "Ask your institute admin to set up AI here."}</p>}
           {s.own_key && <p className="small muted" style={{ margin: 0 }}>{isAdmin ? "Your institute uses its own Claude key: no credits are used." : "AI marking is ready."}</p>}
           {isAdmin && (s.own_key || !s.platform_available ? keyForm : (

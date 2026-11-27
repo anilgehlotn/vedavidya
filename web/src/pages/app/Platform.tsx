@@ -5,7 +5,10 @@ import { Empty, ErrorBox, Loading, PageTitle, useApi } from "../../components/ui
 
 interface OrgRow { id: string; name: string; city: string | null; created_at: string; is_demo: number; own_key: boolean; students: number; used_this_month: number; monthly_free_credits: number | null;
   balance: { free: number; paid: number; total: number; monthly_free: number } | null }
-interface PlatformSettings { prices: Record<string, number>; default_prices: Record<string, number>; monthly_free: number; platform_key: boolean }
+type Mode = "mixed" | "sonnet" | "opus";
+interface PlatformSettings { prices: Record<string, number>; default_prices: Record<string, number>; monthly_free: number; platform_key: boolean;
+  mode_multipliers: Record<Mode, number>; default_mode_multipliers: Record<Mode, number> }
+const MODE_LABEL: Record<Mode, string> = { mixed: "Mixed", sonnet: "Sonnet for everything", opus: "Opus for everything" };
 interface Backup { file: string; size: number; created_at: string }
 
 const LABEL: Record<string, string> = { paper_import: "Read a question paper", paper_generate: "Generate a paper", mark_sheet: "Mark one answer sheet", practice_set: "Fix-it practice (per student)", reteach_brief: "Re-teach brief" };
@@ -71,12 +74,23 @@ export default function Platform() {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               const prices = Object.fromEntries(Object.keys(settings.data!.prices).map((k) => [k, Number(f.get(k))]));
-              void act(() => api("/admin/settings", { method: "PUT", body: { prices, monthly_free: Number(f.get("monthly_free")) } }), "Prices saved.");
+              const mode_multipliers = Object.fromEntries((Object.keys(MODE_LABEL) as Mode[]).map((m) => [m, Number(f.get(`mult_${m}`))]));
+              void act(() => api("/admin/settings", { method: "PUT", body: { prices, monthly_free: Number(f.get("monthly_free")), mode_multipliers } }), "Prices saved.");
             }}>
               <label className="field"><span>Default free credits per institute per month</span><input className="input" name="monthly_free" type="number" min={0} defaultValue={settings.data.monthly_free} /></label>
               {Object.entries(settings.data.prices).map(([k, v]) => (
                 <label key={k} className="field"><span>{LABEL[k] ?? k} <span className="muted">(default {settings.data!.default_prices[k]})</span></span><input className="input" name={k} type="number" min={0} step={0.5} defaultValue={v} /></label>
               ))}
+              <div className="stack" style={{ gap: 8, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+                <b className="small">Marking price × marking quality</b>
+                <p className="small muted" style={{ margin: 0 }}>Stronger models cost more to run, so marking a sheet costs the price above times this number.</p>
+                <div className="grid g3">
+                  {(Object.keys(MODE_LABEL) as Mode[]).map((m) => (
+                    <label key={m} className="field"><span>{MODE_LABEL[m]} <span className="muted">(default ×{settings.data!.default_mode_multipliers[m]})</span></span>
+                      <input className="input" name={`mult_${m}`} type="number" min={0} max={100} step={0.5} defaultValue={settings.data!.mode_multipliers[m]} /></label>
+                  ))}
+                </div>
+              </div>
               <button className="btn btn-primary">Save</button>
             </form>
           )}
