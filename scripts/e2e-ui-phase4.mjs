@@ -468,6 +468,33 @@ try {
   await fp.reload();
   ok(await visible(fp.locator(".upload-list").getByRole("link", { name: "Review pages" })), "the upload can be reviewed again from the test page");
 
+  // ------------------------------------------------------------------ Report card
+  log("▸ Report card");
+  const pubDetail = (await call("GET", `/tests/${pubOff.id}`, { token: demo })).data;
+  const best = [...pubDetail.attempts].filter((x) => x.score != null).sort((x, y) => y.score - x.score)[0];
+  await p.goto(BASE + `/app/attempts/${best.id}`);
+  ok(await visible(p.locator(".crumbs a", { hasText: pubDetail.title })), "breadcrumbs lead back to the test");
+  ok(await visible(p.locator(".report-info dt", { hasText: "Roll no" })), "info grid");
+  ok(/^1/.test((await p.locator(".rank-big").innerText()).trim()), "the top scorer is rank 1");
+  ok(await visible(p.locator(".achv", { hasText: "Top of the class" })), "badge for the top scorer");
+  const rows = p.locator(".topic-row");
+  ok(await rows.count() > 0, "topic-wise chart");
+  await rows.first().hover();
+  ok(await visible(p.locator(".topic-tip", { hasText: "Class average" })), "topic tooltip with the class average");
+  await rows.first().focus();
+  ok(await visible(p.locator(".topic-tip")), "tooltip also on keyboard focus");
+  const rpt = (await call("GET", `/attempts/${best.id}`, { token: demo })).data.report;
+  ok(rpt.rank === 1 && rpt.of === pubDetail.attempts.filter((x) => x.score != null).length && rpt.topics.length > 0, "report facts from the API");
+  await shot(p, "p4-report-card");
+  const sp2 = await pageAs((await call("POST", "/auth/login", { body: { identifier: "student", password: "demo1234" } })).data.token);
+  const myTests = (await call("GET", "/my/tests", { token: (await call("POST", "/auth/login", { body: { identifier: "student", password: "demo1234" } })).data.token })).data;
+  const mine = myTests.find((x) => x.results_published && x.score != null);
+  if (mine) {
+    await sp2.goto(BASE + `/app/attempts/${mine.attempt_id}`);
+    ok(await visible(sp2.locator(".rank-card")) && await visible(sp2.locator(".crumbs a", { hasText: "My tests" })), "students see their own report card");
+    ok(!(await sp2.locator("input[type=number]").count()), "students can't change marks");
+  }
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();

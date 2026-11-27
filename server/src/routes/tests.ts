@@ -774,8 +774,48 @@ testRoutes.get("/attempts/:id", (req, res) => {
   if (!a || a.org_id !== u.org_id) return res.status(404).json({ error: "Not found" });
   if (u.role === "student" && (a.student_id !== u.id || !a.results_published)) return res.status(403).json({ error: "Results not published yet" });
   res.json({ ...a, files: json<string[]>(a.files, []).length, page_types: pageTypes(a.files), responses: json(a.responses, {}), evaluation: withD6(json<SheetEvaluation | null>(a.evaluation, null)),
-    paper: u.role === "student" ? paperForViewer(a.test_id) : paperFor(a.test_id) });
+    paper: u.role === "student" ? paperForViewer(a.test_id) : paperFor(a.test_id), report: reportFacts(a) });
 });
+
+/** Report card facts: class rank, class average, topic-wise marks (student vs class) and a few badges. */
+function reportFacts(a: { id: string; test_id: string; student_id: string; score: number | null; max_score: number | null; evaluation: string | null }) {
+  const info = one<{ roll_no: string | null; batch_name: string | null; d: string; subject: string | null }>(`SELECT e.roll_no, b.name AS batch_name, coalesce(t.scheduled_at, t.created_at) AS d,
+      coalesce(nullif(trim(t.subject), ''), p.subject) AS subject
+    FROM tests t LEFT JOIN question_papers p ON p.id = t.paper_id LEFT JOIN enrollments e ON e.student_id = ? LEFT JOIN batches b ON b.id = e.batch_id WHERE t.id = ?`, a.student_id, a.test_id);
+  const scored = all<{ id: string; score: number; max_score: number; evaluation: string }>(
+    "SELECT id, score, max_score, evaluation FROM attempts WHERE test_id = ? AND score IS NOT NULL AND max_score > 0", a.test_id);
+  const pct = (x: { score: number; max_score: number }) => (x.score / x.max_score) * 100;
+  const mine = a.score != null && a.max_score ? (a.score / a.max_score) * 100 : null;
+  const rank = mine == null ? null : scored.filter((x) => pct(x) > mine + 1e-9).length + 1;
+  const qs = paperFor(a.test_id)?.sections.flatMap((x) => x.questions) ?? [];
+  const topicOf = new Map(qs.map((q) => [q.id, q.topic || "Other"]));
+  const tally = (ev: SheetEvaluation | null, into: Map<string, { got: number; max: number }>) => {
+    for (const q of ev?.questions ?? []) {
+      const k = topicOf.get(q.question_id); if (!k) continue;
+      const t = into.get(k) ?? { got: 0, max: 0 }; t.got += Math.max(0, q.marks_awarded); t.max += q.max_marks; into.set(k, t);
+    }
+  };
+  const me = new Map<string, { got: number; max: number }>(), cls = new Map<string, { got: number; max: number }>();
+  tally(json<SheetEvaluation | null>(a.evaluation, null), me);
+  for (const x of scored) tally(json<SheetEvaluation | null>(x.evaluation, null), cls);
+  const topics = [...me.entries()].map(([topic, t]) => ({ topic, got: Math.round(t.got * 2) / 2, max: t.max, pct: t.max ? Math.round((t.got / t.max) * 100) : 0,
+    class_pct: cls.get(topic)?.max ? Math.round((cls.get(topic)!.got / cls.get(topic)!.max) * 100) : null }));
+  const classAvg = scored.length ? Math.round(scored.reduce((t, x) => t + pct(x), 0) / scored.length) : null;
+  const ev = json<SheetEvaluation | null>(a.evaluation, null);
+  const full = (ev?.questions ?? []).filter((q) => q.max_marks > 0 && q.marks_awarded >= q.max_marks).length;
+  const badges: { key: string; label: string }[] = [];
+  if (rank === 1 && scored.length > 1) badges.push({ key: "top", label: "Top of the class" });
+  else if (rank && scored.length >= 10 && rank <= Math.ceil(scored.length * 0.1)) badges.push({ key: "top10", label: "Top 10%" });
+  if (mine != null && classAvg != null && mine > classAvg && scored.length > 1) badges.push({ key: "above", label: "Above the class average" });
+  if (full >= 2) badges.push({ key: "full", label: `Full marks on ${full} questions` });
+  if (ev?.questions.length && ev.questions.every((q) => q.attempted)) badges.push({ key: "all", label: "Attempted every question" });
+  return {
+    roll_no: info?.roll_no ?? null, batch_name: info?.batch_name ?? null, test_date: info?.d ?? null, subject: info?.subject ?? null,
+    rank, of: scored.length, top_pct: rank && scored.length ? Math.max(1, Math.round((rank / scored.length) * 100)) : null,
+    class_avg: classAvg, class_high: scored.length ? Math.round(Math.max(...scored.map(pct))) : null, pct: mine == null ? null : Math.round(mine),
+    topics: topics.sort((x, y) => x.pct - y.pct), badges,
+  };
+}
 
 // Teacher review: override marks on any question.
 testRoutes.put("/attempts/:id/evaluation", staff, (req, res) => {

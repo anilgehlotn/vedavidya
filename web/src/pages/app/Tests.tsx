@@ -693,6 +693,59 @@ function MenuButton({ label, items, disabled }: { label: string; items: { label:
 interface AttemptData {
   id: string; status: AttemptStatus; score: number | null; max_score: number | null; student_name: string; test_title: string; test_id: string;
   files: number; page_types?: string[]; evaluation: SheetEvaluation | null; paper: Paper & { answers_hidden?: boolean }; reviewed: number; share_token: string | null; results_published: number; mode: string;
+  report?: ReportFacts;
+}
+interface ReportFacts { roll_no: string | null; batch_name: string | null; test_date: string | null; subject: string | null; rank: number | null; of: number; top_pct: number | null;
+  class_avg: number | null; class_high: number | null; pct: number | null; topics: { topic: string; got: number; max: number; pct: number; class_pct: number | null }[]; badges: { key: string; label: string }[] }
+
+/** Report card header: who, which test, score, class rank, badges. */
+function ReportHeader({ d }: { d: AttemptData }) {
+  const r = d.report;
+  if (!r || d.score == null) return null;
+  return (
+    <div className="report-head">
+      <dl className="info-strip card report-info">
+        <div><dt>Roll no</dt><dd>{r.roll_no ?? "—"}</dd></div>
+        <div><dt>Batch</dt><dd>{r.batch_name ?? "—"}</dd></div>
+        <div><dt>Subject</dt><dd>{r.subject ?? "—"}</dd></div>
+        <div><dt>Date</dt><dd>{fmtDate(r.test_date)}</dd></div>
+        <div><dt>Score</dt><dd><b>{d.score}</b>/{d.max_score} <ScoreBadge value={r.pct} /></dd></div>
+        <div><dt>Class average</dt><dd>{r.class_avg == null ? "—" : `${r.class_avg}%`}{r.class_high != null && <span className="muted small"> · top {r.class_high}%</span>}</dd></div>
+      </dl>
+      <div className="card card-pad rank-card">
+        <span className="small muted">Class rank</span>
+        <div className="rank-big">{r.rank ?? "—"}<span className="muted"> / {r.of}</span></div>
+        {r.top_pct != null && r.of > 1 && <span className={`badge ${r.top_pct <= 25 ? "green" : r.top_pct <= 50 ? "amber" : ""}`}>Top {r.top_pct}%</span>}
+        {r.badges.length > 0 && <div className="row wrap" style={{ gap: 6, marginTop: 10 }}>{r.badges.map((b) => <span key={b.key} className="achv">★ {b.label}</span>)}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** Topic-wise marks: this student's % per topic as bars, the class average as a marker; hover or focus for details. */
+function TopicChart({ topics }: { topics: ReportFacts["topics"] }) {
+  const [tip, setTip] = useState<number | null>(null);
+  if (!topics.length) return null;
+  return (
+    <div className="card card-pad" style={{ marginBottom: 16 }}>
+      <div className="row between wrap"><b>Topic-wise performance</b>
+        <span className="row small" style={{ gap: 12 }}><span className="legend"><i className="lg-bar" />This student</span><span className="legend"><i className="lg-mark" />Class average</span></span></div>
+      <div className="topic-chart" role="list">
+        {topics.map((t, i) => (
+          <div key={t.topic} className="topic-row" role="listitem" tabIndex={0} onMouseEnter={() => setTip(i)} onMouseLeave={() => setTip(null)} onFocus={() => setTip(i)} onBlur={() => setTip(null)}
+            aria-label={`${t.topic}: ${t.got} of ${t.max} marks, ${t.pct}%${t.class_pct != null ? `, class average ${t.class_pct}%` : ""}`}>
+            <span className="topic-name ellipsis">{t.topic}</span>
+            <span className="topic-track">
+              <i style={{ width: `${t.pct}%`, background: t.pct >= 75 ? "var(--green)" : t.pct >= 50 ? "var(--amber)" : "var(--red)" }} />
+              {t.class_pct != null && <b className="topic-avg" style={{ left: `${t.class_pct}%` }} />}
+              {tip === i && <span className="topic-tip" role="tooltip"><b>{t.topic}</b><span>{t.got}/{t.max} marks · {t.pct}%</span>{t.class_pct != null && <span>Class average {t.class_pct}% ({t.pct - t.class_pct >= 0 ? "+" : ""}{t.pct - t.class_pct})</span>}</span>}
+            </span>
+            <b className="topic-pct">{t.pct}%</b>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // Shared by teachers (editable) and students (read-only, after publishing).
@@ -721,6 +774,7 @@ export function AttemptReview() {
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [page, setPage] = useState<number | null>(null);
   const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [qtab, setQtab] = useState<"all" | "objective" | "written">("all");
   const toast = useToast();
   if (a.loading) return <PageSkeleton />;
   if (!a.data) return <><PageTitle title="Answer sheet" /><div className="card"><ErrorState error={a.error} onRetry={() => a.reload()} /></div></>;
@@ -747,7 +801,8 @@ export function AttemptReview() {
 
   return (
     <>
-      <PageTitle title={d.student_name} sub={<>{d.test_title} {editable && <>· <Link className="btn-link" to={`/app/tests/${d.test_id}`}>Back to test</Link></>}</>}>
+      <PageTitle title={d.student_name} sub={<>Report card · {d.test_title}</>}
+        crumbs={editable ? [{ label: "Assessments" }, { label: "Tests", to: "/app/tests" }, { label: d.test_title, to: `/app/tests/${d.test_id}` }] : [{ label: "My tests", to: "/app/my" }]}>
         <div className="card stat" style={{ padding: "10px 18px" }}><div className="label">Total</div><div className="value" style={{ fontSize: 24 }}>{d.score}<span className="muted" style={{ fontSize: 16 }}>/{d.max_score}</span></div></div>
         {editable && dirty && <button className="btn btn-primary" onClick={save} disabled={invalid} title={invalid ? "A mark is outside the allowed range" : undefined}>Save changes</button>}
         {editable && !dirty && !d.reviewed && ev?.questions.some((q) => q.needs_review) && <button className="btn btn-primary" onClick={save}>✓ Marks look right</button>}
@@ -755,6 +810,8 @@ export function AttemptReview() {
         <button className="btn btn-ghost no-print" onClick={() => window.print()}>Print</button>
       </PageTitle>
       {saveErr && <div className="error-box" style={{ marginBottom: 14 }}>{saveErr}</div>}
+      <ReportHeader d={d} />
+      {d.report && d.score != null && <TopicChart topics={d.report.topics} />}
       {invalid && <div className="error-box" style={{ marginBottom: 14 }}>A mark is outside what that question allows (see the red box). Fix it to save.</div>}
       {d.files > 0 && ev && d.score != null && (
         <Suspense fallback={<Loading />}><SheetView pages={d.files} pageTypes={d.page_types} ev={ev} questions={questions} sections={d.paper.sections} score={d.score} max={d.max_score ?? 0}
@@ -795,10 +852,22 @@ export function AttemptReview() {
           {ev.gaps.length > 0 && <div className="card card-pad"><b>Revise these</b><div className="row wrap" style={{ marginTop: 10 }}>{ev.gaps.map((g) => <span key={g} className="badge red">{g}</span>)}</div></div>}
         </div>
       )}
+      {ev && (() => {
+        const kindOf = (id: string) => { const t = (qById.get(id) as Question | undefined)?.type; return t === "mcq" || t === "numeric" ? "objective" : "written"; };
+        const n = { all: ev.questions.length, objective: ev.questions.filter((q) => kindOf(q.question_id) === "objective").length, written: ev.questions.filter((q) => kindOf(q.question_id) === "written").length };
+        if (!n.objective || !n.written) return null;
+        return (
+          <div className="tabs" role="tablist" aria-label="Question type">
+            {(["all", "objective", "written"] as const).map((k) => <button key={k} role="tab" aria-selected={qtab === k} className={qtab === k ? "on" : ""} onClick={() => setQtab(k)}>
+              {{ all: "All", objective: "Objective", written: "Written" }[k]} ({n[k]})</button>)}
+          </div>
+        );
+      })()}
       {!ev ? <div className="card"><Empty title="Not marked yet" icon="tests">Marks and feedback appear here once this sheet has been marked.</Empty></div> : (
         <div className="stack" style={{ gap: 12 }}>
           {ev.questions.map((qe, i) => {
             const q = qById.get(qe.question_id) as Question | undefined;
+            if (qtab !== "all" && ((q?.type === "mcq" || q?.type === "numeric") ? "objective" : "written") !== qtab) return null;
             const marks = edits[qe.question_id] ?? qe.marks_awarded;
             return (
               <div key={qe.question_id} className="q-card">
