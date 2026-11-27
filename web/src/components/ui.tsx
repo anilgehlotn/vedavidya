@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { api } from "../lib/api";
 import type { AttemptStatus } from "../lib/types";
@@ -32,7 +32,46 @@ export function useApi<T>(path: string | null, deps: unknown[] = []) {
   return { data, error, loading, reload: load, setData };
 }
 
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+/**
+ * Keeps keyboard focus inside a dialog while it is open: focus moves in (to [autofocus] or the first control),
+ * Tab and Shift+Tab cycle inside, the page behind doesn't scroll, and focus goes back to where it was on close.
+ */
+export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true) {
+  // Who had focus before the dialog: read while rendering, i.e. before an autoFocus field inside takes it.
+  const opener = useRef<HTMLElement | null>(null);
+  if (!active) opener.current = null;
+  else if (!opener.current && typeof document !== "undefined") opener.current = document.activeElement as HTMLElement | null;
+  useEffect(() => {
+    if (!active) return;
+    const el = ref.current;
+    if (!el) return;
+    const before = opener.current;
+    const items = () => [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((x) => x.offsetParent !== null || x === document.activeElement);
+    if (!el.contains(document.activeElement)) (el.querySelector<HTMLElement>("[autofocus]") ?? items().find((x) => x.getAttribute("aria-label") !== "Close") ?? items()[0] ?? el).focus({ preventScroll: true });
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const list = items();
+      if (!list.length) { e.preventDefault(); return; }
+      const first = list[0], last = list[list.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !el.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || !el.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", key);
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", key);
+      document.body.style.overflow = overflow;
+      if (before && document.contains(before)) before.focus({ preventScroll: true });
+    };
+  }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
 export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useFocusTrap(ref);
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", k);
@@ -40,9 +79,9 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
   }, [onClose]);
   return (
     <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={wide ? { width: "min(820px, 100%)" } : undefined} role="dialog" aria-label={title}>
+      <div ref={ref} tabIndex={-1} className="modal" style={wide ? { width: "min(820px, 100%)" } : undefined} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-label={title}>
         <div className="row between" style={{ marginBottom: 12 }}>
-          <h3 style={{ margin: 0 }}>{title}</h3>
+          <h3 id={titleId} style={{ margin: 0 }}>{title}</h3>
           <button className="btn-link" onClick={onClose} aria-label="Close" style={{ color: "var(--muted)", fontSize: 22 }}>×</button>
         </div>
         {children}

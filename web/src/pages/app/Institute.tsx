@@ -80,7 +80,7 @@ export function Students() {
       </PageTitle>
       <div className="row wrap" style={{ marginBottom: 14 }}>
         <input className="input" style={{ maxWidth: 280 }} placeholder="Search name, roll no, phone…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <select className="input" style={{ maxWidth: 240 }} value={batchId} onChange={(e) => setParams(e.target.value ? { batch: e.target.value } : {})}>
+        <select className="input" style={{ maxWidth: 240 }} aria-label="Batch" value={batchId} onChange={(e) => setParams(e.target.value ? { batch: e.target.value } : {})}>
           <option value="">All batches</option>{batches.data?.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
       </div>

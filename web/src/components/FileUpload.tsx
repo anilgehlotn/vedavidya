@@ -78,7 +78,7 @@ export function FileUpload({ purpose, multiple, label, hint, onChange, disabled 
       <input ref={input} type="file" accept={accept} multiple={multiple && replacing.current == null} style={{ display: "none" }}
         onChange={(e) => { void add([...(e.target.files ?? [])]); e.target.value = ""; }} />
       {showDrop && (
-        <div className={`drop ${over ? "over" : ""}`} role="button" tabIndex={0} aria-disabled={disabled}
+        <div className={`drop ${over ? "over" : ""}`} role="button" tabIndex={0} aria-disabled={disabled} aria-label={`${label}: choose files or drop them here`}
           onClick={pick} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), pick())}
           onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
           onDrop={(e) => { e.preventDefault(); setOver(false); if (!disabled) void add([...e.dataTransfer.files]); }}>

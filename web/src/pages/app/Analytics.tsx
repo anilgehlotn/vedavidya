@@ -38,7 +38,7 @@ export function Analytics() {
     <>
       <PageTitle title="Analytics" sub={d ? [d.batch.name, d.batch.centre_name, `${d.student_count} students`].filter(Boolean).join(" · ") : undefined}>
         {d && <SubjectPicker subjects={d.subjects} value={subject} onChange={(v) => setParams(v ? { batch: batchId!, subject: v } : { batch: batchId! })} />}
-        <select className="input" style={{ width: 240 }} value={batchId ?? ""} onChange={(e) => setParams({ batch: e.target.value })}>
+        <select className="input" style={{ width: 240 }} aria-label="Batch" value={batchId ?? ""} onChange={(e) => setParams({ batch: e.target.value })}>
           {batches.data.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
       </PageTitle>

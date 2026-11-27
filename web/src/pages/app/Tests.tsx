@@ -687,16 +687,17 @@ function MenuButton({ label, items, disabled, small, ariaLabel }: { label: strin
     if (!pos) return;
     const c = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setPos(null); };
     const k = (e: KeyboardEvent) => { if (e.key === "Escape") { setPos(null); btn.current?.focus(); } };
-    const close = () => setPos(null);
-    document.addEventListener("mousedown", c); document.addEventListener("keydown", k); window.addEventListener("scroll", close, true); window.addEventListener("resize", close);
-    menu.current?.querySelector<HTMLElement>("button")?.focus();
-    return () => { document.removeEventListener("mousedown", c); document.removeEventListener("keydown", k); window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); };
-  }, [pos]);
-  const toggle = () => {
-    if (pos) return setPos(null);
-    const r = btn.current!.getBoundingClientRect();
-    setPos({ top: Math.min(r.bottom + 4, window.innerHeight - 40 * items.length - 20), right: Math.max(8, window.innerWidth - r.right) });
+    // The menu follows its button when the page or a table scrolls (focusing can scroll it into view).
+    const follow = () => { if (btn.current) setPos(where(btn.current)); };
+    document.addEventListener("mousedown", c); document.addEventListener("keydown", k); window.addEventListener("scroll", follow, true); window.addEventListener("resize", follow);
+    return () => { document.removeEventListener("mousedown", c); document.removeEventListener("keydown", k); window.removeEventListener("scroll", follow, true); window.removeEventListener("resize", follow); };
+  }, [Boolean(pos)]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (pos) menu.current?.querySelector<HTMLElement>("button")?.focus({ preventScroll: true }); }, [Boolean(pos)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const where = (b: HTMLElement) => {
+    const r = b.getBoundingClientRect();
+    return { top: Math.min(r.bottom + 4, window.innerHeight - 40 * items.length - 20), right: Math.max(8, window.innerWidth - r.right) };
   };
+  const toggle = () => (pos ? setPos(null) : setPos(where(btn.current!)));
   return (
     <div className="menu-wrap" ref={ref}>
       <button ref={btn} className={`btn btn-ghost ${small ? "btn-sm" : ""}`} disabled={disabled} aria-haspopup="menu" aria-expanded={Boolean(pos)} aria-label={ariaLabel} onClick={toggle}>{label}{small ? "" : " ▾"}</button>

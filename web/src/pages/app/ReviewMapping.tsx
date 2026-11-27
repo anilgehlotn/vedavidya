@@ -1,9 +1,9 @@
 // Review pages: after a class scan is uploaded, the AI groups its pages by student (from the name / roll number on
 // each first page). The teacher checks the groups, moves pages that went to the wrong student, then approves.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, blobUrl } from "../../lib/api";
-import { Empty, ErrorState, PageSkeleton, PageTitle, useApi } from "../../components/ui";
+import { Empty, ErrorState, PageSkeleton, PageTitle, useApi, useFocusTrap } from "../../components/ui";
 import { Icon } from "../../components/icons";
 import { useRun, useToast } from "../../components/toast";
 import { CreditLine } from "./Credits";
@@ -190,6 +190,8 @@ function PageViewer({ docId, pages, students, n, onNav, onClose, onMove, onMoveF
   const i = order.findIndex((p) => p.n === n);
   const p = order[i];
   const [to, setTo] = useState(p?.attempt_id ?? "");
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
   useEffect(() => setTo(p?.attempt_id ?? ""), [p?.n, p?.attempt_id]);
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
@@ -204,7 +206,7 @@ function PageViewer({ docId, pages, students, n, onNav, onClose, onMove, onMoveF
   const owner = students.find((s) => s.attempt_id === p.attempt_id);
   return (
     <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="viewer" role="dialog" aria-label={`Page ${p.n}`}>
+      <div ref={box} tabIndex={-1} className="viewer" role="dialog" aria-modal="true" aria-label={`Page ${p.n}`}>
         <div className="viewer-head">
           <b>Page {p.n} of {order.length}</b><span className="small muted grow"> · {owner ? owner.name : "No student"} · {readText(p)}</span>
           <button className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="close" /></button>

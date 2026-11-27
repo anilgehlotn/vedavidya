@@ -2,7 +2,7 @@
 // and the page area. On phones the sidebar slides in from the left.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { PageSkeleton } from "../../components/ui";
+import { PageSkeleton, useFocusTrap } from "../../components/ui";
 import { Icon, type IconName } from "../../components/icons";
 import { useAuth } from "../../lib/auth";
 import { api } from "../../lib/api";
@@ -58,6 +58,21 @@ export default function AppLayout() {
   const [account, setAccount] = useState(false);
   const [search, setSearch] = useState(false);
   const flyRef = useRef<HTMLDivElement>(null);
+  const sideRef = useRef<HTMLElement>(null);
+  useFocusTrap(sideRef, drawer); // on phones the open menu keeps focus until it closes
+  // Tabs: arrow keys (and Home / End) move between the tabs of any tab strip, like native tabs.
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.getAttribute?.("role") !== "tab" || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      const tabs = [...(t.closest('[role="tablist"]')?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])].filter((x) => !x.hasAttribute("disabled"));
+      const i = tabs.indexOf(t);
+      const next = e.key === "Home" ? tabs[0] : e.key === "End" ? tabs[tabs.length - 1] : tabs[(i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+      if (next && next !== t) { e.preventDefault(); next.focus(); next.click(); }
+    };
+    document.addEventListener("keydown", k);
+    return () => document.removeEventListener("keydown", k);
+  }, []);
 
   useEffect(() => { setDrawer(false); setFly(null); setAccount(false); }, [loc.pathname]);
   useEffect(() => { try { localStorage.setItem("vv_side_collapsed", collapsed ? "1" : "0"); } catch { /* private mode */ } }, [collapsed]);
@@ -102,7 +117,7 @@ export default function AppLayout() {
       </header>
       {drawer && <div className="drawer-bg" onClick={() => setDrawer(false)} aria-hidden />}
 
-      <aside className="side" aria-label="Main menu">
+      <aside ref={sideRef} className="side" aria-label="Main menu" {...(drawer ? { role: "dialog", "aria-modal": true } : {})}>
         <div className="side-top">
           <Link to="/app" className="side-logo" aria-label="Veda Vidya home" title="Veda Vidya"><LogoMark /><span className="side-wordmark">Veda Vidya</span></Link>
           <button className="side-tool desktop-only" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "Expand menu" : "Collapse menu"} title={collapsed ? "Expand menu" : "Collapse menu"}>
@@ -201,6 +216,8 @@ function SearchDialog({ user, items, onClose }: { user: User; items: Item[]; onC
   const [data, setData] = useState<Hit[] | null>(null);
   const [failed, setFailed] = useState(false);
   const nav = useNavigate();
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
   const pages = useMemo<Hit[]>(() => items.flatMap((i) => isGroup(i)
     ? i.children.map((c) => ({ label: c.label, sub: i.label, to: c.to, icon: c.icon }))
     : [{ label: i.label, sub: "Page", to: i.to, icon: i.icon }]), [items]);
@@ -231,7 +248,7 @@ function SearchDialog({ user, items, onClose }: { user: User; items: Item[]; onC
 
   return (
     <div className="modal-bg search-bg" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="search-box" role="dialog" aria-label="Search">
+      <div ref={box} className="search-box" role="dialog" aria-modal="true" aria-label="Search">
         <div className="search-input"><Icon name="search" />
           <input autoFocus placeholder={user.role === "student" ? "Search pages" : "Search tests, papers, students, pages"} value={q} onChange={(e) => setQ(e.target.value)}
             aria-label="Search" aria-controls="search-results" aria-activedescendant={hits[sel] ? `hit-${sel}` : undefined}

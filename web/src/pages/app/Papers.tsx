@@ -77,7 +77,7 @@ export function PaperGenerate() {
           <div className="row between"><b>Sections</b><span className="badge violet">{total} marks</span></div>
           {sections.map((s, i) => (
             <div key={i} className="q-card stack" style={{ gap: 8, padding: 12 }}>
-              <div className="row"><input className="input" value={s.name} onChange={(e) => upd(i, { name: e.target.value })} />
+              <div className="row"><input className="input" aria-label={`Section ${i + 1} name`} value={s.name} onChange={(e) => upd(i, { name: e.target.value })} />
                 <button type="button" className="btn-link" style={{ color: "var(--red)" }} onClick={() => setSections(sections.filter((_, j) => j !== i))} disabled={sections.length === 1}>✕</button></div>
               <div className="grid g4" style={{ gap: 8 }}>
                 <label className="field"><span>Type</span><select className="input" value={s.type} onChange={(e) => upd(i, { type: e.target.value as Question["type"] })}>{Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>

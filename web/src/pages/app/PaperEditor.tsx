@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import type { Paper, Question, Section } from "../../lib/types";
 import { MathText } from "../../components/MathText";
-import { ErrorBox, Modal } from "../../components/ui";
+import { ErrorBox, Modal, useFocusTrap } from "../../components/ui";
 import { Icon } from "../../components/icons";
 import { useRun, useToast } from "../../components/toast";
 import { CreditLine } from "./Credits";
@@ -167,6 +167,8 @@ function SolutionDrawer({ paperId, q, n, tab, setTab, sug, onClose, onChanged }:
   const [ask, setAsk] = useState("");
   const toast = useToast();
   const run = useRun();
+  const panel = useRef<HTMLElement>(null);
+  useFocusTrap(panel);
   useEffect(() => { setDraft(q); setEditing(false); setErr(null); }, [q.id, q.solution, q.rubric, q.text]);
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -192,7 +194,7 @@ function SolutionDrawer({ paperId, q, n, tab, setTab, sug, onClose, onChanged }:
   return (
     <>
       <div className="drawer-scrim" onClick={onClose} aria-hidden />
-      <aside className="drawer" role="dialog" aria-label={`Question ${n}: solution and marking`}>
+      <aside ref={panel} tabIndex={-1} className="drawer" role="dialog" aria-modal="true" aria-label={`Question ${n}: solution and marking`}>
         <header className="drawer-head">
           <div className="grow" style={{ minWidth: 0 }}><span className="small muted">Question {n} · {q.marks} marks</span><div className="drawer-q"><MathText text={q.text} /></div></div>
           <button className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="close" /></button>
