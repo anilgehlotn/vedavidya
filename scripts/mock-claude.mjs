@@ -84,7 +84,7 @@ function importedPaper(content, hasKey) {
 }
 
 function evaluationFrom(text, pages = 1) {
-  const key = JSON.parse(text.split("Answer key with rubrics (JSON):\n")[1].split("\n\nEvaluate every question")[0]);
+  const key = JSON.parse(text.split("Answer key with rubrics (JSON):\n")[1].split("\n\n")[0]);
   const perPage = Math.max(1, Math.ceil(key.length / Math.max(1, pages)));
   return {
     student_name_on_sheet: null,
@@ -117,12 +117,15 @@ function streamText(res, model, text) {
   res.end();
 }
 
+const recent = [];
 http.createServer((req, res) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => {
     const url = new URL(req.url, "http://x");
     if (url.pathname === "/__stats") return send(res, 200, stats);
+    // Test control: the text of the latest requests (to check what the app told the model).
+    if (url.pathname === "/__recent") return send(res, 200, recent);
     // Test control: the next N answers are unreadable text (to exercise the app's job retries).
     if (url.pathname === "/__mode") { try { Object.assign(mode, JSON.parse(Buffer.concat(chunks).toString() || "{}")); } catch { /* ignore */ } return send(res, 200, mode); }
     const key = req.headers["x-api-key"] ?? String(req.headers.authorization ?? "").replace(/^Bearer /, "");
@@ -164,6 +167,8 @@ http.createServer((req, res) => {
           : apiError(res, 529, "overloaded_error", "Overloaded");
       }
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      recent.push({ model: body.model, system: String(body.system ?? "").slice(0, 2000), text: text.slice(0, 20000) });
+      if (recent.length > 30) recent.shift();
       const out = /Name the exact sub-topic of every question/.test(text) ? tagsFrom(text)
         : /Create a Fix-it practice plan/.test(text) ? practiceFrom(text)
         : /Write the re-teach brief/.test(text) ? briefFrom(text)

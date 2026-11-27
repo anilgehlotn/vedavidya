@@ -263,6 +263,34 @@ try {
   await fp.waitForURL(/\/app\/papers\/[^/]+\?edit=1/);
   ok(true, "Compose opens a blank paper in the editor");
 
+  // ------------------------------------------------------------------ Import paper
+  log("▸ Import paper window");
+  await fp.goto(BASE + "/app/papers");
+  await fp.getByRole("button", { name: "⇪ Import paper" }).click();
+  const im = fp.getByRole("dialog", { name: "Import a question paper" });
+  for (const st of ["Question paper", "Answer key", "Evaluation criteria", "Details"]) ok(await visible(im.locator(".step-label", { hasText: st })), `step: ${st}`);
+  ok(await visible(im.getByText(/Credits: /)), "credit balance shown");
+  const pdfLib = require("pdf-lib");
+  const doc = await pdfLib.PDFDocument.create(); doc.addPage([595, 842]); doc.addPage([595, 842]);
+  await im.locator("input[type=file]").first().setInputFiles({ name: "unit-test.pdf", mimeType: "application/pdf", buffer: Buffer.from(await doc.save()) });
+  ok(await visible(im.getByText("unit-test.pdf")), "file card shows the file");
+  ok(await visible(im.getByText(/2 pages/)), "and its page count");
+  await im.getByText("My own rules").click();
+  const upload = im.getByRole("button", { name: "Upload & process" });
+  await sleep(1500);
+  ok(await upload.isDisabled(), "with 'My own rules' chosen, rules are needed before starting");
+  await im.getByRole("button", { name: "+ Units are required for full marks" }).click();
+  await im.getByRole("button", { name: "+ Accept any correct method" }).click();
+  ok((await im.getByLabel("Your marking rules").inputValue()) === "Units are required for full marks\nAccept any correct method", "rule chips add lines");
+  await im.getByLabel("Course").selectOption({ label: "10th CBSE" });
+  await shot(fp, "p4-import");
+  await upload.click();
+  await fp.waitForURL(/\/app\/papers\/qp_/);
+  ok(await visible(fp.locator(".toast", { hasText: "The AI is reading your paper" })), "import started");
+  const newId = fp.url().split("/").pop().split("?")[0];
+  const np = (await call("GET", `/papers/${newId}`, { token: admin })).data;
+  ok(np.marking_notes.includes("Units are required") && np.course_id && np.source === "imported", "rules and course saved with the paper");
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();

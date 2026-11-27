@@ -211,7 +211,7 @@ async function fileBlocks(keys: string[]): Promise<Anthropic.Beta.BetaContentBlo
   return out;
 }
 
-export async function evaluateSheet(orgId: string, paper: { title: string; subject: string | null; sections: Section[] }, files: string[], task: "marking" | "recheck" = "marking") {
+export async function evaluateSheet(orgId: string, paper: { title: string; subject: string | null; sections: Section[]; marking_notes?: string | null }, files: string[], task: "marking" | "recheck" = "marking") {
   if (!files.length) throw new AiError("No pages uploaded for this student.");
   const key = paper.sections.flatMap((s) => s.questions).map((q) => ({
     id: q.id, type: q.type, marks: q.marks, negative_marks: q.negative_marks, question: q.text,
@@ -240,13 +240,17 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
       ...blocks,
       {
         type: "text",
-        text: `These pages are one student's answer sheet for "${paper.title}" (${paper.subject ?? ""}).\n\nAnswer key with rubrics (JSON):\n${JSON.stringify(key)}\n\nEvaluate every question in the answer key, in order.`,
+        text: `These pages are one student's answer sheet for "${paper.title}" (${paper.subject ?? ""}).\n\nAnswer key with rubrics (JSON):\n${JSON.stringify(key)}\n\n` +
+          (paper.marking_notes?.trim() ? `The teacher's own marking rules (follow them; they override general habits but never the rubric's maximum marks):\n${paper.marking_notes.trim()}\n\n` : "") +
+          `Evaluate every question in the answer key, in order.`,
       },
     ],
   });
 }
 
 export interface ImportMeta { subject?: string; board?: string; class_level?: string; language?: string; notes?: string;
+  /** The teacher's own marking rules ("custom evaluation criteria"); applied when writing each rubric. */
+  marking_notes?: string;
   /** Where correct answers come from: AI solves them, they are printed in the paper itself, or a separate key was uploaded. */
   key_mode?: "auto" | "in_paper" | "separate" }
 
@@ -278,6 +282,7 @@ export async function importPaper(orgId: string, paperFiles: string[], keyFiles:
           (meta.subject ? `Subject: ${meta.subject}\n` : "") + (meta.board ? `Board/Exam: ${meta.board}\n` : "") +
           (meta.class_level ? `Class: ${meta.class_level}\n` : "") + (meta.language ? `Language: ${meta.language}\n` : "") +
           (meta.notes ? `Teacher's note: ${meta.notes}\n` : "") +
+          (meta.marking_notes?.trim() ? `The teacher's own marking rules (write every rubric so it follows them): ${meta.marking_notes.trim()}\n` : "") +
           `Number question ids sequentially (q1, q2, ...). For every question set topic to the chapter name only, and subtopic to the exact concept the question tests (specific enough that a teacher could re-teach just that, e.g. topic "Trigonometry", subtopic "Trigonometric ratios of complementary angles"). Use type mcq for single-correct multiple choice (exactly 4 options when the paper has 4; ` +
           `if it has a different number of options, still list them all), numeric for numerical-answer questions, short or long for written answers. ` +
           (kBlocks.length ? "Take correct answers and marking from the answer key."

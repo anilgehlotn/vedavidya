@@ -142,7 +142,11 @@ paperRoutes.post("/papers/import", staff, aiPaperLimit, wrap(async (req, res) =>
     key_mode: z.enum(["auto", "in_paper", "separate"]).default("auto"),
     subject: z.string().max(80).optional(), board: z.string().max(80).optional(), class_level: z.string().max(80).optional(),
     language: z.string().max(60).optional(), duration_min: z.coerce.number().int().min(5).max(360).optional(), notes: z.string().max(1000).optional(),
+    marking_notes: z.string().trim().max(2000).optional(),
+    course_id: z.string().max(60).nullish(), subject_id: z.string().max(60).nullish(), folder_id: z.string().max(60).nullish(),
   }).parse(req.body ?? {});
+  if (!inOrg("courses", b.course_id, req.user!.org_id) || !inOrg("subjects", b.subject_id, req.user!.org_id) || !inOrg("paper_folders", b.folder_id, req.user!.org_id) || !subjectInCourse(b.subject_id, b.course_id))
+    return res.status(400).json({ error: "Pick a course, subject and folder from your institute" });
   if (b.key_mode === "separate" && !b.key_uploads.length) return res.status(400).json({ error: "Add the answer key file, or choose another answer key option" });
   const problem = aiProblem(req.user!.org_id);
   if (problem) return res.status(400).json({ error: problem });
@@ -153,9 +157,10 @@ paperRoutes.post("/papers/import", staff, aiPaperLimit, wrap(async (req, res) =>
   if (pages > 100) return res.status(400).json({ error: `The paper and answer key together have ${pages} pages. The limit is 100.` });
   const id = uid("qp");
   const chargeRef = charge(user.org_id, "paper_import", `paper:${id}`, { userId: user.id }); // throws when out of credits
-  run(`INSERT INTO question_papers (id, org_id, title, subject, board, class_level, language, duration_min, status, created_by, source)
-       VALUES (?,?,?,?,?,?,?,?, 'generating', ?, 'imported')`,
-    id, user.org_id, paperUps[0].filename.replace(/\.[^.]+$/, "").slice(0, 120) || "Imported paper", b.subject ?? null, b.board ?? null, b.class_level ?? null, b.language ?? "English", b.duration_min ?? 60, user.id);
+  run(`INSERT INTO question_papers (id, org_id, title, subject, board, class_level, language, duration_min, status, created_by, source, marking_notes, course_id, subject_id, folder_id, updated_at)
+       VALUES (?,?,?,?,?,?,?,?, 'generating', ?, 'imported', ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    id, user.org_id, paperUps[0].filename.replace(/\.[^.]+$/, "").slice(0, 120) || "Imported paper", b.subject ?? null, b.board ?? null, b.class_level ?? null, b.language ?? "English", b.duration_min ?? 60, user.id,
+    b.marking_notes || null, b.course_id ?? null, b.subject_id ?? null, b.folder_id ?? null);
   const paperDoc = await createDocument({ orgId: user.org_id, userId: user.id, purpose: "paper", uploads: paperUps, paperId: id, process: false });
   const keyDoc = keyUps.length ? await createDocument({ orgId: user.org_id, userId: user.id, purpose: "answer_key", uploads: keyUps, paperId: id, process: false }) : null;
   enqueueJob("import_paper", { paper_id: id, org_id: user.org_id, paper_doc: paperDoc, key_doc: keyDoc, meta: { ...b, key_mode: b.key_mode } satisfies ImportMeta, charge_ref: chargeRef },
@@ -167,6 +172,7 @@ paperRoutes.post("/papers/import", staff, aiPaperLimit, wrap(async (req, res) =>
 const PaperBody = z.object({
   title: z.string().trim().min(1).max(200), subject: z.string().max(80).optional(), board: z.string().max(80).optional(), class_level: z.string().max(80).optional(),
   language: z.string().max(60).optional(), duration_min: z.number().int().min(5).max(360), instructions: z.string().max(5000).optional(),
+  marking_notes: z.string().trim().max(2000).nullish(),
   sections: z.array(Section).max(20).refine((ss) => ss.reduce((t, x) => t + x.questions.length, 0) <= 300, "At most 300 questions")
     .refine((ss) => { const ids = ss.flatMap((x) => x.questions.map((q) => q.id)); return new Set(ids).size === ids.length; }, "Question ids must be unique"),
 });
@@ -188,9 +194,10 @@ paperRoutes.post("/papers", staff, (req, res) => {
 paperRoutes.put("/papers/:id", staff, (req, res) => {
   const b = PaperBody.parse(req.body);
   const r = run(`UPDATE question_papers SET title = ?, subject = ?, board = ?, class_level = ?, language = ?, duration_min = ?, instructions = ?,
-      sections = ?, total_marks = ?, status = CASE WHEN status = 'failed' THEN 'draft' ELSE status END, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND org_id = ?`,
+      sections = ?, total_marks = ?, status = CASE WHEN status = 'failed' THEN 'draft' ELSE status END, updated_at = CURRENT_TIMESTAMP,
+      marking_notes = CASE WHEN ? THEN ? ELSE marking_notes END WHERE id = ? AND org_id = ?`,
     b.title, b.subject ?? null, b.board ?? null, b.class_level ?? null, b.language ?? "English", b.duration_min, b.instructions ?? null,
-    JSON.stringify(b.sections), totalMarks(b.sections), req.params.id, req.user!.org_id);
+    JSON.stringify(b.sections), totalMarks(b.sections), b.marking_notes !== undefined ? 1 : 0, b.marking_notes || null, req.params.id, req.user!.org_id);
   if (!r.changes) return res.status(404).json({ error: "Paper not found" });
   syncTestMarks(req.params.id);
   res.json({ ok: true });
@@ -206,10 +213,10 @@ paperRoutes.post("/papers/:id/clone", staff, (req, res) => {
   if (!p) return res.status(404).json({ error: "Paper not found" });
   const id = uid("qp");
   run(`INSERT INTO question_papers (id, org_id, title, subject, board, class_level, language, duration_min, instructions, sections, total_marks, status, created_by,
-         source, course_id, subject_id, folder_id, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'draft', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+         source, course_id, subject_id, folder_id, marking_notes, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'draft', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
     id, p.org_id, `${p.title} (copy)`, p.subject, p.board, p.class_level, p.language, p.duration_min, p.instructions, p.sections, p.total_marks, req.user!.id,
-    p.source, p.course_id, p.subject_id, p.folder_id);
+    p.source, p.course_id, p.subject_id, p.folder_id, p.marking_notes);
   res.json({ id });
 });
 

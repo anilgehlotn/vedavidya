@@ -22,7 +22,7 @@ const student = requireRole("student");
 // Express 4 doesn't catch rejected promises from async handlers.
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { fn(req, res).catch(next); };
 
-interface Paper { id: string; title: string; subject: string | null; instructions: string | null; total_marks: number; status: string; error: string | null; sections: Section[] }
+interface Paper { id: string; title: string; subject: string | null; instructions: string | null; total_marks: number; status: string; error: string | null; sections: Section[]; marking_notes?: string | null }
 const paperFor = (testId: string): Paper | null => {
   const p = one<any>("SELECT p.* FROM tests t JOIN question_papers p ON p.id = t.paper_id WHERE t.id = ?", testId);
   return p ? { ...p, sections: json<Section[]>(p.sections, []) } : null;

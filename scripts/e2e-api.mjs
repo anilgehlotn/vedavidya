@@ -937,6 +937,50 @@ section("Teacher corrections are kept for improving the marking");
   await expect("institute admin can't read all corrections", 403, "GET", "/admin/corrections", { token: admin });
 }
 
+section("Import with my own marking rules, course, subject and folder");
+{
+  const MOCK = process.env.MOCK_URL ?? "http://localhost:4999";
+  const { PDFDocument } = require("pdf-lib");
+  const crs = (await expect("course for import", 200, "POST", "/courses", { token: admin, body: { name: `Import Course ${Date.now()}` } })).data.id;
+  const sub = (await expect("subject for import", 200, "POST", `/courses/${crs}/subjects`, { token: admin, body: { name: "Physics" } })).data.id;
+  const fld = (await expect("folder for import", 200, "POST", "/paper-folders", { token: teacher, body: { name: `Imports ${Date.now()}` } })).data.id;
+  const pdfDoc = await PDFDocument.create(); pdfDoc.addPage([595, 842]);
+  const up = await uploadAll(API, teacher, [["rules-paper.pdf", Buffer.from(await pdfDoc.save())]], "paper");
+  const RULE = "UNITS-RULE-7731: units are required for full marks";
+  const crs2 = (await expect("another course", 200, "POST", "/courses", { token: admin, body: { name: `Other Course ${Date.now()}` } })).data.id;
+  await expect("import with a subject from another course rejected", 400, "POST", "/papers/import", { token: teacher, body: { paper_uploads: up, course_id: crs2, subject_id: sub } });
+  await expect("import into another institute's folder rejected", 400, "POST", "/papers/import", { token: teacher, body: { paper_uploads: up, folder_id: "fld_nope" } });
+  const imp = await expect("import with marking rules", 200, "POST", "/papers/import", { token: teacher, body: { paper_uploads: up, marking_notes: RULE, course_id: crs, subject_id: sub, folder_id: fld } });
+  const done = await poll(() => call("GET", `/papers/${imp.data.id}`, { token: teacher }).then((x) => x.data), (p) => p.status !== "generating");
+  ok(done.status === "draft" && done.marking_notes === RULE && done.course_id === crs && done.subject_id === sub && done.folder_id === fld, "paper keeps its rules, course, subject and folder");
+  const recent = await (await fetch(`${MOCK}/__recent`)).json();
+  ok(recent.some((r) => /Transcribe this question paper/.test(r.text) && r.text.includes(RULE)), "the AI was given the marking rules when reading the paper");
+  const listed = (await call("GET", "/papers", { token: teacher })).data.find((x) => x.id === imp.data.id);
+  ok(listed.source === "imported" && listed.folder_name && listed.subject_name === "Physics", "the list shows source, folder and subject");
+  // Rules also reach marking.
+  const copy = (await expect("duplicate keeps rules", 200, "POST", `/papers/${imp.data.id}/clone`, { token: teacher, body: {} })).data.id;
+  ok((await call("GET", `/papers/${copy}`, { token: teacher })).data.marking_notes === RULE, "a copy keeps the rules");
+  const full = (await call("GET", `/papers/${imp.data.id}`, { token: teacher })).data;
+  await expect("edit the rules", 200, "PUT", `/papers/${imp.data.id}`, { token: teacher, body: { title: full.title, duration_min: full.duration_min, sections: full.sections, marking_notes: "RULE-B: ignore spelling" } });
+  ok((await call("GET", `/papers/${imp.data.id}`, { token: teacher })).data.marking_notes === "RULE-B: ignore spelling", "rules can be edited");
+  await expect("save without rules keeps them", 200, "PUT", `/papers/${imp.data.id}`, { token: teacher, body: { title: full.title, duration_min: full.duration_min, sections: full.sections } });
+  ok((await call("GET", `/papers/${imp.data.id}`, { token: teacher })).data.marking_notes === "RULE-B: ignore spelling", "older editors that don't send rules don't wipe them");
+  await call("POST", `/papers/${imp.data.id}/approve`, { token: teacher, body: {} });
+  const rb = (await call("POST", "/batches", { token: admin, body: { name: `Rules ${Date.now()}` } })).data.id;
+  await call("POST", "/students/bulk", { token: admin, body: { batch_id: rb, csv: "Rule Student,1" } });
+  const rt = (await expect("test with that paper", 200, "POST", "/tests", { token: teacher, body: { title: "Rules test", paper_id: imp.data.id, mode: "offline", batch_ids: [rb] } })).data.id;
+  const ra = (await call("GET", `/tests/${rt}`, { token: teacher })).data.attempts[0];
+  await call("POST", `/attempts/${ra.id}/files`, { token: teacher, body: { upload_ids: await uploadAll(API, teacher, [["s.jpg", await jpeg(600, 800, "rules")]], "student_sheet") } });
+  await waitProcessed(API, teacher, rt);
+  await expect("mark it", 200, "POST", `/tests/${rt}/evaluate`, { token: teacher, body: {} });
+  await poll(() => call("GET", `/tests/${rt}`, { token: teacher }).then((x) => x.data), (d) => d.attempts.every((a) => a.status !== "evaluating"));
+  const recent2 = await (await fetch(`${MOCK}/__recent`)).json();
+  ok(recent2.some((r) => /answer sheet for "/.test(r.text) && r.text.includes("RULE-B: ignore spelling")), "the AI was given the marking rules when marking");
+  await call("DELETE", `/tests/${rt}`, { token: admin });
+  for (const st of (await call("GET", `/students?batch_id=${rb}`, { token: admin })).data) await call("DELETE", `/students/${st.id}`, { token: admin });
+  await call("DELETE", `/batches/${rb}`, { token: admin });
+}
+
 section("Onboarding: spreadsheet import with preview, invite links");
 {
   const ob = (await expect("onboarding batch", 200, "POST", "/batches", { token: admin, body: { name: `Onboard ${Date.now()}` } })).data.id;

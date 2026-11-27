@@ -319,3 +319,4 @@ CREATE TABLE IF NOT EXISTS invite_links (
 );
 CREATE INDEX IF NOT EXISTS idx_invites_org ON invite_links(org_id, created_at);
 `);
+addColumn("question_papers", "marking_notes", "TEXT"); // the teacher's own marking rules, used when writing rubrics and when marking

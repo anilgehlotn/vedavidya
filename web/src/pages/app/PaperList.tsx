@@ -160,8 +160,8 @@ export function PaperList() {
       </div>
 
       {importing && (
-        <Modal title="Import a question paper" onClose={() => setImporting(false)}>
-          <ImportPaperForm showMeta onCancel={() => setImporting(false)} onCreated={(id) => nav(`/app/papers/${id}`)} />
+        <Modal title="Import a question paper" onClose={() => setImporting(false)} wide>
+          <ImportPaperForm showMeta defaults={{ folder_id: folder && folder !== "none" ? folder : null }} onCancel={() => setImporting(false)} onCreated={(id) => nav(`/app/papers/${id}`)} />
         </Modal>
       )}
       {editing && <PaperMetaModal p={editing} folders={folders.data ?? []} courses={courses.data ?? []} onClose={() => setEditing(null)} onSaved={reload} />}
