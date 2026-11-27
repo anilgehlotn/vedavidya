@@ -981,6 +981,24 @@ section("Import with my own marking rules, course, subject and folder");
   await call("DELETE", `/batches/${rb}`, { token: admin });
 }
 
+section("Manage tests: stats and results summary");
+{
+  const st = await expect("test stats", 200, "GET", "/tests/stats", { token: teacher });
+  const list = (await call("GET", "/tests", { token: teacher })).data;
+  ok(st.data.tests === list.length && st.data.sheets_marked === list.reduce((t, x) => t + x.evaluated, 0), `stats count tests and marked sheets (${st.data.tests}, ${st.data.sheets_marked})`);
+  ok(typeof st.data.avg_this_month === "number" && st.data.results_this_month > 0, `this month's average (${st.data.avg_this_month}%)`);
+  ok(list.some((t) => typeof t.avg_pct === "number"), "test list has averages");
+  const r30 = (await expect("stats for 30 days", 200, "GET", "/tests/stats?range=30d", { token: teacher })).data;
+  ok(r30.tests <= st.data.tests, "time range narrows");
+  const none = (await expect("stats for an unknown course", 200, "GET", "/tests/stats?course_id=nope", { token: teacher })).data;
+  ok(none.tests === 0 && none.sheets_marked === 0, "unknown course: nothing (no other institute's data)");
+  await expect("bad range rejected", 400, "GET", "/tests/stats?range=forever", { token: teacher });
+  const csv = await fetch(`${API}/tests/summary.csv`, { headers: { Authorization: `Bearer ${teacher}` } });
+  const text = await csv.text();
+  ok(csv.status === 200 && text.startsWith("Test,Date,Course") && text.trim().split("\n").length === list.length + 1, `summary CSV has a row per test (${text.trim().split("\n").length - 1})`);
+  ok(!(await (await fetch(`${API}/tests/summary.csv`, { headers: { Authorization: `Bearer ${otherAdmin}` } })).text()).includes(list[0].title), "another institute's summary doesn't include my tests");
+}
+
 section("Paper editor: one question, checked ticks, AI suggestions");
 {
   const pid = (await expect("paper for the editor", 200, "POST", "/papers", { token: teacher, body: { title: "Editor paper", duration_min: 30, sections: [{ name: "A", instructions: "", questions: [

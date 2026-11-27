@@ -78,7 +78,7 @@ try {
   await shot(p, "shell-tests");
 
   log("▸ Breadcrumbs and page header");
-  ok((await p.locator(".crumbs").innerText()).replace(/\s+/g, " ").trim() === "Assessments Tests & evaluation", `tests list crumbs (${await p.locator(".crumbs").innerText()})`);
+  ok((await p.locator(".crumbs").innerText()).replace(/\s+/g, " ").trim() === "Assessments Tests", `tests list crumbs (${await p.locator(".crumbs").innerText()})`);
   const t0 = demoTests[0];
   await p.goto(BASE + `/app/tests/${t0.id}`);
   ok(await visible(p.locator(".crumbs a", { hasText: "Tests" })), "test page links back to Tests");

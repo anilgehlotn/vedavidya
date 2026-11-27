@@ -62,9 +62,72 @@ testRoutes.get("/tests", staff, (req, res) => {
       (SELECT group_concat(b.name, ', ') FROM test_batches tb JOIN batches b ON b.id = tb.batch_id WHERE tb.test_id = t.id) AS batch_names,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id) AS candidates,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.status = 'evaluated') AS evaluated,
+      (SELECT round(avg(a.score * 100.0 / a.max_score)) FROM attempts a WHERE a.test_id = t.id AND a.score IS NOT NULL AND a.max_score > 0) AS avg_pct,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.files IS NOT NULL AND a.files != '[]') AS uploaded
     FROM tests t LEFT JOIN question_papers p ON p.id = t.paper_id LEFT JOIN courses c ON c.id = t.course_id LEFT JOIN subjects s ON s.id = t.subject_id
     WHERE t.org_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC`, req.user!.org_id).map((t) => ({ ...t, state: testStatus(t) })));
+});
+
+// ---- Manage Tests: stats and a results summary, for a course / subject / time range ----
+const TestScope = z.object({
+  course_id: z.string().max(60).optional(), subject_id: z.string().max(60).optional(),
+  range: z.enum(["30d", "90d", "180d", "365d", "all"]).default("all"),
+});
+const RANGE_DAYS: Record<string, number | null> = { "30d": 30, "90d": 90, "180d": 180, "365d": 365, all: null };
+function testScope(org: string, q: z.infer<typeof TestScope>) {
+  const where = ["t.org_id = ?"], args: unknown[] = [org];
+  if (q.course_id) { where.push("t.course_id = ?"); args.push(q.course_id); }
+  if (q.subject_id) { where.push("t.subject_id = ?"); args.push(q.subject_id); }
+  const days = RANGE_DAYS[q.range];
+  if (days) { where.push("coalesce(t.scheduled_at, t.created_at) >= ?"); args.push(new Date(Date.now() - days * 86400000).toISOString().replace("T", " ").slice(0, 19)); }
+  return { where: where.join(" AND "), args };
+}
+testRoutes.get("/tests/stats", staff, (req, res) => {
+  const q = TestScope.parse(req.query);
+  const org = req.user!.org_id;
+  const { where, args } = testScope(org, q);
+  const tests = all<any>(`SELECT t.id, t.paper_id, t.scheduled_at, t.window_end, t.duration_min, t.results_published, t.mode,
+      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.status = 'evaluated') AS evaluated,
+      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.files IS NOT NULL AND a.files != '[]' AND a.status IN ('uploaded','failed')) AS to_mark
+    FROM tests t WHERE ${where}`, ...args);
+  // Monthly averages ignore the time range (they are "this month" and "last month"), but follow course / subject.
+  const { where: w2, args: a2 } = testScope(org, { ...q, range: "all" });
+  const monthAvg = (offset: number) => {
+    const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - offset);
+    const from = d.toISOString().slice(0, 7);
+    return one<{ v: number | null; n: number }>(`SELECT avg(a.score * 100.0 / a.max_score) v, count(*) n FROM attempts a JOIN tests t ON t.id = a.test_id
+      WHERE ${w2} AND a.score IS NOT NULL AND a.max_score > 0 AND substr(coalesce(t.scheduled_at, t.created_at), 1, 7) = ?`, ...a2, from);
+  };
+  const now = monthAvg(0), prev = monthAvg(1);
+  const round = (v: number | null | undefined) => (v == null ? null : Math.round(v));
+  const states = tests.map((t) => testStatus(t));
+  res.json({
+    tests: tests.length,
+    sheets_marked: tests.reduce((t, x) => t + x.evaluated, 0),
+    avg_this_month: round(now?.v), avg_last_month: round(prev?.v), results_this_month: now?.n ?? 0,
+    change: now?.v != null && prev?.v != null ? Math.round(now.v - prev.v) : null,
+    to_mark: tests.reduce((t, x) => t + x.to_mark, 0),
+    to_publish: tests.filter((t) => !t.results_published && t.evaluated > 0).length,
+    by_state: { draft: states.filter((s) => s === "draft").length, scheduled: states.filter((s) => s === "scheduled").length, live: states.filter((s) => s === "live").length, completed: states.filter((s) => s === "completed").length },
+  });
+});
+/** One row per test: date, class, students, marked, average, highest, published. */
+testRoutes.get("/tests/summary.csv", staff, (req, res) => {
+  const q = TestScope.parse(req.query);
+  const { where, args } = testScope(req.user!.org_id, q);
+  const rows = all<any>(`SELECT t.title, coalesce(t.scheduled_at, t.created_at) AS d, co.name AS course, s.name AS subject_name, t.subject,
+      (SELECT group_concat(b.name, ' / ') FROM test_batches tb JOIN batches b ON b.id = tb.batch_id WHERE tb.test_id = t.id) AS batches,
+      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id) AS students,
+      (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.status = 'evaluated') AS marked,
+      (SELECT round(avg(a.score * 100.0 / a.max_score), 1) FROM attempts a WHERE a.test_id = t.id AND a.score IS NOT NULL AND a.max_score > 0) AS avg_pct,
+      (SELECT round(max(a.score * 100.0 / a.max_score), 1) FROM attempts a WHERE a.test_id = t.id AND a.score IS NOT NULL AND a.max_score > 0) AS high_pct,
+      t.results_published
+    FROM tests t LEFT JOIN courses co ON co.id = t.course_id LEFT JOIN subjects s ON s.id = t.subject_id WHERE ${where} ORDER BY d DESC`, ...args);
+  const esc = (v: unknown) => `"${csvSafe(v).replace(/"/g, '""')}"`;
+  res.type("text/csv").attachment("test_results_summary.csv").send([
+    "Test,Date,Course,Subject,Batches,Students,Marked,Average %,Highest %,Published",
+    ...rows.map((r) => [r.title, String(r.d).slice(0, 10), r.course, r.subject_name ?? r.subject, r.batches, r.students, r.marked, r.avg_pct, r.high_pct, r.results_published ? "Yes" : "No"].map(esc).join(",")),
+  ].join("\n"));
 });
 
 testRoutes.post("/tests", staff, (req, res) => {

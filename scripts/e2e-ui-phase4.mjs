@@ -353,6 +353,36 @@ try {
   await fp.getByRole("button", { name: "Save rules" }).click();
   ok(await visible(fp.locator(".ws-rules", { hasText: "Units are required" })), "marking rules can be added from the editor");
 
+  // ------------------------------------------------------------------ Manage tests
+  log("▸ Manage tests");
+  await p.goto(BASE + "/app/tests");
+  const tstat = (l) => p.locator(".stat", { hasText: l });
+  ok(await visible(tstat("Average this month")), "stats cards");
+  const dTests = (await call("GET", "/tests", { token: demo })).data;
+  ok((await tstat("Tests").first().locator(".value").innerText()).trim() === String(dTests.length), "test count");
+  ok(/vs last month|Last month|No results last month/.test(await tstat("Average this month").innerText()), "month-on-month change shown");
+  ok(await p.locator(".test-card").count() === Math.min(6, dTests.length), "recent tests as cards");
+  ok(await visible(p.locator("#all-tests table")), "full list below");
+  await p.getByRole("tab", { name: "Published" }).click();
+  ok(await p.locator("#all-tests tbody tr").count() === dTests.filter((t) => t.results_published).length, "Published tab");
+  await p.getByRole("tab", { name: "All" }).click();
+  await p.getByLabel("Search tests").fill("Maths");
+  ok(await p.locator("#all-tests tbody tr").count() === dTests.filter((t) => /maths/i.test(`${t.title} ${t.subject} ${t.batch_names}`)).length, "search");
+  await p.getByLabel("Course").selectOption({ label: "CBSE Class 10" });
+  await sleep(600);
+  const cbse = dTests.filter((t) => t.course_name === "CBSE Class 10").length;
+  ok(await p.locator(".test-card").count() === Math.min(6, cbse), `course filter (${cbse})`);
+  ok((await tstat("Tests").first().locator(".value").innerText()).trim() === String(cbse), "stats follow the filter");
+  await p.getByLabel("Time range").selectOption("30d");
+  await sleep(400);
+  ok(/range=30d/.test(p.url()), "time range in the address");
+  await p.getByRole("button", { name: "Clear filters" }).click();
+  await shot(p, "p4-tests");
+  const fdl = p.waitForEvent("download");
+  await p.getByRole("button", { name: "⤓ Download results" }).click().catch(() => {});
+  const dlr = await Promise.race([fdl, sleep(4000).then(() => null)]);
+  ok(dlr && dlr.suggestedFilename() === "test_results_summary.csv", "results summary downloads");
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();

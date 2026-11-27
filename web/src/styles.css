@@ -625,3 +625,10 @@ tr.row-bad td { background: var(--red-soft); }
 .shell.collapsed ~ .toasts, body:has(.shell.collapsed) .toasts { left: calc(var(--side-w-collapsed) + 16px); }
 body:not(:has(.shell)) .toasts { left: 16px; }
 @media (max-width: 900px) { .toasts, body:has(.shell.collapsed) .toasts { left: 16px; right: 16px; width: auto; top: 64px; bottom: auto; } }
+
+/* ---------- Manage tests ---------- */
+.h-sec { font-size: 18px; font-weight: 600; }
+.trend.down { color: var(--red); }
+.test-card { display: flex; flex-direction: column; gap: 10px; text-decoration: none; color: inherit; transition: border-color .15s, transform .15s; }
+.test-card:hover { border-color: var(--line-2); transform: translateY(-1px); }
+.test-title { font-size: 16.5px; line-height: 1.3; }

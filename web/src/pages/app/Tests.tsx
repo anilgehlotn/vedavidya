@@ -2,7 +2,9 @@ import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from "rea
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, blobUrl, fetchBlob, csvCell, DEMO, download, fmtDate, fmtDateTime, pct } from "../../lib/api";
 import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/types";
-import { Empty, ErrorBox, ErrorState, Loading, Modal, PageSkeleton, PageTitle, ScoreBadge, SkeletonTable, StatusBadge, useApi } from "../../components/ui";
+import { Empty, ErrorBox, ErrorState, Loading, Modal, PageSkeleton, PageTitle, ScoreBadge, SkeletonCards, SkeletonStats, SkeletonTable, StatusBadge, useApi } from "../../components/ui";
+import { Icon } from "../../components/icons";
+import type { Course } from "./Courses";
 import { useToast } from "../../components/toast";
 import { useAuth } from "../../lib/auth";
 import { checkFile, uploadFile, type UploadedFile } from "../../lib/chunkUpload";
@@ -13,7 +15,12 @@ import { ClassUploadWizard, PaperStep, Step, type ClassUpload } from "./TestFlow
 // The corrected-sheet viewer (with maths rendering) loads only when a marked sheet is opened.
 const SheetView = lazy(() => import("./SheetView").then((m) => ({ default: m.SheetView })));
 
-interface TestRow { id: string; title: string; mode: "offline" | "cbt"; scheduled_at: string | null; results_published: number; paper_id: string | null; paper_title: string | null; paper_status: string | null; total_marks: number | null; subject: string | null; batch_names: string | null; candidates: number; evaluated: number; uploaded: number }
+interface TestRow { id: string; title: string; mode: "offline" | "cbt"; scheduled_at: string | null; created_at: string; results_published: number; paper_id: string | null; paper_title: string | null; paper_status: string | null; total_marks: number | null; subject: string | null; batch_names: string | null; candidates: number; evaluated: number; uploaded: number;
+  course_id: string | null; subject_id: string | null; course_name: string | null; state: "draft" | "scheduled" | "live" | "completed"; avg_pct: number | null }
+interface TestStats { tests: number; sheets_marked: number; avg_this_month: number | null; avg_last_month: number | null; results_this_month: number; change: number | null; to_mark: number; to_publish: number;
+  by_state: Record<"draft" | "scheduled" | "live" | "completed", number> }
+const RANGES: [string, string][] = [["30d", "Last 30 days"], ["90d", "Last 3 months"], ["180d", "Last 6 months"], ["365d", "Last 12 months"], ["all", "All time"]];
+const STATE: Record<TestRow["state"], [string, string]> = { draft: ["Draft", ""], scheduled: ["Scheduled", "blue"], live: ["Live", "amber"], completed: ["Completed", "violet"] };
 
 const SUBJECTS = ["Physics", "Chemistry", "Biology", "Mathematics", "Science", "English", "Hindi", "Social Science", "Computer Science", "Accountancy", "Economics"];
 const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -32,40 +39,120 @@ function nextStep(t: TestRow): [string, string] {
 
 export function TestList() {
   const [params, setParams] = useSearchParams();
+  const course = params.get("course") ?? "", subject = params.get("subject") ?? "", range = params.get("range") ?? "all";
   const tests = useApi<TestRow[]>("/tests");
+  const courses = useApi<Course[]>("/courses");
+  const scope = new URLSearchParams({ range, ...(course ? { course_id: course } : {}), ...(subject ? { subject_id: subject } : {}) }).toString();
+  const stats = useApi<TestStats>(`/tests/stats?${scope}`);
   const nav = useNavigate();
+  const toast = useToast();
+  const [q, setQ] = useState("");
+  const [tab, setTab] = useState<"all" | "action" | "published" | "draft">("all");
+  const setParam = (k: string, v: string) => { const n = new URLSearchParams(params); if (v) n.set(k, v); else n.delete(k); if (k === "course") n.delete("subject"); setParams(n, { replace: true }); };
+  const subjects = courses.data?.find((c) => c.id === course)?.subjects ?? [];
+  const days = { "30d": 30, "90d": 90, "180d": 180, "365d": 365 }[range];
+  const inScope = (tests.data ?? []).filter((t) => (!course || t.course_id === course) && (!subject || t.subject_id === subject) &&
+    (!days || Date.parse((t.scheduled_at ?? t.created_at).replace(" ", "T") + (/[zZ+]/.test(t.scheduled_at ?? t.created_at) ? "" : "Z")) >= Date.now() - days * 86400000));
+  const needsAction = (t: TestRow) => !t.results_published && (!t.paper_id || t.uploaded > t.evaluated || t.evaluated > 0 || (t.mode === "offline" && t.uploaded < t.candidates));
+  const list = inScope.filter((t) => (tab === "all" || (tab === "published" ? t.results_published : tab === "draft" ? !t.paper_id : needsAction(t))) &&
+    (!q || `${t.title} ${t.subject ?? ""} ${t.batch_names ?? ""}`.toLowerCase().includes(q.toLowerCase())));
+  const recent = inScope.slice(0, 6);
+  const st = stats.data;
+  const downloadAll = () => download(`/tests/summary.csv?${scope}`, "test_results_summary.csv").then(() => toast.success("Results summary downloaded.")).catch((e) => toast.error((e as Error).message));
+
   return (
     <>
-      <PageTitle title="Tests & evaluation" sub="Create a test for a class, add the paper, then upload the answer sheets after the exam">
+      <PageTitle title="Tests" sub="Create a test for a class, add the paper, then upload the answer sheets after the exam">
+        {!DEMO && <button className="btn btn-ghost" onClick={downloadAll} disabled={!inScope.length}>⤓ Download results</button>}
         <button className="btn btn-primary" onClick={() => setParams({ new: "1", ...(params.get("paper") ? { paper: params.get("paper")! } : {}) })}>+ New test</button>
       </PageTitle>
-      <div className="card">
-        {tests.loading ? <div className="card-pad"><SkeletonTable rows={5} cols={5} /></div>
-          : tests.error && !tests.data ? <ErrorState error={tests.error} onRetry={() => tests.reload()} />
-          : tests.data?.length ? (
-          <div className="table-wrap"><table className="t">
-            <thead><tr><th>Test</th><th>Class</th><th>Date</th><th>Marked</th><th>Next step</th></tr></thead>
-            <tbody>{tests.data.map((t) => {
-              const [label, tone] = nextStep(t);
-              return (
-                <tr key={t.id} className="click" onClick={() => nav(`/app/tests/${t.id}`)}>
-                  <td><b>{t.title}</b><div className="small muted">{[t.subject, t.mode === "cbt" ? "Online" : "On paper", t.paper_id && t.total_marks ? `${t.total_marks} marks` : null].filter(Boolean).join(" · ")}</div></td>
-                  <td className="small">{t.batch_names ?? "—"}</td>
-                  <td className="small">{fmtDate(t.scheduled_at)}</td>
-                  <td><div className="small">{t.evaluated}/{t.candidates}</div><div className="bar" style={{ width: 90, marginTop: 4 }}><i style={{ width: `${t.candidates ? (t.evaluated / t.candidates) * 100 : 0}%` }} /></div></td>
-                  <td><span className={`badge ${tone}`}>{label}</span></td>
-                </tr>);
-            })}
-            </tbody>
-          </table></div>
-        ) : <Empty title="No tests yet" icon="tests" action={<button className="btn btn-primary btn-sm" onClick={() => setParams({ new: "1" })}>+ Create your first test</button>}>Create a test for a class, add the paper, then upload the answer sheets after the exam.</Empty>}
+      <div className="filters" role="group" aria-label="Filters">
+        <select className="input" value={course} onChange={(e) => setParam("course", e.target.value)} aria-label="Course">
+          <option value="">All courses</option>{courses.data?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        {course && subjects.length > 0 && <select className="input" value={subject} onChange={(e) => setParam("subject", e.target.value)} aria-label="Subject">
+          <option value="">All subjects</option>{subjects.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+        </select>}
+        <select className="input" value={range} onChange={(e) => setParam("range", e.target.value === "all" ? "" : e.target.value)} aria-label="Time range">
+          {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+        </select>
+        {(course || subject || range !== "all") && <button className="btn btn-ghost btn-sm" onClick={() => setParams({}, { replace: true })}>Clear filters</button>}
       </div>
-      {params.has("new") && <NewTestModal paperId={params.get("paper")} onClose={() => setParams({})} />}
+
+      {stats.loading && !st ? <SkeletonStats /> : !st ? <div className="card" style={{ marginBottom: 16 }}><ErrorState error={stats.error} onRetry={() => stats.reload()} /></div> : (
+        <div className="grid g4 stat-grid" style={{ marginBottom: 20 }}>
+          <div className="card stat"><div className="label">Tests</div><div className="value">{st.tests}</div>
+            <span className="trend muted">{[st.by_state.live && `${st.by_state.live} live`, st.by_state.scheduled && `${st.by_state.scheduled} scheduled`, st.by_state.draft && `${st.by_state.draft} draft`].filter(Boolean).join(" · ") || "—"}</span></div>
+          <div className="card stat"><div className="label">Sheets marked</div><div className="value">{st.sheets_marked}</div><span className="trend muted">by AI, checked by you</span></div>
+          <div className="card stat"><div className="label">Average this month</div><div className="value">{st.avg_this_month == null ? "—" : `${st.avg_this_month}%`}</div>
+            {st.change == null ? <span className="trend muted">{st.avg_last_month == null ? "No results last month" : `Last month ${st.avg_last_month}%`}</span>
+              : <span className={`trend ${st.change >= 0 ? "up" : "down"}`}>{st.change >= 0 ? "▲" : "▼"} {Math.abs(st.change)}% <span className="muted">vs last month</span></span>}</div>
+          <div className="card stat"><div className="label">Waiting for you</div><div className="value">{st.to_mark + st.to_publish}</div>
+            <span className="trend muted">{st.to_mark} sheet{st.to_mark === 1 ? "" : "s"} to mark · {st.to_publish} to publish</span></div>
+        </div>
+      )}
+
+      {tests.loading ? <SkeletonCards count={3} height={160} /> : !tests.data ? <div className="card"><ErrorState error={tests.error} onRetry={() => tests.reload()} /></div>
+        : !tests.data.length ? (
+          <div className="card"><Empty title="No tests yet" icon="tests" action={<button className="btn btn-primary btn-sm" onClick={() => setParams({ new: "1" })}>+ Create your first test</button>}>Create a test for a class, add the paper, then upload the answer sheets after the exam.</Empty></div>
+        ) : !inScope.length ? (
+          <div className="card"><Empty title="No tests match these filters" icon="search" action={<button className="btn btn-ghost btn-sm" onClick={() => setParams({}, { replace: true })}>Clear filters</button>}>Try another course, subject or time range.</Empty></div>
+        ) : (
+          <>
+            <div className="row between" style={{ marginBottom: 10 }}><h2 className="h-sec">Recent tests</h2>
+              <button className="btn-link small" onClick={() => document.getElementById("all-tests")?.scrollIntoView({ behavior: "smooth" })}>Explore all {inScope.length} →</button></div>
+            <div className="grid g3" style={{ marginBottom: 24 }}>
+              {recent.map((t) => {
+                const [label, tone] = nextStep(t);
+                const pctDone = t.candidates ? (t.evaluated / t.candidates) * 100 : 0;
+                return (
+                  <Link key={t.id} to={`/app/tests/${t.id}`} className="card card-pad test-card">
+                    <div className="row between"><span className={`badge ${t.results_published ? "green" : STATE[t.state][1]}`}>{t.state === "live" && <span className="dot pulse" />}{t.results_published ? "Published" : STATE[t.state][0]}</span>
+                      <span className="small muted">{fmtDate(t.scheduled_at ?? t.created_at)}</span></div>
+                    <b className="test-title">{t.title}</b>
+                    <span className="small muted">{[t.subject, t.batch_names, t.mode === "cbt" ? "Online" : "On paper"].filter(Boolean).join(" · ")}</span>
+                    <div><div className="row between small"><span>{t.evaluated}/{t.candidates} marked</span>{t.avg_pct != null && <span>Avg <b>{t.avg_pct}%</b></span>}</div>
+                      <div className="bar" style={{ marginTop: 6 }}><i style={{ width: `${pctDone}%` }} /></div></div>
+                    {!t.results_published && <span className="small next-step">Next: <span className={`badge ${tone}`}>{label}</span></span>}
+                  </Link>
+                );
+              })}
+            </div>
+            <div className="card" id="all-tests">
+              <div className="card-pad row between wrap" style={{ paddingBottom: 6, gap: 10 }}>
+                <div className="tabs" role="tablist" style={{ margin: 0, border: 0 }}>
+                  {([["all", "All"], ["action", "Needs action"], ["published", "Published"], ["draft", "No paper yet"]] as const).map(([k, l]) => (
+                    <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}</button>
+                  ))}
+                </div>
+                <div className="search-field"><Icon name="search" size={16} /><input className="input" placeholder="Search tests…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search tests" /></div>
+              </div>
+              {!list.length ? <Empty title="No tests here" icon="tests">Try another tab or search.</Empty> : (
+                <div className="table-wrap"><table className="t">
+                  <thead><tr><th>Test</th><th>Class</th><th>Date</th><th>Marked</th><th>Avg</th><th>Next step</th></tr></thead>
+                  <tbody>{list.map((t) => {
+                    const [label, tone] = nextStep(t);
+                    return (
+                      <tr key={t.id} className="click" onClick={() => nav(`/app/tests/${t.id}`)}>
+                        <td><Link to={`/app/tests/${t.id}`} className="row-link"><b>{t.title}</b></Link><div className="small muted">{[t.subject, t.mode === "cbt" ? "Online" : "On paper", t.paper_id && t.total_marks ? `${t.total_marks} marks` : null].filter(Boolean).join(" · ")}</div></td>
+                        <td className="small">{t.batch_names ?? "—"}</td>
+                        <td className="small">{fmtDate(t.scheduled_at ?? t.created_at)}</td>
+                        <td><div className="small">{t.evaluated}/{t.candidates}</div><div className="bar" style={{ width: 90, marginTop: 4 }}><i style={{ width: `${t.candidates ? (t.evaluated / t.candidates) * 100 : 0}%` }} /></div></td>
+                        <td><ScoreBadge value={t.avg_pct} /></td>
+                        <td><span className={`badge ${tone}`}>{label}</span></td>
+                      </tr>);
+                  })}
+                  </tbody>
+                </table></div>
+              )}
+            </div>
+          </>
+        )}
+      {params.has("new") && <NewTestModal paperId={params.get("paper")} onClose={() => { const n = new URLSearchParams(params); n.delete("new"); n.delete("paper"); setParams(n); }} />}
     </>
   );
 }
 
-/** Create a test in a few taps: class, subject, date. The question paper can be added afterwards. */
 function NewTestModal({ paperId, onClose }: { paperId: string | null; onClose: () => void }) {
   const nav = useNavigate();
   const batches = useApi<{ id: string; name: string; student_count: number }[]>("/batches");
