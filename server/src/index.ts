@@ -18,6 +18,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { startJobs } from "./lib/jobs.js";
 import { scheduleBackups } from "./lib/backup.js";
 import { FileProblem } from "./lib/files.js";
+import { CreditError } from "./lib/credits.js";
 
 const PROD = process.env.NODE_ENV === "production";
 const app = express();
@@ -52,6 +53,7 @@ const onError: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof ZodError) return res.status(400).json({ error: err.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ") });
   if (err instanceof ClientError) return res.status(err.status).json({ error: err.message });
   if (err instanceof FileProblem) return res.status(400).json({ error: err.message });
+  if (err instanceof CreditError) return res.status(402).json({ error: err.message, code: "no_credits" });
   if (err?.type === "entity.too.large") return res.status(413).json({ error: "This piece of the upload is too large. Refresh the page and try again." });
   if (err?.type === "entity.parse.failed") return res.status(400).json({ error: "Invalid JSON" });
   if (err?.code === "ERR_SQLITE_ERROR" && /UNIQUE/.test(String(err.message))) return res.status(409).json({ error: "That already exists" });

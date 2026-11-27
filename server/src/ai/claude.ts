@@ -53,12 +53,16 @@ const makeClient = (apiKey: string) =>
   // The SDK retries 408/409/429/5xx and connection errors with backoff and honours retry-after.
   new Anthropic({ apiKey, maxRetries: 6, timeout: 15 * 60 * 1000 });
 
+/** The platform's Claude key: used for every institute that hasn't added its own key. */
+export const PLATFORM_KEY = (process.env.PLATFORM_CLAUDE_KEY ?? "").trim();
+
 function clientFor(orgId: string): Anthropic {
   const org = one<{ is_demo: number; claude_key_enc: string | null }>("SELECT is_demo, claude_key_enc FROM orgs WHERE id = ?", orgId);
   if (!org) throw new AiError("Institute not found.");
   if (org.is_demo) throw new AiError("AI features are switched off in the public demo institute. Create your own institute to use them.");
-  const key = decrypt(org.claude_key_enc);
-  if (!key) throw new AiError("No Claude API key yet. An admin can add one in Settings → AI engine.");
+  // The institute's own key if it saved one (no credits charged); otherwise the platform's key (paid with credits).
+  const key = decrypt(org.claude_key_enc) || PLATFORM_KEY;
+  if (!key) throw new AiError("AI isn't available yet: the Veda Vidya team hasn't switched it on. An admin can add the institute's own Claude key in Settings → AI engine.");
   let c = clients.get(key);
   if (!c) { c = makeClient(key); clients.set(key, c); }
   return c;

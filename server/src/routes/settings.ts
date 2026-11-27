@@ -4,7 +4,8 @@ import { z } from "zod";
 import { all, one, run } from "../db.js";
 import { adminOnly, staff } from "../auth.js";
 import { encrypt, decrypt } from "../secrets.js";
-import { verifyKey, forgetClients, aiModeOf, AI_MODES, PRICES, type AiMode } from "../ai/claude.js";
+import { verifyKey, forgetClients, aiModeOf, AI_MODES, PRICES, PLATFORM_KEY, type AiMode } from "../ai/claude.js";
+import { ACTION_LABEL, balance, history, prices } from "../lib/credits.js";
 import { rateLimit } from "../ratelimit.js";
 
 export const settingsRoutes = Router();
@@ -12,7 +13,9 @@ export const settingsRoutes = Router();
 const status = (orgId: string) => {
   const o = one<{ is_demo: number; claude_key_enc: string | null; claude_key_hint: string | null }>("SELECT is_demo, claude_key_enc, claude_key_hint FROM orgs WHERE id = ?", orgId)!;
   const mode = aiModeOf(orgId);
-  return { demo: Boolean(o.is_demo), configured: Boolean(decrypt(o.claude_key_enc)), hint: o.claude_key_hint, mode, models: AI_MODES[mode] };
+  const own = Boolean(decrypt(o.claude_key_enc));
+  // "configured" = AI works for this institute: with its own key, or with the platform key (paid with credits).
+  return { demo: Boolean(o.is_demo), configured: own || Boolean(PLATFORM_KEY), own_key: own, platform_available: Boolean(PLATFORM_KEY), hint: o.claude_key_hint, mode, models: AI_MODES[mode] };
 };
 
 settingsRoutes.get("/settings/ai", staff, (req, res) => res.json(status(req.user!.org_id)));
@@ -74,4 +77,11 @@ settingsRoutes.get("/settings/ai/usage", staff, (req, res) => {
   const sheets = items.filter((i) => i.task === "marking").reduce((t, i) => t + i.calls, 0);
   const sheetCost = items.filter((i) => i.task === "marking" || i.task === "recheck").reduce((t, i) => t + i.usd, 0);
   res.json({ month, items, total_usd: Math.round(total * 100) / 100, sheets_marked: sheets, usd_per_sheet: sheets ? Math.round((sheetCost / sheets) * 10000) / 10000 : null });
+});
+
+/** The institute's credit balance, prices and recent history. */
+settingsRoutes.get("/credits", staff, (req, res) => {
+  const org = req.user!.org_id;
+  const before = Number(req.query.before) || undefined;
+  res.json({ balance: balance(org), prices: prices(), labels: ACTION_LABEL, history: history(org, Math.min(200, Number(req.query.limit) || 50), before) });
 });

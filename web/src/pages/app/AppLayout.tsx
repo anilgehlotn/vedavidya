@@ -20,7 +20,7 @@ export default function AppLayout() {
   if (loading) return <Loading />;
   if (!user) return <Navigate to="/login" replace />;
   if (user.role === "student" && loc.pathname === "/app") return <Navigate to="/app/my" replace />;
-  const items = user.role === "student" ? STUDENT_NAV : STAFF_NAV;
+  const items = user.role === "student" ? STUDENT_NAV : user.is_super_admin ? [...STAFF_NAV, ["/app/platform", "Platform"] as [string, string]] : STAFF_NAV;
 
   return (
     <div className="app6">

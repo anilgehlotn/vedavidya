@@ -1,4 +1,6 @@
 // Centres & batches, students, staff, notices and settings.
+import { CoursesCard, type Course } from "./Courses";
+import { CreditsPanel } from "./Credits";
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, csvCell, fmtDate, setToken } from "../../lib/api";
@@ -6,7 +8,7 @@ import { useAuth } from "../../lib/auth";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, useApi } from "../../components/ui";
 
 interface Centre { id: string; name: string; city: string | null; batch_count: number }
-interface Batch { id: string; name: string; course: string | null; centre_id: string | null; centre_name: string | null; teacher_id: string | null; teacher_name: string | null; student_count: number }
+interface Batch { id: string; name: string; course: string | null; start_date: string | null; centre_id: string | null; centre_name: string | null; teacher_id: string | null; teacher_name: string | null; student_count: number }
 interface Staff { id: string; name: string; email: string; phone: string | null; subject: string | null; role: string }
 
 function useForm<T extends Record<string, string>>(init: T) {
@@ -24,7 +26,8 @@ export function Batches() {
   const [modal, setModal] = useState<null | "centre" | { batch?: Batch }>(null);
   const [error, setError] = useState<string | null>(null);
   const c = useForm({ name: "", city: "" });
-  const b = useForm({ name: "", course: "", centre_id: "", teacher_id: "" });
+  const b = useForm({ name: "", course: "", centre_id: "", teacher_id: "", start_date: "" });
+  const courses = useApi<Course[]>("/courses");
 
   const saveCentre = async (e: FormEvent) => {
     e.preventDefault();
@@ -34,12 +37,12 @@ export function Batches() {
     e.preventDefault();
     const existing = typeof modal === "object" && modal?.batch;
     try {
-      await api(existing ? `/batches/${existing.id}` : "/batches", { method: existing ? "PUT" : "POST", body: b.f });
-      setModal(null); batches.reload(); centres.reload();
+      await api(existing ? `/batches/${existing.id}` : "/batches", { method: existing ? "PUT" : "POST", body: { ...b.f, start_date: b.f.start_date || null } });
+      setModal(null); batches.reload(); centres.reload(); courses.reload(true);
     } catch (err) { setError((err as Error).message); }
   };
   const openBatch = (batch?: Batch) => {
-    b.setF({ name: batch?.name ?? "", course: batch?.course ?? "", centre_id: batch?.centre_id ?? centres.data?.[0]?.id ?? "", teacher_id: batch?.teacher_id ?? "" });
+    b.setF({ name: batch?.name ?? "", course: batch?.course ?? "", centre_id: batch?.centre_id ?? centres.data?.[0]?.id ?? "", teacher_id: batch?.teacher_id ?? "", start_date: batch?.start_date ?? "" });
     setError(null); setModal({ batch });
   };
   const del = async (path: string, what: string) => {
@@ -54,6 +57,7 @@ export function Batches() {
         {isAdmin && <><button className="btn btn-ghost" onClick={() => { setError(null); setModal("centre"); }}>+ Centre</button><button className="btn btn-primary" onClick={() => openBatch()}>+ Batch</button></>}
       </PageTitle>
       <ErrorBox error={batches.error ?? centres.error} />
+      <CoursesCard isAdmin={isAdmin} />
       {(centres.data ?? []).length === 0 && <div className="card"><Empty title="Add your first centre">A centre is a physical branch. Batches belong to centres.</Empty></div>}
       <div className="stack">
         {[...(centres.data ?? []), { id: "", name: "No centre", city: null, batch_count: 0 }].map((ctr) => {
@@ -98,7 +102,11 @@ export function Batches() {
         <Modal title={modal.batch ? "Edit batch" : "New batch"} onClose={() => setModal(null)}>
           <form className="stack" onSubmit={saveBatch}>
             <label className="field"><span>Batch name</span><input className="input" required value={b.f.name} onChange={b.set("name")} placeholder="e.g. NEET 2027 - Morning" /></label>
-            <label className="field"><span>Course</span><input className="input" value={b.f.course} onChange={b.set("course")} placeholder="e.g. CBSE Class 12" /></label>
+            <div className="grid g2">
+              <label className="field"><span>Course</span><input className="input" list="course-list" value={b.f.course} onChange={b.set("course")} placeholder="e.g. 10th CBSE" />
+                <datalist id="course-list">{courses.data?.map((x) => <option key={x.id} value={x.name} />)}</datalist></label>
+              <label className="field"><span>Start date</span><input className="input" type="date" value={b.f.start_date} onChange={b.set("start_date")} /></label>
+            </div>
             <div className="grid g2">
               <label className="field"><span>Centre</span><select className="input" value={b.f.centre_id} onChange={b.set("centre_id")}><option value="">None</option>{centres.data?.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
               <label className="field"><span>Lead teacher</span><select className="input" value={b.f.teacher_id} onChange={b.set("teacher_id")}><option value="">None</option>{staff.data?.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
@@ -364,7 +372,7 @@ export function Settings() {
 }
 
 type AiMode = "mixed" | "sonnet" | "opus";
-interface AiStatus { demo: boolean; configured: boolean; hint: string | null; mode: AiMode; models: Record<string, string | null> }
+interface AiStatus { demo: boolean; configured: boolean; own_key: boolean; platform_available: boolean; hint: string | null; mode: AiMode; models: Record<string, string | null> }
 interface AiUsage { month: string; total_usd: number; sheets_marked: number; usd_per_sheet: number | null; items: { task: string; label: string; model: string; calls: number; usd: number }[] }
 const INR = 85; // approximate rupees per US dollar, for the estimate only
 const inr = (usd: number) => `₹${(usd * INR).toLocaleString("en-IN", { maximumFractionDigits: usd * INR < 10 ? 2 : 0 })}`;
@@ -433,27 +441,36 @@ function AiEngineCard({ isAdmin }: { isAdmin: boolean }) {
     finally { setBusy(null); }
   };
   const s = st.data;
+  const keyForm = s && isAdmin && (
+    <>
+      <p className="small muted" style={{ margin: 0 }}>Paste a key from console.anthropic.com → API Keys. It is checked (it needs access to Claude Opus, Sonnet and Haiku), then stored encrypted and never shown again. With your own key, AI usage is billed to your Anthropic account and no credits are used.</p>
+      <form className="row wrap" onSubmit={(e) => { e.preventDefault(); act("save"); }}>
+        <input className="input grow" type="password" autoComplete="off" spellCheck={false} aria-label="Claude API key" placeholder={s.own_key ? "Paste a new key to replace the current one" : "sk-ant-..."} value={key} onChange={(e) => setKey(e.target.value)} style={{ minWidth: 220 }} />
+        <button className="btn btn-primary" disabled={!key.trim() || !!busy}>{busy === "save" ? "Checking…" : "Save key"}</button>
+      </form>
+      {s.own_key && (
+        <div className="row">
+          <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => act("test")}>{busy === "test" ? "Testing…" : "Test connection"}</button>
+          <button className="btn btn-danger btn-sm" disabled={!!busy} onClick={() => act("remove")}>{s.platform_available ? "Remove key (use credits instead)" : "Remove key"}</button>
+        </div>
+      )}
+    </>
+  );
   return (
     <div className="card card-pad stack">
-      <div className="row between"><b>AI engine (Claude API key)</b>
-        {s && (s.configured ? <span className="badge green">● Connected {s.hint}</span> : <span className="badge red">● Not set up</span>)}</div>
+      <div className="row between"><b>AI engine</b>
+        {s && (s.demo ? <span className="badge">Off in the demo</span> : s.own_key ? <span className="badge green">● Your own Claude key {s.hint}</span>
+          : s.platform_available ? <span className="badge green">● Veda Vidya AI · credits</span> : <span className="badge red">● Not set up</span>)}</div>
       {!s ? <Loading /> : s.demo ? (
-        <p className="small muted">AI is switched off in the public demo institute. Create your own institute (Log in → Create an institute) to add your key.</p>
-      ) : !isAdmin ? (
-        <p className="small muted">{s.configured ? "AI marking is ready." : "Ask your institute admin to add a Claude API key here."}</p>
+        <p className="small muted">AI is switched off in the public demo institute. Create your own institute (Log in → Create an institute) to use it.</p>
       ) : (
         <>
-          <p className="small muted">Paste your key from console.anthropic.com → API Keys. It is checked (it needs access to Claude Opus, Sonnet and Haiku), then stored encrypted and never shown again.</p>
-          <form className="row wrap" onSubmit={(e) => { e.preventDefault(); act("save"); }}>
-            <input className="input grow" type="password" autoComplete="off" spellCheck={false} placeholder={s.configured ? "Paste a new key to replace the current one" : "sk-ant-..."} value={key} onChange={(e) => setKey(e.target.value)} style={{ minWidth: 220 }} />
-            <button className="btn btn-primary" disabled={!key.trim() || !!busy}>{busy === "save" ? "Checking…" : "Save key"}</button>
-          </form>
-          {s.configured && (
-            <div className="row">
-              <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => act("test")}>{busy === "test" ? "Testing…" : "Test connection"}</button>
-              <button className="btn btn-danger btn-sm" disabled={!!busy} onClick={() => act("remove")}>Remove key</button>
-            </div>
-          )}
+          {!s.own_key && s.platform_available && <CreditsPanel />}
+          {!s.own_key && !s.platform_available && <p className="small muted" style={{ margin: 0 }}>{isAdmin ? "AI isn't switched on for your institute yet. Add your own Claude key below." : "Ask your institute admin to set up AI here."}</p>}
+          {s.own_key && <p className="small muted" style={{ margin: 0 }}>{isAdmin ? "Your institute uses its own Claude key: no credits are used." : "AI marking is ready."}</p>}
+          {isAdmin && (s.own_key || !s.platform_available ? keyForm : (
+            <details><summary className="small" style={{ cursor: "pointer", fontWeight: 600 }}>Use your own Claude key instead (optional)</summary><div className="stack" style={{ marginTop: 10 }}>{keyForm}</div></details>
+          ))}
         </>
       )}
       {msg.ok && <div className="ok-box">{msg.ok}</div>}

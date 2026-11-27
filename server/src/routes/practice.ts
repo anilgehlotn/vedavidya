@@ -5,6 +5,8 @@ import { all, json, one, run, uid } from "../db.js";
 import { staff, requireRole } from "../auth.js";
 import { AiError, aiProblem, generateBrief, generatePractice, type LostQuestion } from "../ai/claude.js";
 import { rateLimit } from "../ratelimit.js";
+import { enqueueJob, registerJob } from "../lib/jobs.js";
+import { charge, CreditError, refund } from "../lib/credits.js";
 import { MISTAKE_TYPES, type PracticePlan, type PracticeQuestion, type Question, type Section, type SheetEvaluation } from "../ai/schemas.js";
 
 export const practiceRoutes = Router();
@@ -31,29 +33,31 @@ export function lostByType(ev: SheetEvaluation | null) {
   return out;
 }
 
-// ---------------- Generation queue ----------------
-const queue: string[] = [];
-let active = 0;
-const CONCURRENCY = Number(process.env.PRACTICE_CONCURRENCY ?? 2);
-
-function enqueue(attemptIds: string[]) {
-  for (const id of attemptIds) if (!queue.includes(id)) queue.push(id);
-  const pump = () => {
-    while (active < CONCURRENCY && queue.length) {
-      const id = queue.shift()!;
-      active++;
-      buildPractice(id).finally(() => { active--; pump(); });
+// ---------------- Generation (background jobs) ----------------
+const failPractice = (attemptId: string, msg: string) => run("UPDATE practice_sets SET status = 'failed', error = ? WHERE attempt_id = ? AND status = 'generating'", msg, attemptId);
+registerJob<{ attempt_id: string; org_id?: string; charge_ref?: string | null }>("build_practice", {
+  concurrency: Number(process.env.PRACTICE_CONCURRENCY ?? 2),
+  run: ({ attempt_id }) => buildPractice(attempt_id),
+  onFail: ({ attempt_id, org_id, charge_ref }, msg) => { failPractice(attempt_id, msg); refund(org_id, charge_ref, "Refund: Fix-it practice couldn't be prepared"); },
+});
+/** Queues Fix-it plans; with `org`, each is paid with credits (students the institute can't pay for get a clear "no credits" status). */
+function enqueue(attemptIds: string[], org?: string) {
+  for (const id of attemptIds) {
+    if (one("SELECT 1 FROM jobs WHERE dedupe_key = ? AND status IN ('queued','processing')", `practice:${id}`)) continue;
+    let chargeRef: string | null = null;
+    if (org) {
+      try { chargeRef = charge(org, "practice_set", `practice:${id}:${uid("c")}`); }
+      catch (e) { if (e instanceof CreditError) { failPractice(id, e.message); continue; } throw e; }
     }
-  };
-  pump();
+    enqueueJob("build_practice", { attempt_id: id, org_id: org, charge_ref: chargeRef }, { orgId: org, dedupeKey: `practice:${id}` });
+  }
 }
 
 async function buildPractice(attemptId: string) {
   const a = one<any>(`SELECT a.*, t.org_id, t.title, p.subject, p.class_level, p.language, p.sections, u.name AS student_name
     FROM attempts a JOIN tests t ON t.id = a.test_id JOIN question_papers p ON p.id = t.paper_id JOIN users u ON u.id = a.student_id WHERE a.id = ?`, attemptId);
   if (!a) return;
-  const fail = (msg: string) => run("UPDATE practice_sets SET status = 'failed', error = ? WHERE attempt_id = ? AND status = 'generating'", msg, attemptId);
-  try {
+  {
     const ev = json<SheetEvaluation | null>(a.evaluation, null);
     const qs = new Map(json<Section[]>(a.sections, []).flatMap((s) => s.questions).map((q) => [q.id, q]));
     const lostQs = (ev?.questions ?? []).filter((qe) => qe.max_marks - qe.marks_awarded > 0 && qs.has(qe.question_id));
@@ -85,8 +89,6 @@ async function buildPractice(attemptId: string) {
         `A quick check-up on what you practised from "${a.title}". It shows how much you've improved.`, JSON.stringify(checkup), checkup.length, baseline, attemptId);
     else run("DELETE FROM practice_sets WHERE attempt_id = ? AND kind = 'checkup'", attemptId);
     void lostMarks;
-  } catch (e) {
-    fail(e instanceof AiError ? e.message : String(e));
   }
 }
 
@@ -104,15 +106,18 @@ export function queuePracticeForTest(testId: string, onlyAttempts?: string[]): n
     run("INSERT INTO practice_sets (id, org_id, test_id, attempt_id, student_id, kind, available_at) VALUES (?,?,?,?,?, 'practice', CURRENT_TIMESTAMP)", uid("prc"), t.org_id, testId, r.id, r.student_id);
     run("INSERT INTO practice_sets (id, org_id, test_id, attempt_id, student_id, kind, available_at) VALUES (?,?,?,?,?, 'checkup', ?)", uid("prc"), t.org_id, testId, r.id, r.student_id, available);
   }
-  enqueue(rows.map((r) => r.id));
+  enqueue(rows.map((r) => r.id), t.org_id);
   return rows.length;
 }
 
 /** After a restart, resume plans that were being prepared; re-teach briefs that were interrupted are marked failed. */
 export function recoverPractice() {
-  const ids = all<{ attempt_id: string }>("SELECT DISTINCT attempt_id FROM practice_sets WHERE status = 'generating'").map((r) => r.attempt_id);
-  if (ids.length) { console.log(`Resuming ${ids.length} Fix-it plan(s)`); enqueue(ids); }
-  run("UPDATE tests SET brief_status = 'failed', brief_error = 'Interrupted by a server restart. Please create it again.' WHERE brief_status = 'generating'");
+  // Plans queued by an older version (before jobs) are queued again; jobs resume by themselves.
+  const ids = all<{ attempt_id: string }>(`SELECT DISTINCT attempt_id FROM practice_sets ps WHERE status = 'generating'
+    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = 'practice:' || ps.attempt_id AND j.status IN ('queued','processing'))`).map((r) => r.attempt_id);
+  if (ids.length) { console.log(`Queuing ${ids.length} Fix-it plan(s)`); enqueue(ids); }
+  run(`UPDATE tests SET brief_status = 'failed', brief_error = 'Interrupted by a server restart. Please create it again.'
+    WHERE brief_status = 'generating' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = 'brief:' || tests.id AND j.status IN ('queued','processing'))`);
 }
 
 // ---------------- Student side ----------------
@@ -251,11 +256,17 @@ practiceRoutes.post("/tests/:id/brief", staff, briefLimit, (req, res) => {
     }
   }
   const questions = qs.map((q) => { const s = stats.get(q.id); return { id: q.id, topic: q.topic, question: q.text.slice(0, 300), marks: q.marks, class_avg_pct: s?.max ? Math.round((s.got / s.max) * 100) : null, mistakes: s?.types ?? {} }; });
+  const chargeRef = charge(req.user!.org_id, "reteach_brief", `brief:${t.id}:${uid("c")}`, { userId: req.user!.id }); // throws when out of credits
   run("UPDATE tests SET brief_status = 'generating', brief_error = NULL WHERE id = ?", t.id);
+  enqueueJob("reteach_brief", { test_id: t.id, org_id: req.user!.org_id, charge_ref: chargeRef,
+    input: { title: t.title, subject: t.subject, students: attempts.length, questions, examples, mistakeTotals } }, { orgId: req.user!.org_id, dedupeKey: `brief:${t.id}` });
   res.json({ ok: true });
-  generateBrief(req.user!.org_id, { title: t.title, subject: t.subject, students: attempts.length, questions, examples, mistakeTotals })
-    .then((b) => run("UPDATE tests SET brief = ?, brief_status = 'ready' WHERE id = ?", JSON.stringify(b), t.id))
-    .catch((e) => run("UPDATE tests SET brief_status = 'failed', brief_error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), t.id));
+});
+
+registerJob<{ test_id: string; org_id: string; charge_ref: string | null; input: Parameters<typeof generateBrief>[1] }>("reteach_brief", {
+  concurrency: 2,
+  run: async ({ test_id, org_id, input }) => { run("UPDATE tests SET brief = ?, brief_status = 'ready' WHERE id = ?", JSON.stringify(await generateBrief(org_id, input)), test_id); },
+  onFail: ({ test_id, org_id, charge_ref }, msg) => { run("UPDATE tests SET brief_status = 'failed', brief_error = ? WHERE id = ?", msg, test_id); refund(org_id, charge_ref, "Refund: the brief couldn't be written"); },
 });
 
 // Student report card: where marks go across all published tests, and Fix-it progress.

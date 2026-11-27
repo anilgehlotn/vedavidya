@@ -10,6 +10,8 @@ import { enqueueJob, latestJob, PermanentError, registerJob } from "../lib/jobs.
 import { createDocument, deleteDocuments, documentPages, documentsOfTest, getDocument, onDocumentReady } from "../lib/documents.js";
 import { FileProblem } from "../lib/files.js";
 import { takeUploads } from "./uploads.js";
+import { inOrg, subjectInCourse } from "../lib/scope.js";
+import { charge, priceOf, refund, requireCredits } from "../lib/credits.js";
 import { queuePracticeForTest } from "./practice.js";
 import { ensureSubtopics } from "./papers.js";
 import type { Question, Section, SheetEvaluation } from "../ai/schemas.js";
@@ -44,31 +46,55 @@ function paperFitsTest(paper: any, mode: string): string | null {
   return null;
 }
 
+/** draft (no paper yet) · scheduled (window not started) · live · completed (window over or results out). */
+export function testStatus(t: { paper_id: string | null; scheduled_at: string | null; window_end: string | null; duration_min: number | null; results_published: number; mode: string }) {
+  if (t.results_published) return "completed";
+  if (!t.paper_id) return "draft";
+  const start = t.scheduled_at ? Date.parse(t.scheduled_at) : NaN;
+  const end = t.window_end ? Date.parse(t.window_end) : Number.isFinite(start) ? start + (t.duration_min ?? 60) * 60000 : NaN;
+  if (Number.isFinite(start) && Date.now() < start) return "scheduled";
+  if (Number.isFinite(end) && Date.now() > end) return "completed";
+  return t.mode === "cbt" ? "live" : Number.isFinite(start) ? "completed" : "scheduled";
+}
+
 testRoutes.get("/tests", staff, (req, res) => {
-  res.json(all(`SELECT t.*, p.title AS paper_title, p.total_marks, p.status AS paper_status, coalesce(nullif(trim(t.subject),''), p.subject) AS subject,
+  res.json(all<any>(`SELECT t.*, c.name AS course_name, s.name AS subject_name, p.title AS paper_title, p.total_marks, p.status AS paper_status, coalesce(nullif(trim(t.subject),''), p.subject) AS subject,
       (SELECT group_concat(b.name, ', ') FROM test_batches tb JOIN batches b ON b.id = tb.batch_id WHERE tb.test_id = t.id) AS batch_names,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id) AS candidates,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.status = 'evaluated') AS evaluated,
       (SELECT count(*) FROM attempts a WHERE a.test_id = t.id AND a.files IS NOT NULL AND a.files != '[]') AS uploaded
-    FROM tests t LEFT JOIN question_papers p ON p.id = t.paper_id WHERE t.org_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC`, req.user!.org_id));
+    FROM tests t LEFT JOIN question_papers p ON p.id = t.paper_id LEFT JOIN courses c ON c.id = t.course_id LEFT JOIN subjects s ON s.id = t.subject_id
+    WHERE t.org_id = ? ORDER BY coalesce(t.scheduled_at, t.created_at) DESC`, req.user!.org_id).map((t) => ({ ...t, state: testStatus(t) })));
 });
 
 testRoutes.post("/tests", staff, (req, res) => {
   const b = z.object({
     title: z.string().trim().min(1).max(160), paper_id: z.string().max(60).nullish(), mode: z.enum(["offline", "cbt"]),
-    subject: z.string().trim().max(60).nullish(),
-    scheduled_at: z.string().max(40).nullish(), duration_min: z.number().int().min(5).max(360).optional(),
+    subject: z.string().trim().max(60).nullish(), course_id: z.string().max(60).nullish(), subject_id: z.string().max(60).nullish(),
+    scheduled_at: z.string().max(40).nullish(), window_end: z.string().max(40).nullish(), duration_min: z.number().int().min(5).max(360).optional(),
     batch_ids: z.array(z.string().max(60)).min(1).max(50),
   }).parse(req.body);
   const org = req.user!.org_id;
+  if (!inOrg("courses", b.course_id, org) || !inOrg("subjects", b.subject_id, org) || !subjectInCourse(b.subject_id, b.course_id))
+    return res.status(400).json({ error: "Pick a course and subject from your institute" });
+  if (b.window_end && b.scheduled_at && Date.parse(b.window_end) <= Date.parse(b.scheduled_at)) return res.status(400).json({ error: "The test window must end after it starts" });
   // The question paper is optional here: teachers often create the test first and add the paper later.
   const paper = b.paper_id ? one<any>("SELECT * FROM question_papers WHERE id = ? AND org_id = ?", b.paper_id, org) : null;
   if (b.paper_id) { const why = paperFitsTest(paper, b.mode); if (why) return res.status(400).json({ error: why }); }
   const batchIds = [...new Set(b.batch_ids)].filter((bid) => one("SELECT 1 FROM batches WHERE id = ? AND org_id = ?", bid, org));
   if (!batchIds.length) return res.status(400).json({ error: "Pick at least one batch from your institute" });
+  // Course and subject: as given, otherwise from the batches' course and the subject name (created if new).
+  const courseId = b.course_id ?? one<{ course_id: string }>(`SELECT course_id FROM batches WHERE id IN (${batchIds.map(() => "?").join(",")}) AND course_id IS NOT NULL LIMIT 1`, ...batchIds)?.course_id ?? null;
+  const subjectName = b.subject || paper?.subject || null;
+  let subjectId = b.subject_id ?? null;
+  if (!subjectId && courseId && subjectName) {
+    subjectId = one<{ id: string }>("SELECT id FROM subjects WHERE course_id = ? AND name = ? COLLATE NOCASE", courseId, subjectName)?.id ?? null;
+    if (!subjectId) { subjectId = uid("sub"); run("INSERT INTO subjects (id, org_id, course_id, name) VALUES (?,?,?,?)", subjectId, org, courseId, subjectName); }
+  }
+  const subjectText = subjectName ?? (subjectId ? one<{ name: string }>("SELECT name FROM subjects WHERE id = ?", subjectId)?.name ?? null : null);
   const id = uid("tst");
-  run("INSERT INTO tests (id, org_id, paper_id, title, subject, mode, scheduled_at, duration_min) VALUES (?,?,?,?,?,?,?,?)",
-    id, org, paper?.id ?? null, b.title, b.subject || paper?.subject || null, b.mode, b.scheduled_at || null, b.duration_min ?? paper?.duration_min ?? 60);
+  run("INSERT INTO tests (id, org_id, paper_id, title, subject, mode, scheduled_at, window_end, duration_min, course_id, subject_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    id, org, paper?.id ?? null, b.title, subjectText, b.mode, b.scheduled_at || null, b.window_end || null, b.duration_min ?? paper?.duration_min ?? 60, courseId, subjectId);
   for (const batchId of batchIds) {
     run("INSERT OR IGNORE INTO test_batches (test_id, batch_id) VALUES (?, ?)", id, batchId);
     // One attempt row per enrolled student, so the roster is ready for uploads.
@@ -119,7 +145,8 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
   const paper = paperFor(t.id);
   // Whole-class uploads (scans / ZIPs) and how far their processing has got.
   const uploads = all<any>("SELECT id, title, status, error, pages, size, created_at FROM documents WHERE test_id = ? AND purpose = 'class_sheets' ORDER BY created_at DESC", t.id);
-  res.json({ ...t, paper, paper_problem: paperProblem(paper), attempts, uploads });
+  const names = one<{ course_name: string | null; subject_name: string | null }>("SELECT (SELECT name FROM courses WHERE id = ?) course_name, (SELECT name FROM subjects WHERE id = ?) subject_name", t.course_id, t.subject_id);
+  res.json({ ...t, ...names, state: testStatus(t), paper, paper_problem: paperProblem(paper), attempts, uploads });
 });
 
 testRoutes.delete("/tests/:id", staff, wrap(async (req, res) => {
@@ -406,6 +433,9 @@ async function runEvaluation(attemptId: string) {
       mergeSecondCheck(ev, second, doubtful, questions);
     }
     const score = scoreEvaluation(ev, questions);
+    // Keep what the AI gave (and which model), so later teacher changes can be compared with it.
+    for (const qe of ev.questions as (CheckedQ & { ai_marks?: number })[]) qe.ai_marks = qe.marks_awarded;
+    (ev as SheetEvaluation & { meta?: unknown }).meta = { model: modelFor(t.org_id, "marking"), recheck_model: modelFor(t.org_id, "recheck"), marked_at: new Date().toISOString() };
     run("UPDATE attempts SET status = 'evaluated', error = NULL, evaluation = ?, score = ?, max_score = ?, reviewed = 0, evaluated_at = CURRENT_TIMESTAMP WHERE id = ?",
       JSON.stringify(ev), score, paper!.total_marks, attemptId);
     // A re-marked sheet gets a fresh Fix-it plan (if results are already out).
@@ -417,18 +447,25 @@ async function runEvaluation(attemptId: string) {
 }
 
 // Marking runs as background jobs: up to EVAL_CONCURRENCY sheets at once, 3 tries with backoff.
-registerJob<{ attempt_id: string }>("mark_attempt", {
+registerJob<{ attempt_id: string; org_id?: string; charge_ref?: string | null }>("mark_attempt", {
   concurrency: Number(process.env.EVAL_CONCURRENCY ?? 3),
   run: ({ attempt_id }) => runEvaluation(attempt_id),
   onRetry: ({ attempt_id }, message, job, wait) =>
     run("UPDATE attempts SET status = 'evaluating', error = ? WHERE id = ?", `Try ${job.attempts} of ${job.max_attempts} failed (${message}). Trying again in ${Math.round(wait)} s.`, attempt_id),
-  onFail: ({ attempt_id }, message) => run("UPDATE attempts SET status = 'failed', error = ? WHERE id = ?", message, attempt_id),
+  onFail: ({ attempt_id, org_id, charge_ref }, message) => {
+    run("UPDATE attempts SET status = 'failed', error = ? WHERE id = ?", message, attempt_id);
+    refund(org_id, charge_ref, "Refund: the sheet couldn't be marked");
+  },
 });
-function enqueue(ids: string[]) {
+const sheetPages = (id: string) => json<string[]>(one<{ files: string }>("SELECT files FROM attempts WHERE id = ?", id)?.files ?? null, []).length;
+/** Queues sheets for marking. With `chargeUserId`, each sheet is paid with credits (refunded if marking fails for good). */
+function enqueue(ids: string[], chargeUserId?: string) {
   for (const id of ids) {
     const org = one<{ org_id: string }>("SELECT t.org_id FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ?", id)?.org_id;
+    if (one("SELECT 1 FROM jobs WHERE dedupe_key = ? AND status IN ('queued','processing')", `mark:${id}`)) continue; // already queued: never charge twice
+    const chargeRef = chargeUserId && org ? charge(org, "mark_sheet", `mark:${id}:${uid("c")}`, { pages: sheetPages(id), userId: chargeUserId }) : null;
     run("UPDATE attempts SET status = 'evaluating', error = NULL WHERE id = ?", id);
-    enqueueJob("mark_attempt", { attempt_id: id }, { orgId: org, dedupeKey: `mark:${id}` });
+    enqueueJob("mark_attempt", { attempt_id: id, org_id: org, charge_ref: chargeRef }, { orgId: org, dedupeKey: `mark:${id}` });
   }
 }
 
@@ -444,7 +481,9 @@ testRoutes.post("/tests/:id/evaluate", staff, (req, res) => {
   const allowed = only ? ["uploaded", "failed", "evaluated"] : ["uploaded", "failed"];
   const ids = all<{ id: string; files: string; status: string }>("SELECT id, files, status FROM attempts WHERE test_id = ?", req.params.id)
     .filter((a) => allowed.includes(a.status) && json<string[]>(a.files, []).length && (!only || only.includes(a.id))).map((a) => a.id);
-  enqueue(ids);
+  // All or nothing: check the whole batch can be paid before queuing any of it.
+  requireCredits(req.user!.org_id, ids.reduce((t, id) => t + priceOf("mark_sheet", 1, sheetPages(id)), 0));
+  enqueue(ids, req.user!.id);
   const pid = one<{ paper_id: string }>("SELECT paper_id FROM tests WHERE id = ?", req.params.id)?.paper_id;
   if (pid) void ensureSubtopics(pid);
   res.json({ queued: ids.length });
@@ -467,12 +506,33 @@ testRoutes.put("/attempts/:id/evaluation", staff, (req, res) => {
   if (!a) return res.status(404).json({ error: "Not found" });
   const ev = json<SheetEvaluation | null>(a.evaluation, null);
   if (!ev) return res.status(400).json({ error: "Not evaluated yet" });
-  const edits = z.array(z.object({ question_id: z.string().max(40), marks_awarded: z.number().finite().min(-1000).max(1000), feedback: z.string().max(2000).optional() })).max(500).parse(req.body?.questions);
+  const edits = z.array(z.object({ question_id: z.string().max(40), marks_awarded: z.number().finite().min(-1000).max(1000), feedback: z.string().max(2000).optional(),
+    note: z.string().max(1000).optional() })).max(500).parse(req.body?.questions);
+  const paper = paperFor(a.test_id);
+  const qById = new Map(questionsOf(paper?.sections ?? []).map((q) => [q.id, q]));
+  const meta = (ev as SheetEvaluation & { meta?: { model?: string | null; recheck_model?: string | null } }).meta;
+  const pages = json<string[]>(a.files, []);
   for (const e of edits) {
-    const qe = ev.questions.find((q) => q.question_id === e.question_id);
-    if (qe) { qe.marks_awarded = e.marks_awarded; if (e.feedback !== undefined) qe.feedback = e.feedback; }
+    const qe = ev.questions.find((q) => q.question_id === e.question_id) as (CheckedQ & { ai_marks?: number; teacher_override?: boolean; teacher_note?: string }) | undefined;
+    if (!qe) continue;
+    const changed = e.marks_awarded !== qe.marks_awarded;
+    // Every change to the AI's marks is logged for improving the marking later (never deleted).
+    if (changed || e.note) {
+      const q = qById.get(qe.question_id);
+      run(`INSERT INTO grade_corrections (org_id, test_id, attempt_id, paper_id, question_id, question_text, question_type, max_marks,
+             ai_marks, ai_criteria, ai_reason, ai_confidence, teacher_marks, teacher_note, model, page_refs, teacher_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        req.user!.org_id, a.test_id, a.id, paper?.id ?? null, qe.question_id, q?.text?.slice(0, 4000) ?? null, q?.type ?? null, qe.max_marks,
+        qe.ai_marks ?? qe.marks_awarded, JSON.stringify(qe.steps ?? []), [qe.mistake_note, qe.feedback].filter(Boolean).join(" | ").slice(0, 2000) || null,
+        qe.confidence ?? null, e.marks_awarded, e.note ?? null,
+        qe.second_check === "changed" ? meta?.recheck_model ?? null : meta?.model ?? null,
+        JSON.stringify({ pages, location: (qe as { location?: unknown }).location ?? null }), req.user!.id);
+    }
+    if (changed) { qe.marks_awarded = e.marks_awarded; qe.teacher_override = true; }
+    if (e.note) qe.teacher_note = e.note;
+    if (e.feedback !== undefined) qe.feedback = e.feedback;
   }
-  const score = scoreEvaluation(ev, questionsOf(paperFor(a.test_id)?.sections ?? []));
+  const score = scoreEvaluation(ev, questionsOf(paper?.sections ?? []));
   run("UPDATE attempts SET evaluation = ?, score = ?, reviewed = 1 WHERE id = ?", JSON.stringify(ev), score, a.id);
   res.json({ ok: true, score });
 });

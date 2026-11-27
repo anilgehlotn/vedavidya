@@ -218,3 +218,92 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_ready ON jobs(status, type, run_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);
 `);
+
+// ---- Phase 2: courses & subjects, paper folders, credits, teacher corrections (all additive) ----
+db.exec(`
+CREATE TABLE IF NOT EXISTS courses (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, board TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (org_id, name)
+);
+CREATE TABLE IF NOT EXISTS subjects (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (course_id, name)
+);
+CREATE TABLE IF NOT EXISTS paper_folders (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, created_by TEXT REFERENCES users(id) ON DELETE SET NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (org_id, name)
+);
+-- Credits: every movement is a row; the balance is the sum. Two buckets: monthly free credits (expire at month end)
+-- and granted credits (added by the platform owner, never expire). Charges use free credits first.
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('monthly_free','grant','charge','refund','expire','adjust')),
+  bucket TEXT NOT NULL CHECK (bucket IN ('free','paid')),
+  amount REAL NOT NULL, action TEXT, ref TEXT, month TEXT, note TEXT,
+  created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_credit_org ON credit_ledger(org_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_credit_ref ON credit_ledger(ref);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_month ON credit_ledger(org_id, month) WHERE kind = 'monthly_free';
+CREATE TABLE IF NOT EXISTS platform_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- Every teacher change to AI marks, kept for improving the marking later. Deliberately no foreign keys:
+-- rows survive when the test, student or institute is deleted. Never delete from this table.
+CREATE TABLE IF NOT EXISTS grade_corrections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id TEXT NOT NULL, test_id TEXT, attempt_id TEXT NOT NULL, paper_id TEXT, question_id TEXT NOT NULL,
+  question_text TEXT, question_type TEXT, max_marks REAL,
+  ai_marks REAL, ai_criteria TEXT, ai_reason TEXT, ai_confidence TEXT,
+  teacher_marks REAL NOT NULL, teacher_note TEXT,
+  model TEXT, page_refs TEXT, teacher_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_corrections_org ON grade_corrections(org_id, created_at);
+CREATE TRIGGER IF NOT EXISTS grade_corrections_keep BEFORE DELETE ON grade_corrections
+  BEGIN SELECT RAISE(ABORT, 'grade_corrections rows are never deleted'); END;
+`);
+addColumn("batches", "course_id", "TEXT REFERENCES courses(id) ON DELETE SET NULL");
+addColumn("batches", "start_date", "TEXT");
+addColumn("question_papers", "course_id", "TEXT REFERENCES courses(id) ON DELETE SET NULL");
+addColumn("question_papers", "subject_id", "TEXT REFERENCES subjects(id) ON DELETE SET NULL");
+addColumn("question_papers", "folder_id", "TEXT REFERENCES paper_folders(id) ON DELETE SET NULL");
+addColumn("question_papers", "source", "TEXT"); // generated | imported | composed (unknown for older papers)
+addColumn("question_papers", "approved_at", "TEXT");
+addColumn("tests", "course_id", "TEXT REFERENCES courses(id) ON DELETE SET NULL");
+addColumn("tests", "subject_id", "TEXT REFERENCES subjects(id) ON DELETE SET NULL");
+addColumn("tests", "window_end", "TEXT");
+addColumn("orgs", "monthly_free_credits", "REAL"); // null = platform default
+
+// Back-fill: courses from the free-text course names on batches; subjects from tests (course of their batch + subject).
+{
+  const pending = db.prepare("SELECT id, org_id, trim(course) AS course FROM batches WHERE course_id IS NULL AND course IS NOT NULL AND trim(course) != ''").all() as { id: string; org_id: string; course: string }[];
+  for (const b of pending) {
+    let c = db.prepare("SELECT id FROM courses WHERE org_id = ? AND name = ? COLLATE NOCASE").get(b.org_id, b.course) as { id: string } | undefined;
+    if (!c) { c = { id: uid("crs") }; db.prepare("INSERT INTO courses (id, org_id, name) VALUES (?,?,?)").run(c.id, b.org_id, b.course); }
+    db.prepare("UPDATE batches SET course_id = ? WHERE id = ?").run(c.id, b.id);
+  }
+  const tests = db.prepare(`SELECT t.id, t.org_id, coalesce(nullif(trim(t.subject),''), trim(p.subject)) AS subject,
+      (SELECT b.course_id FROM test_batches tb JOIN batches b ON b.id = tb.batch_id WHERE tb.test_id = t.id AND b.course_id IS NOT NULL LIMIT 1) AS course_id
+    FROM tests t LEFT JOIN question_papers p ON p.id = t.paper_id WHERE t.course_id IS NULL`).all() as { id: string; org_id: string; subject: string | null; course_id: string | null }[];
+  for (const t of tests) {
+    if (!t.course_id) continue;
+    let subjectId: string | null = null;
+    if (t.subject) {
+      let s = db.prepare("SELECT id FROM subjects WHERE course_id = ? AND name = ? COLLATE NOCASE").get(t.course_id, t.subject) as { id: string } | undefined;
+      if (!s) { s = { id: uid("sub") }; db.prepare("INSERT INTO subjects (id, org_id, course_id, name) VALUES (?,?,?,?)").run(s.id, t.org_id, t.course_id, t.subject); }
+      subjectId = s.id;
+    }
+    db.prepare("UPDATE tests SET course_id = ?, subject_id = ? WHERE id = ?").run(t.course_id, subjectId, t.id);
+  }
+  // Papers take the course/subject of the first test that uses them; papers with an uploaded original are "imported".
+  db.exec(`UPDATE question_papers SET course_id = (SELECT t.course_id FROM tests t WHERE t.paper_id = question_papers.id AND t.course_id IS NOT NULL LIMIT 1),
+      subject_id = (SELECT t.subject_id FROM tests t WHERE t.paper_id = question_papers.id AND t.subject_id IS NOT NULL LIMIT 1)
+    WHERE course_id IS NULL`);
+  db.exec(`UPDATE question_papers SET source = 'imported' WHERE source IS NULL AND EXISTS (SELECT 1 FROM documents d WHERE d.paper_id = question_papers.id AND d.purpose = 'paper')`);
+  db.exec(`UPDATE question_papers SET approved_at = created_at WHERE status = 'approved' AND approved_at IS NULL`);
+}
+addColumn("question_papers", "updated_at", "TEXT");
+db.exec("UPDATE question_papers SET updated_at = created_at WHERE updated_at IS NULL");

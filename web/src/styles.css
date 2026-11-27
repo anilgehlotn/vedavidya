@@ -374,3 +374,9 @@ table.t tr.click:hover td { background: #f4fbf8; }
 @media (max-width: 600px) { .file-card { flex-wrap: wrap; } .file-card > .row { width: 100%; justify-content: flex-end; } }
 .split-thumb { overflow: hidden; display: block; }
 .split-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+
+/* Courses & subjects */
+.course-row { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; }
+.chip-x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 0 0 4px; }
+.chip-x:hover, .chip-x:focus-visible { color: var(--red); }
+.input-sm { padding: 6px 10px; font-size: 13px; width: 140px; }

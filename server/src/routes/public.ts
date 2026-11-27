@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { one, run, uid, json, all, bumpTokenVersion } from "../db.js";
 import { storage } from "../lib/storage.js";
+import { isSuperAdmin } from "./admin.js";
 import { CHUNK_BYTES, LIMITS, MAX_IMAGE_BYTES } from "../lib/limits.js";
 import { requireAuth, signToken, type AuthUser } from "../auth.js";
 import { rateLimit } from "../ratelimit.js";
@@ -70,7 +71,7 @@ publicRoutes.post("/auth/register", signupLimit, (req, res) => {
 
 publicRoutes.get("/me", requireAuth, (req, res) => {
   const org = one("SELECT id, name, city, is_demo FROM orgs WHERE id = ?", req.user!.org_id);
-  res.json({ user: req.user, org });
+  res.json({ user: { ...req.user, is_super_admin: isSuperAdmin(req.user!.id) }, org });
 });
 
 publicRoutes.post("/auth/change-password", requireAuth, passwordLimit, async (req, res, next) => {

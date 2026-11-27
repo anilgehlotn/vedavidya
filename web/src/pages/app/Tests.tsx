@@ -7,6 +7,7 @@ import { useAuth } from "../../lib/auth";
 import { checkFile, uploadFile, type UploadedFile } from "../../lib/chunkUpload";
 import { FileUpload } from "../../components/FileUpload";
 import { FixitCell, MistakeBars, MISTAKES, TestInsights, TopTip, useInsights } from "./Insights";
+import { CreditLine } from "./Credits";
 import { ClassUploadWizard, PaperStep, Step, type ClassUpload } from "./TestFlow";
 // The corrected-sheet viewer (with maths rendering) loads only when a marked sheet is opened.
 const SheetView = lazy(() => import("./SheetView").then((m) => ({ default: m.SheetView })));
@@ -369,6 +370,7 @@ export function TestDetail() {
               {marking > 0 ? <><span className="spinner" /><span className="small"><b>Marking {marking} sheet{marking > 1 ? "s" : ""}…</b> {scored.length} done. You can leave this page.</span></>
                 : <button className={`btn ${toEvaluate ? "btn-primary" : "btn-ghost"}`} disabled={!toEvaluate || DEMO} onClick={() => evaluate()}>✦ Mark {toEvaluate || ""} answer sheet{toEvaluate === 1 ? "" : "s"}</button>}
               {toEvaluate > 0 && !marking && d.paper_problem && <span className="small" style={{ color: "var(--amber)" }}>{d.paper_problem}</span>}
+              {toEvaluate > 0 && !marking && !d.paper_problem && !DEMO && <CreditLine cost={toEvaluate} />}
               {scored.length > 0 && !marking && <span className="small">{scored.length} marked · average <b>{avg}%</b>. Open any sheet to check or change marks.</span>}
               {toCheck > 0 && <button className="btn btn-ghost btn-sm" style={{ borderColor: "var(--amber)", color: "var(--amber)" }} onClick={() => setFilter("check")}>⚠ {toCheck} answer{toCheck > 1 ? "s" : ""} need your check</button>}
             </div>
@@ -473,6 +475,7 @@ export function AttemptReview() {
   const a = useApi<AttemptData>(`/attempts/${id}`);
   const editable = user!.role !== "student";
   const [edits, setEdits] = useState<Record<string, number>>({});
+  const [notes, setNotes] = useState<Record<string, string>>({});
   const [page, setPage] = useState<number | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   if (a.loading) return <Loading />;
@@ -484,8 +487,8 @@ export function AttemptReview() {
   const dirty = Object.keys(edits).length > 0;
 
   const save = async () => {
-    const r = await api<{ score: number }>(`/attempts/${d.id}/evaluation`, { method: "PUT", body: { questions: Object.entries(edits).map(([question_id, marks_awarded]) => ({ question_id, marks_awarded })) } });
-    setEdits({}); setSaved(`Saved - new total ${r.score}/${d.max_score}`); a.reload(true);
+    const r = await api<{ score: number }>(`/attempts/${d.id}/evaluation`, { method: "PUT", body: { questions: Object.entries(edits).map(([question_id, marks_awarded]) => ({ question_id, marks_awarded, note: notes[question_id]?.trim() || undefined })) } });
+    setEdits({}); setNotes({}); setSaved(`Saved - new total ${r.score}/${d.max_score}`); a.reload(true);
   };
 
   return (
@@ -565,6 +568,10 @@ export function AttemptReview() {
                     <span className="muted">/ {qe.max_marks}</span>
                   </div>
                 </div>
+                {editable && qe.question_id in edits && edits[qe.question_id] !== qe.marks_awarded && (
+                  <label className="field" style={{ marginTop: 10 }}><span className="small">Why are you changing the AI's marks? (optional, helps improve the marking)</span>
+                    <input className="input" maxLength={1000} placeholder="e.g. Method is correct, only the final unit is missing" value={notes[qe.question_id] ?? ""} onChange={(e) => setNotes({ ...notes, [qe.question_id]: e.target.value })} /></label>
+                )}
                 {qe.transcription && <div className="solution"><span className="small muted">{d.mode === "cbt" ? "Answer given" : "Student wrote"}:</span><div className="hand" style={{ fontSize: 20, color: "#263066", whiteSpace: "pre-wrap" }}>{qe.transcription}</div></div>}
                 {qe.steps.length > 0 && (
                   <div style={{ marginTop: 10 }}>{qe.steps.map((s, j) => (

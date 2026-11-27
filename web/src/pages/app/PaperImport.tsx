@@ -5,6 +5,7 @@ import { api } from "../../lib/api";
 import type { UploadedFile } from "../../lib/chunkUpload";
 import { FileUpload } from "../../components/FileUpload";
 import { ErrorBox } from "../../components/ui";
+import { CreditLine } from "./Credits";
 
 type KeyMode = "auto" | "in_paper" | "separate";
 const KEY_OPTIONS: { id: KeyMode; title: string; desc: string }[] = [
@@ -64,11 +65,14 @@ export function ImportPaperForm({ defaults, showMeta, onCreated, onCancel }: {
         </div>
       )}
       <ErrorBox error={error} />
-      <div className="row" style={{ justifyContent: "flex-end" }}>
+      <div className="row between wrap" style={{ gap: 10 }}>
+        <CreditLine cost={15} />
+        <div className="row" style={{ marginLeft: "auto" }}>
         {onCancel && <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>}
         <button type="button" className="btn btn-primary" disabled={!ready || busy} onClick={submit}>
           {busy ? "Starting…" : paperBusy || keyBusy ? "Uploading…" : "Upload & process"}
         </button>
+        </div>
       </div>
       <p className="small muted" style={{ margin: 0 }}>AI reads the questions and marks in the background (usually 1–3 minutes). You can check and edit everything before using it.</p>
     </div>

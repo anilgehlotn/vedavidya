@@ -83,9 +83,8 @@ ok(me.data.user.role === "admin" && me.data.org.is_demo === 0, "me returns admin
 section("Settings → AI engine (Claude API key)");
 {
   const s0 = await expect("ai status", 200, "GET", "/settings/ai", { token: admin });
-  ok(s0.data.configured === false && s0.data.demo === false, "not configured initially");
-  const gen0 = await expect("generate before key → 400", 400, "POST", "/papers/generate", { token: admin, body: { subject: "Maths", board: "CBSE", class_level: "10", topics: "Algebra", sections: [{ name: "A", type: "mcq", count: 2, marks_each: 1 }] } });
-  ok(/API key/.test(gen0.data.error), "clear 'no API key' message");
+  // With a platform key, a new institute can use AI at once (paid with credits); its own key is optional.
+  ok(s0.data.own_key === false && s0.data.demo === false && s0.data.configured === Boolean(s0.data.platform_available), "no own key initially; AI available through the platform key");
   await expect("key wrong format → 400", 400, "PUT", "/settings/ai", { token: admin, body: { key: "hello-this-is-not-a-key-at-all" } });
   const bad = await expect("key rejected by Claude → 400", 400, "PUT", "/settings/ai", { token: admin, body: { key: "sk-ant-api03-wrongwrongwrongwrong" } });
   ok(/rejected/i.test(bad.data.error), "rejected key message");
@@ -747,6 +746,134 @@ section("Backups (super-admin)");
   ok(list.length === 14, `only the newest 14 backups are kept (found ${list.length})`);
 }
 
+section("Credits: platform key, monthly free credits, charges, refunds");
+{
+  const MOCK = process.env.MOCK_URL ?? "http://localhost:4999";
+  const rootEmail = process.env.SUPER_ADMIN_EMAIL ?? "root-admin@example.com";
+  const root = await login(rootEmail, "root-pass-123");
+  // A new institute with no key of its own: AI runs on the platform key and is paid with credits.
+  const c = otherAdmin; // the second institute never adds its own key (signing up more institutes would hit the signup limit)
+  const st = (await call("GET", "/settings/ai", { token: c })).data;
+  ok(st.configured && !st.own_key && st.platform_available, "AI works without an own key (platform key)");
+  let cr = (await expect("credit balance", 200, "GET", "/credits", { token: c })).data;
+  ok(cr.balance.free === 300 && cr.balance.total === 300 && !cr.balance.own_key, `300 free credits this month (got ${cr.balance.total})`);
+  await call("GET", "/credits", { token: c });
+  ok((await call("GET", "/credits", { token: c })).data.history.filter((h) => h.kind === "monthly_free").length === 1, "monthly free credits are given once per month");
+  // Generate a paper: 10 credits.
+  const spec = { subject: "Maths", board: "CBSE", class_level: "Class 10", topics: "Algebra", language: "English", difficulty: "mixed", duration_min: 30, sections: [{ name: "A", type: "short", count: 2, marks_each: 2, negative_marks: 0 }] };
+  const gen = await expect("generate a paper with credits", 200, "POST", "/papers/generate", { token: c, body: spec });
+  const genDone = await poll(() => call("GET", `/papers/${gen.data.id}`, { token: c }).then((x) => x.data), (p) => p.status !== "generating");
+  ok(genDone.status === "draft", "paper generated on the platform key");
+  cr = (await call("GET", "/credits", { token: c })).data;
+  ok(cr.balance.total === 290 && cr.history.some((h) => h.kind === "charge" && h.amount === -10), `10 credits charged (balance ${cr.balance.total})`);
+  // A failed generation is refunded.
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ garbage: 99 }) });
+  const bad = await expect("generation that will fail", 200, "POST", "/papers/generate", { token: c, body: spec });
+  const badDone = await poll(() => call("GET", `/papers/${bad.data.id}`, { token: c }).then((x) => x.data), (p) => p.status !== "generating");
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ garbage: 0 }) });
+  cr = (await call("GET", "/credits", { token: c })).data;
+  ok(badDone.status === "failed" && cr.balance.total === 290 && cr.history.some((h) => h.kind === "refund" && h.amount === 10), `failed action refunded (balance ${cr.balance.total})`);
+  // Marking: 1 credit per sheet.
+  const cb = (await call("POST", "/batches", { token: c, body: { name: "C1", course: "10th CBSE" } })).data.id;
+  await call("POST", "/students/bulk", { token: c, body: { batch_id: cb, csv: "A One,1\nB Two,2\nC Three,3" } });
+  const ct = (await call("POST", "/tests", { token: c, body: { title: "Credit test", paper_id: gen.data.id, mode: "offline", batch_ids: [cb], subject: "Maths" } })).data.id;
+  let cd = (await call("GET", `/tests/${ct}`, { token: c })).data;
+  for (const a of cd.attempts) await call("POST", `/attempts/${a.id}/files`, { token: c, body: { upload_ids: await uploadAll(API, c, [["s.jpg", await jpeg(600, 800, a.student_name)]], "student_sheet") } });
+  await waitProcessed(API, c, ct);
+  const ev = await expect("mark 3 sheets", 200, "POST", `/tests/${ct}/evaluate`, { token: c, body: {} });
+  ok(ev.data.queued === 3, "3 sheets queued");
+  await expect("asking again doesn't charge twice", 200, "POST", `/tests/${ct}/evaluate`, { token: c, body: { attempt_ids: cd.attempts.map((a) => a.id) } });
+  for (let i = 0; i < 100; i++) { cd = (await call("GET", `/tests/${ct}`, { token: c })).data; if (!cd.attempts.some((a) => a.status === "evaluating")) break; await sleep(300); }
+  cr = (await call("GET", "/credits", { token: c })).data;
+  ok(cd.attempts.every((a) => a.status === "evaluated") && cr.balance.total === 287, `3 credits for 3 sheets (balance ${cr.balance.total})`);
+  // Out of credits: blocked with a clear message, nothing queued.
+  const orgId = (await call("GET", "/me", { token: c })).data.org.id;
+  await expect("teacher/admin can't use super-admin tools", 403, "POST", `/admin/orgs/${orgId}/credits`, { token: c, body: { amount: 100, note: "x" } });
+  await expect("super-admin removes credits", 200, "POST", `/admin/orgs/${orgId}/credits`, { token: root, body: { amount: -287, note: "Test: empty the balance" } });
+  ok((await call("GET", "/credits", { token: c })).data.balance.total === 0, "balance is 0");
+  const blocked = await call("POST", `/tests/${ct}/evaluate`, { token: c, body: { attempt_ids: [cd.attempts[0].id] } });
+  ok(blocked.status === 402 && /Not enough credits/.test(blocked.data.error) && blocked.data.code === "no_credits", `out of credits → 402 with a clear message (${blocked.data.error?.slice(0, 80)}…)`);
+  ok((await call("GET", `/tests/${ct}`, { token: c })).data.attempts[0].status === "evaluated", "nothing was queued");
+  ok((await call("POST", "/papers/generate", { token: c, body: spec })).status === 402, "paper generation blocked too");
+  // Top-up by the super-admin, then it works again.
+  const topped = await expect("super-admin adds 100 credits", 200, "POST", `/admin/orgs/${orgId}/credits`, { token: root, body: { amount: 100, note: "Welcome credits" } });
+  ok(topped.data.total === 100 && topped.data.paid === 100, "100 credits added (they never expire)");
+  await expect("marking works again", 200, "POST", `/tests/${ct}/evaluate`, { token: c, body: { attempt_ids: [cd.attempts[0].id] } });
+  ok((await call("GET", "/credits", { token: c })).data.balance.total === 99, "1 credit used from the added credits");
+  // Per-institute monthly free credits and platform prices.
+  await expect("set this institute's free credits", 200, "PUT", `/admin/orgs/${orgId}/quota`, { token: root, body: { monthly_free_credits: 500 } });
+  const orgsList = (await expect("super-admin sees institutes", 200, "GET", "/admin/orgs", { token: root })).data;
+  ok(orgsList.find((o) => o.id === orgId)?.monthly_free_credits === 500, "free credits per month saved for the institute");
+  await expect("institute admin can't see all institutes", 403, "GET", "/admin/orgs", { token: c });
+  const ps = await expect("super-admin changes a price", 200, "PUT", "/admin/settings", { token: root, body: { prices: { reteach_brief: 4 } } });
+  ok(ps.data.prices.reteach_brief === 4 && ps.data.prices.mark_sheet === 1, "price changed, others kept");
+  await call("PUT", "/admin/settings", { token: root, body: { prices: { reteach_brief: 3 } } });
+  // Own key: never charged.
+  const mine = (await call("GET", "/credits", { token: admin })).data;
+  ok(mine.balance.own_key && !mine.history.some((h) => h.kind === "charge"), "institute with its own key is never charged");
+  ok(!(await call("GET", "/credits", { token: admin })).data.history.some((h) => h.kind === "grant"), "credits are per institute");
+}
+
+section("Courses, subjects, folders");
+{
+  const courses = (await expect("list courses", 200, "GET", "/courses", { token: teacher })).data;
+  ok(courses.some((x) => x.name === "JEE"), "a course was created from the batch's course name");
+  const course = (await expect("create a course", 200, "POST", "/courses", { token: admin, body: { name: "II PUC Karnataka Board", board: "Karnataka PUE" } })).data.id;
+  await expect("teacher can't create courses", 403, "POST", "/courses", { token: teacher, body: { name: "X" } });
+  const subject = (await expect("add a subject", 200, "POST", `/courses/${course}/subjects`, { token: admin, body: { name: "Physics" } })).data.id;
+  await expect("duplicate subject → 409", 409, "POST", `/courses/${course}/subjects`, { token: admin, body: { name: "Physics" } });
+  const pb = (await expect("batch in that course, with a start date", 200, "POST", "/batches", { token: admin, body: { name: "PUC A", course_id: course, start_date: "2026-06-01" } })).data.id;
+  const bRow = (await call("GET", "/batches", { token: admin })).data.find((x) => x.id === pb);
+  ok(bRow.course_name === "II PUC Karnataka Board" && bRow.start_date === "2026-06-01", "batch shows its course and start date");
+  await expect("other institute's course rejected", 400, "POST", "/batches", { token: otherAdmin, body: { name: "Z", course_id: course } });
+  const pt = (await expect("test picks course and subject from its batch", 200, "POST", "/tests", { token: teacher, body: { title: "PUC test", subject: "Physics", mode: "offline", batch_ids: [pb] } })).data.id;
+  const ptd = (await call("GET", `/tests/${pt}`, { token: teacher })).data;
+  ok(ptd.course_id === course && ptd.subject_id === subject && ptd.course_name === "II PUC Karnataka Board" && ptd.subject_name === "Physics", "test linked to course + subject");
+  ok(ptd.state === "draft", `test without a paper is a draft (${ptd.state})`);
+  const listed = (await call("GET", "/tests", { token: teacher })).data.find((t) => t.id === pt);
+  ok(listed.course_name && listed.state === "draft", "test list shows course and status");
+  await expect("window must end after it starts", 400, "POST", "/tests", { token: teacher, body: { title: "Bad window", mode: "cbt", batch_ids: [pb], scheduled_at: "2030-01-02T10:00:00Z", window_end: "2030-01-02T09:00:00Z" } });
+  // Folders
+  const f = (await expect("create a folder", 200, "POST", "/paper-folders", { token: teacher, body: { name: "Past year" } })).data.id;
+  await expect("move a paper into it and set course/subject", 200, "PUT", `/papers/${aiPaper.id}/meta`, { token: teacher, body: { folder_id: f, course_id: course, subject_id: subject } });
+  const pl = (await call("GET", "/papers", { token: teacher })).data.find((p) => p.id === aiPaper.id);
+  ok(pl.folder_name === "Past year" && pl.course_name === "II PUC Karnataka Board" && pl.subject_name === "Physics" && pl.source === "generated" && pl.question_count > 0 && pl.difficulty, "paper card data: folder, course, subject, source, count, difficulty");
+  await expect("subject from another course rejected", 400, "PUT", `/papers/${aiPaper.id}/meta`, { token: teacher, body: { course_id: (await call("GET", "/courses", { token: teacher })).data.find((x) => x.name === "JEE").id, subject_id: subject } });
+  await expect("other institute's folder rejected", 400, "PUT", `/papers/${aiPaper.id}/meta`, { token: teacher, body: { folder_id: (await call("POST", "/paper-folders", { token: otherAdmin, body: { name: "Theirs" } })).data.id } });
+  await expect("delete folder (papers stay)", 200, "DELETE", `/paper-folders/${f}`, { token: teacher });
+  ok((await call("GET", `/papers/${aiPaper.id}`, { token: teacher })).data.folder_id === null, "paper moved out of the deleted folder");
+  await expect("course used by a batch can't be deleted", 409, "DELETE", `/courses/${course}`, { token: admin });
+  await call("DELETE", `/tests/${pt}`, { token: teacher });
+}
+
+section("Teacher corrections are kept for improving the marking");
+{
+  const det = (await call("GET", `/tests/${test}`, { token: teacher })).data;
+  const a = det.attempts.find((x) => x.status === "evaluated");
+  const at = (await call("GET", `/attempts/${a.id}`, { token: teacher })).data;
+  const q = at.evaluation.questions[0];
+  ok(typeof q.ai_marks === "number" && at.evaluation.meta?.model, `marking records the AI's marks and model (${at.evaluation.meta?.model})`);
+  const newMarks = q.marks_awarded >= q.max_marks ? 0 : q.max_marks;
+  await expect("teacher changes marks with a note", 200, "PUT", `/attempts/${a.id}/evaluation`, { token: teacher, body: { questions: [{ question_id: q.question_id, marks_awarded: newMarks, note: "Method fully correct" }] } });
+  await expect("teacher changes it again", 200, "PUT", `/attempts/${a.id}/evaluation`, { token: teacher, body: { questions: [{ question_id: q.question_id, marks_awarded: Math.max(0, newMarks - 0.5) }] } });
+  const after = (await call("GET", `/attempts/${a.id}`, { token: teacher })).data.evaluation.questions[0];
+  ok(after.teacher_override && after.teacher_note === "Method fully correct", "the sheet shows the teacher's override and note");
+  if (DATA_DIR) {
+    const db = new DatabaseSync(path.join(DATA_DIR, "vedavidya.db"));
+    const rows = db.prepare("SELECT * FROM grade_corrections WHERE attempt_id = ? ORDER BY id").all(a.id);
+    ok(rows.length === 2, `both changes logged (${rows.length})`);
+    ok(rows.every((r) => r.ai_marks === q.ai_marks), "each row keeps the AI's original marks (not the teacher's earlier change)");
+    ok(rows[0].teacher_marks === newMarks && rows[0].teacher_note === "Method fully correct" && rows[0].model && JSON.parse(rows[0].page_refs).pages.length > 0 && JSON.parse(rows[0].ai_criteria).length >= 0 && rows[0].question_text, "row has teacher marks + note, model, page refs, criteria, question");
+    let blockedDelete = false;
+    try { db.prepare("DELETE FROM grade_corrections WHERE attempt_id = ?").run(a.id); } catch { blockedDelete = true; }
+    ok(blockedDelete, "corrections can't be deleted");
+    db.close();
+  }
+  const corr = await expect("super-admin can read corrections", 200, "GET", "/admin/corrections", { token: await login(process.env.SUPER_ADMIN_EMAIL ?? "root-admin@example.com", "root-pass-123") });
+  ok(corr.data.some((r) => r.attempt_id === a.id), "corrections visible to the platform owner");
+  await expect("institute admin can't read all corrections", 403, "GET", "/admin/corrections", { token: admin });
+}
+
 section("Security: roles");
 {
   const staffOnly = [["GET", "/overview"], ["GET", "/students"], ["GET", "/tests"], ["GET", "/papers"], ["GET", `/tests/${test}`], ["POST", `/tests/${test}/evaluate`], ["POST", `/tests/${test}/publish`],
@@ -814,7 +941,8 @@ if (DATA_DIR) {
 section("Remove key, rate limiting");
 {
   await expect("remove key", 200, "DELETE", "/settings/ai", { token: admin });
-  ok((await call("GET", "/settings/ai", { token: admin })).data.configured === false, "key removed");
+  const after = (await call("GET", "/settings/ai", { token: admin })).data;
+  ok(after.own_key === false && after.configured === Boolean(after.platform_available), "own key removed (the platform key takes over)");
   let limited = false;
   for (let i = 0; i < 12; i++) { const r = await call("POST", "/auth/login", { body: { identifier: adminEmail, password: "wrong" } }); if (r.status === 429) { limited = true; break; } }
   ok(limited, "repeated wrong passwords are rate limited");

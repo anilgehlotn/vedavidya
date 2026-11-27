@@ -59,29 +59,99 @@ orgRoutes.delete("/centres/:id", adminOnly, (req, res) => {
 
 // ---- Batches
 orgRoutes.get("/batches", staff, (req, res) => {
-  res.json(all(`SELECT b.*, c.name AS centre_name, u.name AS teacher_name,
+  res.json(all(`SELECT b.*, c.name AS centre_name, u.name AS teacher_name, co.name AS course_name,
       (SELECT count(*) FROM enrollments e WHERE e.batch_id = b.id) AS student_count
-    FROM batches b LEFT JOIN centres c ON c.id = b.centre_id LEFT JOIN users u ON u.id = b.teacher_id
+    FROM batches b LEFT JOIN centres c ON c.id = b.centre_id LEFT JOIN users u ON u.id = b.teacher_id LEFT JOIN courses co ON co.id = b.course_id
     WHERE b.org_id = ? ORDER BY c.name, b.name`, req.user!.org_id));
 });
-const BatchBody = z.object({ name: z.string().trim().min(1).max(100), course: z.string().max(100).optional(), centre_id: z.string().max(40).nullable().optional(), teacher_id: z.string().max(40).nullable().optional() });
+const BatchBody = z.object({
+  name: z.string().trim().min(1).max(100), course: z.string().trim().max(100).optional(), course_id: z.string().max(60).nullable().optional(),
+  centre_id: z.string().max(40).nullable().optional(), teacher_id: z.string().max(40).nullable().optional(),
+  start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date like 2026-06-01").nullable().optional(),
+});
 const checkBatchRefs = (b: z.infer<typeof BatchBody>, org: string) => {
   if (!inOrg("centres", b.centre_id, org)) throw new ClientError("Unknown centre");
+  if (b.course_id && !one("SELECT 1 FROM courses WHERE id = ? AND org_id = ?", b.course_id, org)) throw new ClientError("Unknown course");
   if (b.teacher_id && !one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role IN ('admin','teacher')", b.teacher_id, org)) throw new ClientError("Unknown teacher");
 };
+/** The batch's course: by id, or by name (an older client sending a course name gets a matching course, created if needed). */
+function resolveCourse(b: z.infer<typeof BatchBody>, org: string): { id: string | null; name: string | null } {
+  if (b.course_id) return { id: b.course_id, name: one<{ name: string }>("SELECT name FROM courses WHERE id = ?", b.course_id)!.name };
+  if (!b.course) return { id: null, name: null };
+  return { id: findOrCreateCourse(org, b.course), name: b.course };
+}
+export function findOrCreateCourse(org: string, name: string) {
+  const existing = one<{ id: string }>("SELECT id FROM courses WHERE org_id = ? AND name = ? COLLATE NOCASE", org, name.trim());
+  if (existing) return existing.id;
+  const id = uid("crs");
+  run("INSERT INTO courses (id, org_id, name) VALUES (?,?,?)", id, org, name.trim());
+  return id;
+}
 orgRoutes.post("/batches", adminOnly, (req, res) => {
   const b = BatchBody.parse(req.body);
   checkBatchRefs(b, req.user!.org_id);
+  const c = resolveCourse(b, req.user!.org_id);
   const id = uid("bat");
-  run("INSERT INTO batches (id, org_id, centre_id, name, course, teacher_id) VALUES (?,?,?,?,?,?)",
-    id, req.user!.org_id, b.centre_id || null, b.name, b.course ?? null, b.teacher_id || null);
+  run("INSERT INTO batches (id, org_id, centre_id, name, course, course_id, teacher_id, start_date) VALUES (?,?,?,?,?,?,?,?)",
+    id, req.user!.org_id, b.centre_id || null, b.name, c.name, c.id, b.teacher_id || null, b.start_date ?? null);
   res.json({ id });
 });
 orgRoutes.put("/batches/:id", adminOnly, (req, res) => {
   const b = BatchBody.parse(req.body);
   checkBatchRefs(b, req.user!.org_id);
-  run("UPDATE batches SET name = ?, course = ?, centre_id = ?, teacher_id = ? WHERE id = ? AND org_id = ?",
-    b.name, b.course ?? null, b.centre_id || null, b.teacher_id || null, req.params.id, req.user!.org_id);
+  const c = resolveCourse(b, req.user!.org_id);
+  run("UPDATE batches SET name = ?, course = ?, course_id = ?, centre_id = ?, teacher_id = ?, start_date = coalesce(?, start_date) WHERE id = ? AND org_id = ?",
+    b.name, c.name, c.id, b.centre_id || null, b.teacher_id || null, b.start_date ?? null, req.params.id, req.user!.org_id);
+  res.json({ ok: true });
+});
+
+// ---- Courses (e.g. "10th CBSE", "II PUC Karnataka Board") and their subjects ----
+orgRoutes.get("/courses", staff, (req, res) => {
+  const org = req.user!.org_id;
+  const courses = all<any>(`SELECT c.*, (SELECT count(*) FROM batches b WHERE b.course_id = c.id) AS batches,
+      (SELECT count(DISTINCT e.student_id) FROM batches b JOIN enrollments e ON e.batch_id = b.id WHERE b.course_id = c.id) AS students
+    FROM courses c WHERE c.org_id = ? ORDER BY c.name`, org);
+  const subjects = all<any>("SELECT id, course_id, name FROM subjects WHERE org_id = ? ORDER BY name", org);
+  res.json(courses.map((c) => ({ ...c, subjects: subjects.filter((s) => s.course_id === c.id) })));
+});
+const CourseBody = z.object({ name: z.string().trim().min(1).max(100), board: z.string().trim().max(80).nullable().optional() });
+orgRoutes.post("/courses", adminOnly, (req, res) => {
+  const b = CourseBody.parse(req.body);
+  const id = uid("crs");
+  run("INSERT INTO courses (id, org_id, name, board) VALUES (?,?,?,?)", id, req.user!.org_id, b.name, b.board ?? null);
+  res.json({ id });
+});
+orgRoutes.put("/courses/:id", adminOnly, (req, res) => {
+  const b = CourseBody.parse(req.body);
+  const r = run("UPDATE courses SET name = ?, board = ? WHERE id = ? AND org_id = ?", b.name, b.board ?? null, req.params.id, req.user!.org_id);
+  if (!r.changes) return res.status(404).json({ error: "Course not found" });
+  run("UPDATE batches SET course = ? WHERE course_id = ?", b.name, req.params.id); // keep the old text column in step
+  res.json({ ok: true });
+});
+orgRoutes.delete("/courses/:id", adminOnly, (req, res) => {
+  const used = one<{ n: number }>("SELECT count(*) n FROM batches WHERE course_id = ?", req.params.id)!.n;
+  if (used) return res.status(409).json({ error: `${used} batch${used > 1 ? "es use" : " uses"} this course. Move ${used > 1 ? "them" : "it"} to another course first.` });
+  const r = run("DELETE FROM courses WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  if (!r.changes) return res.status(404).json({ error: "Course not found" });
+  res.json({ ok: true });
+});
+orgRoutes.post("/courses/:id/subjects", adminOnly, (req, res) => {
+  const { name } = z.object({ name: z.string().trim().min(1).max(80) }).parse(req.body);
+  if (!one("SELECT 1 FROM courses WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id)) return res.status(404).json({ error: "Course not found" });
+  const id = uid("sub");
+  run("INSERT INTO subjects (id, org_id, course_id, name) VALUES (?,?,?,?)", id, req.user!.org_id, req.params.id, name);
+  res.json({ id });
+});
+orgRoutes.put("/subjects/:id", adminOnly, (req, res) => {
+  const { name } = z.object({ name: z.string().trim().min(1).max(80) }).parse(req.body);
+  const r = run("UPDATE subjects SET name = ? WHERE id = ? AND org_id = ?", name, req.params.id, req.user!.org_id);
+  if (!r.changes) return res.status(404).json({ error: "Subject not found" });
+  res.json({ ok: true });
+});
+orgRoutes.delete("/subjects/:id", adminOnly, (req, res) => {
+  // Papers and tests keep working: their subject link is cleared (their subject text stays).
+  const r = run("DELETE FROM subjects WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  if (!r.changes) return res.status(404).json({ error: "Subject not found" });
   res.json({ ok: true });
 });
 orgRoutes.delete("/batches/:id", adminOnly, (req, res) => {
