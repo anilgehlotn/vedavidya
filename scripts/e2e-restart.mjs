@@ -1,6 +1,7 @@
 // Restart-recovery test. Phase "start": sets up 50 sheets and starts evaluation, prints ids.
 // Phase "check": after the server was killed and restarted, waits for every sheet to finish.
 import { createRequire } from "node:module";
+import { uploadAll, waitProcessed } from "./upload-helper.mjs";
 const require = createRequire(new URL("../server/package.json", import.meta.url));
 const sharp = require("sharp");
 const API = process.env.API ?? "http://localhost:4300/api";
@@ -19,9 +20,9 @@ if (process.argv[2] === "start") {
     { id: "q1", type: "short", text: "x", options: [], correct_option: null, numeric_answer: null, marks: 2, negative_marks: 0, difficulty: "easy", topic: "T", solution: "s", rubric: [{ step: "a", marks: 1 }, { step: "b", marks: 1 }] }] }] } });
   const { id: test } = await call("POST", "/tests", { token, body: { title: "T", paper_id: paper, mode: "offline", batch_ids: [batch] } });
   const img = await sharp({ create: { width: 800, height: 1000, channels: 3, background: "#fff" } }).jpeg().toBuffer();
-  const form = new FormData();
-  for (let i = 1; i <= 50; i++) form.append("files", new Blob([img], { type: "image/jpeg" }), `${i}.jpg`);
-  const up = await call("POST", `/tests/${test}/bulk-files`, { token, form });
+  const files = Array.from({ length: 50 }, (_, i) => [`${i + 1}.jpg`, img]);
+  const up = await call("POST", `/tests/${test}/bulk-files`, { token, body: { upload_ids: await uploadAll(API, token, files, "student_sheet") } });
+  await waitProcessed(API, token, test);
   const q = await call("POST", `/tests/${test}/evaluate`, { token, body: {} });
   console.log(JSON.stringify({ token, test, uploaded: up.students, queued: q.queued }));
 } else {

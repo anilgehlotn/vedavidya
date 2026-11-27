@@ -4,9 +4,10 @@ import { api, blobUrl, fetchBlob, csvCell, DEMO, download, fmtDate, fmtDateTime,
 import type { AttemptStatus, Paper, Question, SheetEvaluation } from "../../lib/types";
 import { Empty, ErrorBox, Loading, Modal, PageTitle, ScoreBadge, StatusBadge, useApi } from "../../components/ui";
 import { useAuth } from "../../lib/auth";
-import { bulkUpload, compressImage, isAllowedFile, type BulkResult } from "../../lib/upload";
+import { checkFile, uploadFile, type UploadedFile } from "../../lib/chunkUpload";
+import { FileUpload } from "../../components/FileUpload";
 import { FixitCell, MistakeBars, MISTAKES, TestInsights, TopTip, useInsights } from "./Insights";
-import { ClassUploadWizard, PaperStep, Step } from "./TestFlow";
+import { ClassUploadWizard, PaperStep, Step, type ClassUpload } from "./TestFlow";
 // The corrected-sheet viewer (with maths rendering) loads only when a marked sheet is opened.
 const SheetView = lazy(() => import("./SheetView").then((m) => ({ default: m.SheetView })));
 
@@ -133,78 +134,84 @@ function NewTestModal({ paperId, onClose }: { paperId: string | null; onClose: (
   );
 }
 
-interface AttemptRow { checks: number; phone: string | null; parent_phone: string | null; id: string; status: AttemptStatus; score: number | null; max_score: number | null; error: string | null; reviewed: number; files: number; student_id: string; student_name: string; roll_no: string | null; batch_name: string; share_token: string | null }
-interface TestDetailData extends TestRow { duration_min: number; paper: Paper | null; paper_problem: string | null; attempts: AttemptRow[] }
+interface AttemptRow { processing: string | null; checks: number; phone: string | null; parent_phone: string | null; id: string; status: AttemptStatus; score: number | null; max_score: number | null; error: string | null; reviewed: number; files: number; student_id: string; student_name: string; roll_no: string | null; batch_name: string; share_token: string | null }
+interface TestDetailData extends TestRow { duration_min: number; paper: Paper | null; paper_problem: string | null; attempts: AttemptRow[]; uploads: ClassUpload[] }
 
+/** Upload one student's sheet: resumable upload with progress and cancel; pages are processed in the background. */
 function UploadCell({ a, onDone }: { a: AttemptRow; onDone: () => void }) {
   const ref = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const send = async (files: FileList | null) => {
-    if (!files?.length) return;
-    setBusy(true); setErr(null);
+  const ctrl = useRef<AbortController | null>(null);
+  useEffect(() => () => ctrl.current?.abort(), []);
+  const send = async (list: FileList | null) => {
+    const files = [...(list ?? [])];
+    if (!files.length) return;
+    setErr(null); setProgress(0);
+    const c = new AbortController(); ctrl.current = c;
     try {
-      const form = new FormData();
-      for (const f of [...files].filter(isAllowedFile)) { const c = await compressImage(f); form.append("files", c, c.name); }
-      if (!form.has("files")) throw new Error("Choose JPG, PNG, WEBP or PDF files");
-      await api(`/attempts/${a.id}/files${a.files ? "?replace=1" : ""}`, { form }); onDone();
-    }
-    catch (e) { setErr((e as Error).message); }
-    finally { setBusy(false); if (ref.current) ref.current.value = ""; }
+      const total = files.reduce((t, f) => t + f.size, 0);
+      let before = 0;
+      const ids: string[] = [];
+      for (const f of files) {
+        const check = await checkFile(f, "student_sheet");
+        if (!check.ok) throw new Error(check.error);
+        const u = await uploadFile(f, "student_sheet", { signal: c.signal, onProgress: (sent) => setProgress(Math.min(99, Math.floor(((before + sent) / Math.max(1, total)) * 100))) });
+        ids.push(u.id); before += f.size;
+      }
+      await api(`/attempts/${a.id}/files`, { body: { upload_ids: ids } });
+      onDone();
+    } catch (e) { if ((e as Error).name !== "AbortError") setErr((e as Error).message); }
+    finally { setProgress(null); ctrl.current = null; if (ref.current) ref.current.value = ""; }
   };
+  if (a.processing) return <span className="small muted"><span className="spinner" /> Processing pages…</span>;
   return (
     <>
       <input ref={ref} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" style={{ display: "none" }} onChange={(e) => send(e.target.files)} />
-      <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => ref.current?.click()}>{busy ? "Uploading…" : a.files ? `↻ ${a.files} page${a.files > 1 ? "s" : ""}` : "⇪ Upload sheet"}</button>
-      {err && <div className="small" style={{ color: "var(--red)" }}>{err}</div>}
+      {progress != null
+        ? <span className="row" style={{ gap: 6 }}><span className="small">Uploading {progress}%</span><button className="btn btn-ghost btn-sm" onClick={() => ctrl.current?.abort()}>Cancel</button></span>
+        : <button className="btn btn-ghost btn-sm" onClick={() => ref.current?.click()}>{a.files ? `↻ ${a.files} page${a.files > 1 ? "s" : ""}` : "⇪ Upload sheet"}</button>}
+      {err && <div className="small" style={{ color: "var(--red)", maxWidth: 260 }}>{err}</div>}
     </>
   );
 }
 
+interface BulkResult { students: number; files: number; unmatched: string[]; ambiguous: string[]; busy: string[] }
+/** Files named by roll number ("7.jpg", "7-1.jpg", "Roll 12.pdf"): uploaded (resumable), then matched to students. */
 function BulkUploadModal({ testId, batches, onClose, onDone }: { testId: string; batches: string[]; onClose: () => void; onDone: () => void }) {
-  const ref = useRef<HTMLInputElement>(null);
-  const [files, setFiles] = useState<File[]>([]);
-  const [progress, setProgress] = useState<{ done: number; total: number; stage: string } | null>(null);
+  const [uploads, setUploads] = useState<UploadedFile[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<BulkResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const start = async () => {
-    setError(null); setResult(null);
-    try { const r = await bulkUpload(testId, files, null, (done, total, stage) => setProgress({ done, total, stage })); setResult(r); onDone(); }
+    setError(null); setSaving(true);
+    try { const r = await api<BulkResult>(`/tests/${testId}/bulk-files`, { body: { upload_ids: uploads.map((u) => u.id) } }); setResult(r); onDone(); }
     catch (e) { setError((e as Error).message); }
-    finally { setProgress(null); }
+    finally { setSaving(false); }
   };
   return (
-    <Modal title="Upload the whole class" onClose={progress ? () => {} : onClose} wide>
+    <Modal title="Upload sheets named by roll number" onClose={busy || saving ? () => {} : onClose} wide>
       <div className="stack">
-        <p className="small">Name each photo or PDF with the student's <b>roll number first</b>. For several pages, add a page number:
-          <code> 7.jpg</code>, <code>7-1.jpg</code>, <code>7-2.jpg</code>, <code>Roll 12.pdf</code>. Pages are put in order by file name.</p>
-        {batches.length > 1 && <p className="small" style={{ color: "var(--amber)" }}>This test has more than one batch ({batches.join(", ")}). If two students share a roll number, upload one batch at a time from each student's row instead.</p>}
-        <input ref={ref} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" style={{ display: "none" }}
-          onChange={(e) => { setFiles([...(e.target.files ?? [])].filter(isAllowedFile)); setResult(null); }} />
-        <div className="drop" onClick={() => !progress && ref.current?.click()} role="button" tabIndex={0}
-          onKeyDown={(e) => e.key === "Enter" && ref.current?.click()}
-          onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); setFiles([...e.dataTransfer.files].filter(isAllowedFile)); setResult(null); }}>
-          {files.length ? <b>{files.length} file{files.length > 1 ? "s" : ""} selected</b> : <>Click to choose files, or drop them here</>}
-        </div>
-        {progress && (
-          <div>
-            <div className="row between small"><span>{progress.stage}…</span><span>{progress.done} / {progress.total}</span></div>
-            <div className="bar" style={{ marginTop: 6 }}><i style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
-          </div>
-        )}
-        {error && <div className="error-box">{error}</div>}
-        {result && (
+        {result ? (
           <div className="ok-box">
-            Uploaded <b>{result.pages}</b> page{result.pages === 1 ? "" : "s"} for <b>{result.students}</b> student{result.students === 1 ? "" : "s"}.
+            Received <b>{result.files}</b> file{result.files === 1 ? "" : "s"} for <b>{result.students}</b> student{result.students === 1 ? "" : "s"}. Pages are being prepared now.
             {result.unmatched.length > 0 && <div style={{ color: "var(--red)", marginTop: 6 }}>No student with that roll number: {result.unmatched.join(", ")}</div>}
             {result.ambiguous.length > 0 && <div style={{ color: "var(--amber)", marginTop: 6 }}>Roll number used in more than one batch (upload these from the student's row): {result.ambiguous.join(", ")}</div>}
-            {result.busy.length > 0 && <div style={{ color: "var(--amber)", marginTop: 6 }}>Skipped while being evaluated: {result.busy.join(", ")}</div>}
-            {result.warnings.length > 0 && <div style={{ color: "var(--amber)", marginTop: 6 }}>{result.warnings.join(" ")}</div>}
+            {result.busy.length > 0 && <div style={{ color: "var(--amber)", marginTop: 6 }}>Skipped while being marked: {result.busy.join(", ")}</div>}
           </div>
+        ) : (
+          <>
+            <p className="small" style={{ margin: 0 }}>Name each photo or PDF with the student's <b>roll number first</b>. For several pages, add a page number:
+              <code> 7.jpg</code>, <code>7-1.jpg</code>, <code>7-2.jpg</code>, <code>Roll 12.pdf</code>. Pages are put in order by file name.</p>
+            {batches.length > 1 && <p className="small" style={{ color: "var(--amber)", margin: 0 }}>This test has more than one batch ({batches.join(", ")}). If two students share a roll number, upload those from each student's row instead.</p>}
+            <FileUpload purpose="student_sheet" multiple label="Answer sheet files" onChange={(u, b) => { setUploads(u); setBusy(b); }} />
+          </>
         )}
+        <ErrorBox error={error} />
         <div className="row" style={{ justifyContent: "flex-end" }}>
-          <button className="btn btn-ghost" disabled={!!progress} onClick={onClose}>{result ? "Done" : "Cancel"}</button>
-          {!result && <button className="btn btn-primary" disabled={!files.length || !!progress} onClick={start}>{progress ? "Uploading…" : `Upload ${files.length || ""} file${files.length === 1 ? "" : "s"}`}</button>}
+          <button className="btn btn-ghost" disabled={saving} onClick={onClose}>{result ? "Done" : "Cancel"}</button>
+          {!result && <button className="btn btn-primary" disabled={!uploads.length || busy || saving} onClick={start}>{saving ? "Matching…" : busy ? "Uploading…" : `Match ${uploads.length || ""} file${uploads.length === 1 ? "" : "s"} to students`}</button>}
         </div>
       </div>
     </Modal>
@@ -234,14 +241,16 @@ export function TestDetail() {
   const [markedBusy, setMarkedBusy] = useState<string | null>(null);
 
   const busy = t.data?.attempts.some((a) => a.status === "evaluating");
+  // Keep the page live while sheets are being processed in the background.
+  const processing = Boolean(t.data?.attempts.some((a) => a.processing) || t.data?.uploads?.some((u) => u.status === "queued" || u.status === "processing"));
   const reading = t.data?.paper?.status === "generating";
   const ins = useInsights(id!, Boolean(busy));
   useEffect(() => {
     if (!busy) setMsg((m) => (m?.startsWith("Marking") ? "All sheets are marked. Check any sheet below, then publish." : m));
-    if (!busy && !reading) return;
+    if (!busy && !reading && !processing) return;
     const i = setInterval(() => t.reload(true), 3000);
     return () => clearInterval(i);
-  }, [busy, reading]);
+  }, [busy, reading, processing]);
 
   if (t.loading) return <Loading />;
   if (!t.data) return <ErrorBox error={t.error} />;
@@ -379,7 +388,7 @@ export function TestDetail() {
       </div>
 
       {bulk && <BulkUploadModal testId={d.id} batches={(d.batch_names ?? "").split(", ").filter(Boolean)} onClose={() => setBulk(false)} onDone={() => t.reload(true)} />}
-      {wizard && <ClassUploadWizard t={d} onClose={() => setWizard(false)} onDone={(n) => { t.reload(true); if (n) setMsg(`Answer sheets uploaded for ${n} student${n === 1 ? "" : "s"}.${d.paper_problem ? "" : " Next: click “Mark answer sheets”."}`); }} />}
+      {wizard && <ClassUploadWizard t={d} uploads={d.uploads} onClose={() => setWizard(false)} onDone={(n) => { t.reload(true); if (n) setMsg(`Answer sheets uploaded for ${n} student${n === 1 ? "" : "s"}.${d.paper_problem ? "" : " Next: click “Mark answer sheets”."}`); }} />}
 
       {scored.length > 0 && (
         <div className="grid g4" style={{ marginBottom: 16 }}>

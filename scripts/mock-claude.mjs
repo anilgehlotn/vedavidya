@@ -7,6 +7,7 @@ const PORT = Number(process.env.MOCK_PORT ?? 4999);
 const FAIL_RATE = Number(process.env.MOCK_FAIL_RATE ?? 0);
 const VALID_KEY = /^sk-ant-test-valid/;
 const stats = { messages: 0, failsInjected: 0, models: 0, rejected: [] };
+const mode = { garbage: 0 };
 
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { "content-type": "application/json", "request-id": "req_mock", ...headers }); res.end(JSON.stringify(body)); };
 const apiError = (res, status, type, message, headers) => send(res, status, { type: "error", error: { type, message } }, headers);
@@ -122,6 +123,8 @@ http.createServer((req, res) => {
   req.on("end", () => {
     const url = new URL(req.url, "http://x");
     if (url.pathname === "/__stats") return send(res, 200, stats);
+    // Test control: the next N answers are unreadable text (to exercise the app's job retries).
+    if (url.pathname === "/__mode") { try { Object.assign(mode, JSON.parse(Buffer.concat(chunks).toString() || "{}")); } catch { /* ignore */ } return send(res, 200, mode); }
     const key = req.headers["x-api-key"] ?? String(req.headers.authorization ?? "").replace(/^Bearer /, "");
     if (!key || !VALID_KEY.test(String(key))) return apiError(res, 401, "authentication_error", "invalid x-api-key");
 
@@ -167,6 +170,7 @@ http.createServer((req, res) => {
         : /Create an original question paper/.test(text) ? paperFrom(text)
         : /Transcribe this question paper/.test(text) ? importedPaper(content, /ANSWER KEY/.test(text))
         : evaluationFrom(text, content.filter((b) => b.type === "image").length || 1);
+      if (mode.garbage > 0) { mode.garbage--; return setTimeout(() => streamText(res, body.model, "this is not json"), 50); }
       return setTimeout(() => streamText(res, body.model, JSON.stringify(out)), rnd(100, 600));
     }
     apiError(res, 404, "not_found_error", `no route ${req.method} ${url.pathname}`);

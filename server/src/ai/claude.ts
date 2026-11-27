@@ -2,9 +2,9 @@
 // Each institute uses its own API key, saved (encrypted) from Settings → AI engine.
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import fs from "node:fs";
 import path from "node:path";
 import { one, run } from "../db.js";
+import { storage } from "../lib/storage.js";
 import { decrypt } from "../secrets.js";
 import { GeneratedPaper, SheetEvaluation, PracticePlan, ReteachBrief, SubtopicTags, type Section } from "./schemas.js";
 
@@ -40,7 +40,13 @@ export const modelFor = (orgId: string, task: AiTask) => AI_MODES[aiModeOf(orgId
 const HAS_FALLBACK = new Set(["claude-opus-5-5", "claude-sonnet-5-5"]);
 const MAX_REQUEST_BYTES = 30 * 1024 * 1024; // API request limit is 32 MB
 
-export class AiError extends Error {}
+/** A user-facing AI problem. `retryable` says whether trying again later could help (busy/overloaded vs. a bad key). */
+export class AiError extends Error {
+  constructor(message: string, public retryable = false) { super(message); }
+}
+const retryableError = (e: unknown) =>
+  e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError || e instanceof Anthropic.APIConnectionError ||
+  (e instanceof Anthropic.APIError && (e.status === 529 || e.status === 408 || e.status === 409));
 
 const clients = new Map<string, Anthropic>();
 const makeClient = (apiKey: string) =>
@@ -105,7 +111,7 @@ async function structured<T>(orgId: string, opts: {
     if (msg.stop_reason === "max_tokens") throw new AiError("The response was too long. Try fewer questions or fewer pages.");
     const text = msg.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
     try { return opts.format.parse(text) as T; }
-    catch { throw new AiError("Claude's answer couldn't be read. Please try again."); }
+    catch { throw new AiError("Claude's answer couldn't be read. Please try again.", true); }
   };
   try {
     try { return await run(HAS_FALLBACK.has(model)); }
@@ -115,7 +121,10 @@ async function structured<T>(orgId: string, opts: {
     }
   } catch (e) {
     if (e instanceof AiError) throw e;
-    throw new AiError(describeError(e));
+    // The SDK checks structured output itself; an unreadable answer is worth another try.
+    if (e instanceof Anthropic.AnthropicError && !(e instanceof Anthropic.APIError) && /parse/i.test(e.message))
+      throw new AiError("Claude's answer couldn't be read. Trying again usually fixes this.", true);
+    throw new AiError(describeError(e), retryableError(e));
   }
 }
 
@@ -179,18 +188,23 @@ export async function generatePaper(orgId: string, spec: PaperSpec) {
 
 const MIME: Record<string, string> = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".pdf": "application/pdf" };
 
-function fileBlocks(files: string[]): Anthropic.Beta.BetaContentBlockParam[] {
+/** Page images (storage keys) as content blocks. Older uploads may still be whole PDFs. */
+async function fileBlocks(keys: string[]): Promise<Anthropic.Beta.BetaContentBlockParam[]> {
   let total = 0;
-  return files.map((file) => {
-    const mime = MIME[path.extname(file).toLowerCase()];
-    if (!mime) throw new AiError(`Unsupported file type: ${path.basename(file)}`);
-    if (!fs.existsSync(file)) throw new AiError("An uploaded page is missing. Please upload this student's sheet again.");
-    const data = fs.readFileSync(file).toString("base64");
+  const out: Anthropic.Beta.BetaContentBlockParam[] = [];
+  for (const key of keys) {
+    const mime = MIME[path.extname(key).toLowerCase()];
+    if (!mime) throw new AiError(`Unsupported file type: ${path.basename(key)}`);
+    let buf: Buffer;
+    try { buf = await storage.read(key); } catch { throw new AiError("An uploaded page is missing. Please upload this sheet again."); }
+    const data = buf.toString("base64");
     total += data.length;
     if (total > MAX_REQUEST_BYTES) throw new AiError("This answer sheet is too large to send in one go. Upload fewer or smaller pages.");
-    if (mime === "application/pdf") return { type: "document", source: { type: "base64", media_type: "application/pdf", data } };
-    return { type: "image", source: { type: "base64", media_type: mime as "image/jpeg", data } };
-  });
+    out.push(mime === "application/pdf"
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data } }
+      : { type: "image", source: { type: "base64", media_type: mime as "image/jpeg", data } });
+  }
+  return out;
 }
 
 export async function evaluateSheet(orgId: string, paper: { title: string; subject: string | null; sections: Section[] }, files: string[], task: "marking" | "recheck" = "marking") {
@@ -202,7 +216,7 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
     model_solution: q.solution, rubric: q.rubric,
   }));
   // Number every page so the model can say where each answer is (for drawing ticks and marks on the sheet).
-  const blocks = fileBlocks(files).flatMap((b, i) => [{ type: "text" as const, text: b.type === "image" ? `Page ${i + 1}:` : `Pages from file ${i + 1} (PDF):` }, b]);
+  const blocks = (await fileBlocks(files)).flatMap((b, i) => [{ type: "text" as const, text: b.type === "image" ? `Page ${i + 1}:` : `Pages from file ${i + 1} (PDF):` }, b]);
   return structured<import("./schemas.js").SheetEvaluation>(orgId, {
     task,
     effort: "high",
@@ -228,14 +242,17 @@ export async function evaluateSheet(orgId: string, paper: { title: string; subje
   });
 }
 
-export interface ImportMeta { subject?: string; board?: string; class_level?: string; language?: string; notes?: string }
+export interface ImportMeta { subject?: string; board?: string; class_level?: string; language?: string; notes?: string;
+  /** Where correct answers come from: AI solves them, they are printed in the paper itself, or a separate key was uploaded. */
+  key_mode?: "auto" | "in_paper" | "separate" }
 
 /** Reads an existing question paper (photos/PDF) and, optionally, its answer key, into an editable paper. */
 export async function importPaper(orgId: string, paperFiles: string[], keyFiles: string[], meta: ImportMeta) {
   if (!paperFiles.length) throw new AiError("Upload at least one page of the question paper.");
-  const paperBlocks = fileBlocks([...paperFiles, ...keyFiles]);
-  const qBlocks = paperBlocks.slice(0, paperFiles.length);
-  const kBlocks = paperBlocks.slice(paperFiles.length);
+  const paperBlocks = (await fileBlocks([...paperFiles, ...keyFiles])).flatMap((b, i) =>
+    [{ type: "text" as const, text: i < paperFiles.length ? `Paper page ${i + 1}:` : `Key page ${i - paperFiles.length + 1}:` }, b]);
+  const qBlocks = paperBlocks.slice(0, paperFiles.length * 2);
+  const kBlocks = paperBlocks.slice(paperFiles.length * 2);
   return structured<{ title: string; instructions: string; sections: Section[] }>(orgId, {
     task: "paper",
     effort: "high",
@@ -259,7 +276,9 @@ export async function importPaper(orgId: string, paperFiles: string[], keyFiles:
           (meta.notes ? `Teacher's note: ${meta.notes}\n` : "") +
           `Number question ids sequentially (q1, q2, ...). For every question set topic to the chapter name only, and subtopic to the exact concept the question tests (specific enough that a teacher could re-teach just that, e.g. topic "Trigonometry", subtopic "Trigonometric ratios of complementary angles"). Use type mcq for single-correct multiple choice (exactly 4 options when the paper has 4; ` +
           `if it has a different number of options, still list them all), numeric for numerical-answer questions, short or long for written answers. ` +
-          (kBlocks.length ? "Take correct answers and marking from the answer key." : "No answer key was provided: solve each question yourself."),
+          (kBlocks.length ? "Take correct answers and marking from the answer key."
+            : meta.key_mode === "in_paper" ? "The correct answers / solutions are printed in this same PDF (e.g. after the questions, or marked on them): extract them, and solve only where none is given."
+            : "No answer key was provided: solve each question yourself."),
       },
     ],
   });

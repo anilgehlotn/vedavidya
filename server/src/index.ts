@@ -1,7 +1,6 @@
 import "./env.js";
 import express, { type ErrorRequestHandler } from "express";
 import cors from "cors";
-import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
 import { ZodError } from "zod";
@@ -14,6 +13,11 @@ import { analyticsRoutes } from "./routes/analytics.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { practiceRoutes, recoverPractice } from "./routes/practice.js";
 import { reportRoutes } from "./routes/reports.js";
+import { uploadRoutes, cleanStaleUploads } from "./routes/uploads.js";
+import { adminRoutes } from "./routes/admin.js";
+import { startJobs } from "./lib/jobs.js";
+import { scheduleBackups } from "./lib/backup.js";
+import { FileProblem } from "./lib/files.js";
 
 const PROD = process.env.NODE_ENV === "production";
 const app = express();
@@ -41,18 +45,14 @@ app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.use("/api", publicRoutes);
-app.use("/api", requireAuth, demoReadOnly, orgRoutes, paperRoutes, testRoutes, practiceRoutes, reportRoutes, analyticsRoutes, settingsRoutes);
+app.use("/api", requireAuth, demoReadOnly, orgRoutes, paperRoutes, testRoutes, practiceRoutes, reportRoutes, analyticsRoutes, settingsRoutes, uploadRoutes, adminRoutes);
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
 const onError: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof ZodError) return res.status(400).json({ error: err.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ") });
   if (err instanceof ClientError) return res.status(err.status).json({ error: err.message });
-  if (err instanceof multer.MulterError) {
-    const msg = err.code === "LIMIT_FILE_SIZE" ? "A file is larger than 25 MB. Use a smaller photo or split the PDF."
-      : err.code === "LIMIT_FILE_COUNT" ? "Too many files in one upload." : `Upload problem: ${err.message}`;
-    return res.status(400).json({ error: msg });
-  }
-  if (err?.type === "entity.too.large") return res.status(413).json({ error: "Request is too large" });
+  if (err instanceof FileProblem) return res.status(400).json({ error: err.message });
+  if (err?.type === "entity.too.large") return res.status(413).json({ error: "This piece of the upload is too large. Refresh the page and try again." });
   if (err?.type === "entity.parse.failed") return res.status(400).json({ error: "Invalid JSON" });
   if (err?.code === "ERR_SQLITE_ERROR" && /UNIQUE/.test(String(err.message))) return res.status(409).json({ error: "That already exists" });
   console.error(err);
@@ -70,6 +70,13 @@ if (fs.existsSync(webDist)) {
 recoverPaperJobs();
 recoverEvaluations();
 recoverPractice();
+startJobs();
+scheduleBackups();
+cleanStaleUploads();
+setInterval(cleanStaleUploads, 3600_000).unref();
+
+// Last-resort safety net: an unexpected async error is logged instead of taking the whole server down.
+process.on("unhandledRejection", (err) => console.error("Unhandled rejection:", err));
 
 const port = Number(process.env.PORT ?? 4000);
 app.listen(port, () => console.log(`Veda Vidya API on http://localhost:${port}`));

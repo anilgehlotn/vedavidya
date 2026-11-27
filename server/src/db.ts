@@ -177,3 +177,44 @@ db.exec(`CREATE TABLE IF NOT EXISTS ai_usage (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_org ON ai_usage(org_id, created_at)");
+
+// ---- Phase 1: resumable uploads, documents (uploaded files and their page images) and background jobs ----
+db.exec(`
+CREATE TABLE IF NOT EXISTS upload_sessions (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  purpose TEXT NOT NULL, filename TEXT NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL,
+  received INTEGER NOT NULL DEFAULT 0, pages INTEGER,
+  status TEXT NOT NULL DEFAULT 'uploading' CHECK (status IN ('uploading','complete','used','failed','aborted')),
+  error TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_upload_sessions_status ON upload_sessions(status, updated_at);
+CREATE TABLE IF NOT EXISTS documents (
+  id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  purpose TEXT NOT NULL, title TEXT NOT NULL, sources TEXT NOT NULL DEFAULT '[]', size INTEGER DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','processing','completed','failed')),
+  error TEXT, pages INTEGER DEFAULT 0,
+  test_id TEXT REFERENCES tests(id) ON DELETE CASCADE,
+  attempt_id TEXT REFERENCES attempts(id) ON DELETE CASCADE,
+  paper_id TEXT REFERENCES question_papers(id) ON DELETE CASCADE,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP, processed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_documents_test ON documents(test_id);
+CREATE INDEX IF NOT EXISTS idx_documents_attempt ON documents(attempt_id);
+CREATE TABLE IF NOT EXISTS document_pages (
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page_no INTEGER NOT NULL, storage_key TEXT NOT NULL, width INTEGER, height INTEGER, source_name TEXT,
+  PRIMARY KEY (document_id, page_no)
+);
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY, org_id TEXT REFERENCES orgs(id) ON DELETE CASCADE,
+  type TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','processing','completed','failed')),
+  attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3,
+  run_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), last_error TEXT, result TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP, started_at TEXT, finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_ready ON jobs(status, type, run_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);
+`);

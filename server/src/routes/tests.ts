@@ -1,32 +1,21 @@
 // Tests: scheduling, answer-sheet upload, AI evaluation, teacher review, result publishing and online (CBT) attempts.
 import { Router, type Request, type Response, type NextFunction } from "express";
-import multer from "multer";
-import path from "node:path";
-import fs from "node:fs";
 import crypto from "node:crypto";
 import { z } from "zod";
-import { all, json, one, run, uid, UPLOAD_DIR } from "../db.js";
+import { all, json, one, run, uid } from "../db.js";
 import { staff, requireRole } from "../auth.js";
 import { evaluateSheet, AiError, aiProblem, modelFor } from "../ai/claude.js";
-import { normaliseSheet, removeFiles, UploadError } from "../images.js";
+import { storage } from "../lib/storage.js";
+import { enqueueJob, latestJob, PermanentError, registerJob } from "../lib/jobs.js";
+import { createDocument, deleteDocuments, documentPages, documentsOfTest, getDocument, onDocumentReady } from "../lib/documents.js";
+import { FileProblem } from "../lib/files.js";
+import { takeUploads } from "./uploads.js";
 import { queuePracticeForTest } from "./practice.js";
 import { ensureSubtopics } from "./papers.js";
 import type { Question, Section, SheetEvaluation } from "../ai/schemas.js";
 
 export const testRoutes = Router();
 const student = requireRole("student");
-
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
-    filename: (_req, file, cb) => cb(null, `${crypto.randomBytes(10).toString("hex")}${path.extname(file.originalname).toLowerCase()}`),
-  }),
-  limits: { fileSize: 25 * 1024 * 1024, files: 30 },
-  fileFilter: (_req, file, cb) => cb(null, /\.(jpe?g|png|webp|pdf)$/i.test(file.originalname)),
-});
-// Bulk upload for a whole class: up to 400 pages in one request.
-const bulkUpload = multer({ storage: (upload as any).storage, limits: { fileSize: 25 * 1024 * 1024, files: 400 },
-  fileFilter: (_req, file, cb) => cb(null, /\.(jpe?g|png|webp|pdf)$/i.test(file.originalname)) });
 
 // Express 4 doesn't catch rejected promises from async handlers.
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { fn(req, res).catch(next); };
@@ -118,6 +107,7 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
     for (const m of all<{ id: string }>("SELECT a.id FROM attempts a WHERE a.test_id = ? AND a.score IS NOT NULL AND NOT EXISTS (SELECT 1 FROM share_tokens s WHERE s.attempt_id = a.id)", t.id))
       run("INSERT OR IGNORE INTO share_tokens (token, attempt_id) VALUES (?, ?)", crypto.randomBytes(12).toString("base64url"), m.id);
   const attempts = all<any>(`SELECT a.id, a.status, a.score, a.max_score, a.error, a.reviewed, a.files, a.submitted_at, a.evaluation,
+      (SELECT d.status FROM documents d WHERE d.attempt_id = a.id AND d.status IN ('queued','processing') ORDER BY d.created_at DESC LIMIT 1) AS processing,
       u.id AS student_id, u.name AS student_name, u.phone, e.parent_phone, e.roll_no, b.name AS batch_name,
       (SELECT token FROM share_tokens s WHERE s.attempt_id = a.id) AS share_token
     FROM attempts a JOIN users u ON u.id = a.student_id
@@ -127,63 +117,78 @@ testRoutes.get("/tests/:id", staff, (req, res) => {
       // Answers the teacher should look at (cleared once the sheet is reviewed).
       checks: a.reviewed ? 0 : (json<SheetEvaluation | null>(evaluation, null)?.questions ?? []).filter((q) => (q as CheckedQ).needs_review).length }));
   const paper = paperFor(t.id);
-  res.json({ ...t, paper, paper_problem: paperProblem(paper), attempts });
+  // Whole-class uploads (scans / ZIPs) and how far their processing has got.
+  const uploads = all<any>("SELECT id, title, status, error, pages, size, created_at FROM documents WHERE test_id = ? AND purpose = 'class_sheets' ORDER BY created_at DESC", t.id);
+  res.json({ ...t, paper, paper_problem: paperProblem(paper), attempts, uploads });
 });
 
-testRoutes.delete("/tests/:id", staff, (req, res) => {
+testRoutes.delete("/tests/:id", staff, wrap(async (req, res) => {
   const t = one<{ results_published: number }>("SELECT id, results_published FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
   if (!t) return res.status(404).json({ error: "Test not found" });
   if (t.results_published && req.user!.role !== "admin") return res.status(403).json({ error: "Results are published. Only an admin can delete this test." });
   const files = all<{ files: string }>("SELECT files FROM attempts WHERE test_id = ?", req.params.id).flatMap((a) => json<string[]>(a.files, []));
+  const docs = documentsOfTest(req.params.id);
+  await deleteDocuments(docs);
   run("DELETE FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
-  removeFiles(UPLOAD_DIR, files);
+  await storage.remove(files.filter((f) => !f.startsWith("docs/"))); // older uploads stored outside documents
   res.json({ ok: true });
-});
+}));
 
 const attemptInOrg = (attemptId: string, orgId: string) =>
   one<any>("SELECT a.* FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ? AND t.org_id = ?", attemptId, orgId);
 
-async function normaliseAll(files: Express.Multer.File[]) {
-  const out: { name: string; original: string }[] = [];
-  const errors: string[] = [];
-  for (const f of files) {
-    try { for (const name of await normaliseSheet(UPLOAD_DIR, f.filename, f.originalname)) out.push({ name, original: f.originalname }); }
-    catch (e) { errors.push(e instanceof UploadError ? e.message : `${f.originalname}: upload failed`); }
-  }
-  return { out, errors };
+// ---------------- Answer-sheet uploads ----------------
+// Files arrive through resumable uploads (/uploads). Here they become documents; turning them into page
+// images happens in a background job, and the pages are then attached to the student's attempt.
+
+/** Gives an attempt its pages, and deletes the student's previous sheet files (pages of a class upload stay with that upload). */
+async function setAttemptPages(attemptId: string, keys: string[]) {
+  const a = one<{ files: string }>("SELECT files FROM attempts WHERE id = ?", attemptId);
+  if (!a) return;
+  const previous = json<string[]>(a.files, []);
+  run("UPDATE attempts SET files = ?, status = 'uploaded', error = NULL, evaluation = NULL, score = NULL, reviewed = 0, submitted_at = CURRENT_TIMESTAMP WHERE id = ?",
+    JSON.stringify(keys), attemptId);
+  await storage.remove(previous.filter((k) => !k.startsWith("docs/") && !keys.includes(k)));
+  const stale = all<{ id: string }>("SELECT id FROM documents WHERE attempt_id = ? AND purpose = 'student_sheet' AND status IN ('completed','failed')", attemptId)
+    .map((d) => d.id).filter((id) => !documentPages(id).some((p) => keys.includes(p.storage_key)));
+  await deleteDocuments(stale);
 }
 
-// Upload scanned pages (images or PDF) for one student's answer sheet.
-testRoutes.post("/attempts/:id/files", staff, upload.array("files", 30), wrap(async (req, res) => {
-  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-  const drop = () => files.forEach((f) => fs.rmSync(f.path, { force: true }));
-  const a = one<any>("SELECT a.*, t.mode FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ? AND t.org_id = ?", req.params.id, req.user!.org_id);
-  if (!a) { drop(); return res.status(404).json({ error: "Not found" }); }
-  if (a.mode !== "offline") { drop(); return res.status(400).json({ error: "Online tests don't take uploaded sheets" }); }
-  if (a.status === "evaluating") { drop(); return res.status(409).json({ error: "This sheet is being evaluated right now. Wait for it to finish, then upload again." }); }
-  if (!files.length) return res.status(400).json({ error: "Upload JPG, PNG, WEBP or PDF files" });
-  const { out, errors } = await normaliseAll(files);
-  if (!out.length) return res.status(400).json({ error: errors.join(" ") });
-  const replace = req.query.replace === "1";
-  const previous = json<string[]>(a.files, []);
-  const pages = [...(replace ? [] : previous), ...out.map((o) => o.name)];
-  run("UPDATE attempts SET files = ?, status = 'uploaded', error = NULL, evaluation = NULL, score = NULL, reviewed = 0, submitted_at = CURRENT_TIMESTAMP WHERE id = ?",
-    JSON.stringify(pages), a.id);
-  if (replace) removeFiles(UPLOAD_DIR, previous);
-  res.json({ ok: true, pages: pages.length, warnings: errors });
+onDocumentReady("student_sheet", async (doc) => {
+  if (doc.attempt_id) await setAttemptPages(doc.attempt_id, documentPages(doc.id).map((p) => p.storage_key));
+}, (doc, message) => {
+  if (doc.attempt_id) run("UPDATE attempts SET error = ? WHERE id = ?", `Upload failed: ${message}`, doc.attempt_id);
+});
+onDocumentReady("class_sheets", () => { /* waits for the teacher to assign pages to students */ });
+
+const UploadIds = z.object({ upload_ids: z.array(z.string().max(60)).min(1, "Choose at least one file").max(400) });
+const offlineAttempt = (id: string, orgId: string) =>
+  one<any>("SELECT a.*, t.mode, t.org_id FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ? AND t.org_id = ?", id, orgId);
+
+// One student's sheet (photos or a PDF). Replaces their previous pages once the new ones are ready.
+testRoutes.post("/attempts/:id/files", staff, wrap(async (req, res) => {
+  const { upload_ids } = UploadIds.parse(req.body);
+  const a = offlineAttempt(req.params.id, req.user!.org_id);
+  if (!a) return res.status(404).json({ error: "Not found" });
+  if (a.mode !== "offline") return res.status(400).json({ error: "Online tests don't take uploaded sheets" });
+  if (a.status === "evaluating") return res.status(409).json({ error: "This sheet is being marked right now. Wait for it to finish, then upload again." });
+  const ups = takeUploads(upload_ids, req.user!, "student_sheet");
+  const pages = ups.reduce((t, u) => t + (u.pages ?? 1), 0);
+  if (pages > 40) return res.status(400).json({ error: `That's ${pages} pages for one student. The limit is 40.` });
+  run("UPDATE attempts SET error = NULL WHERE id = ?", a.id);
+  const id = await createDocument({ orgId: req.user!.org_id, userId: req.user!.id, purpose: "student_sheet", uploads: ups, testId: undefined, attemptId: a.id });
+  res.json({ document_id: id, pages });
 }));
 
-// Bulk upload for a whole test: files are matched to students by the roll number at the start of the
-// file name, e.g. "7.jpg", "07-1.jpg", "7_2.jpg", "Roll 7 page 2.png". Pages are ordered by file name.
-testRoutes.post("/tests/:id/bulk-files", staff, bulkUpload.array("files", 400), wrap(async (req, res) => {
-  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-  const drop = (fs_: Express.Multer.File[]) => fs_.forEach((f) => fs.rmSync(f.path, { force: true }));
+// Files named by roll number ("7.jpg", "07-1.jpg", "Roll 7 page 2.png"): matched to students, one document each.
+testRoutes.post("/tests/:id/bulk-files", staff, wrap(async (req, res) => {
+  const { upload_ids } = UploadIds.parse(req.body);
+  const batchId = typeof req.body?.batch_id === "string" && req.body.batch_id ? req.body.batch_id : null;
   const t = one<any>("SELECT * FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
-  if (!t) { drop(files); return res.status(404).json({ error: "Test not found" }); }
-  if (t.mode !== "offline") { drop(files); return res.status(400).json({ error: "Online tests don't take uploaded sheets" }); }
-  if (!files.length) return res.status(400).json({ error: "Choose JPG, PNG, WEBP or PDF files named by roll number, e.g. 7.jpg or 7-1.jpg" });
-  const batchId = typeof req.query.batch_id === "string" && req.query.batch_id ? req.query.batch_id : null;
-  const roster = all<{ id: string; status: string; files: string; roll_no: string | null }>(`SELECT a.id, a.status, a.files, e.roll_no FROM attempts a
+  if (!t) return res.status(404).json({ error: "Test not found" });
+  if (t.mode !== "offline") return res.status(400).json({ error: "Online tests don't take uploaded sheets" });
+  const ups = takeUploads(upload_ids, req.user!, "student_sheet");
+  const roster = all<{ id: string; status: string; roll_no: string | null }>(`SELECT a.id, a.status, e.roll_no FROM attempts a
     LEFT JOIN enrollments e ON e.student_id = a.student_id WHERE a.test_id = ? ${batchId ? "AND e.batch_id = ?" : ""}`, ...(batchId ? [t.id, batchId] : [t.id]));
   const byRoll = new Map<string, typeof roster[number]>();
   const dupes = new Set<string>();
@@ -193,34 +198,99 @@ testRoutes.post("/tests/:id/bulk-files", staff, bulkUpload.array("files", 400), 
     if (byRoll.has(k)) dupes.add(k); else byRoll.set(k, r);
   }
   for (const k of dupes) byRoll.delete(k);
-  const ambiguous: string[] = [];
   const rollOf = (name: string) => { const m = name.match(/^\D{0,8}?(\d+)/); return m ? String(Number(m[1])) : null; };
-  const groups = new Map<string, Express.Multer.File[]>();
-  const unmatched: string[] = [];
-  const busy: string[] = [];
-  for (const f of files) {
-    const roll = rollOf(f.originalname);
-    if (roll && dupes.has(roll)) { ambiguous.push(f.originalname); fs.rmSync(f.path, { force: true }); continue; }
+  const groups = new Map<string, typeof ups>();
+  const unmatched: string[] = [], ambiguous: string[] = [], busy: string[] = [];
+  for (const u of ups) {
+    const roll = rollOf(u.filename);
+    if (roll && dupes.has(roll)) { ambiguous.push(u.filename); continue; }
     const att = roll ? byRoll.get(roll) : undefined;
-    if (!att) { unmatched.push(f.originalname); fs.rmSync(f.path, { force: true }); continue; }
-    if (att.status === "evaluating") { busy.push(f.originalname); fs.rmSync(f.path, { force: true }); continue; }
-    groups.set(roll!, [...(groups.get(roll!) ?? []), f]);
+    if (!att) { unmatched.push(u.filename); continue; }
+    if (att.status === "evaluating") { busy.push(u.filename); continue; }
+    groups.set(roll!, [...(groups.get(roll!) ?? []), u]);
   }
   const collator = new Intl.Collator(undefined, { numeric: true });
-  const warnings: string[] = [];
-  let students = 0, pages = 0;
+  let students = 0, files = 0;
   for (const [roll, list] of groups) {
-    list.sort((x, y) => collator.compare(x.originalname, y.originalname));
-    const { out, errors } = await normaliseAll(list);
-    warnings.push(...errors);
-    if (!out.length) continue;
-    const att = byRoll.get(roll)!;
-    run("UPDATE attempts SET files = ?, status = 'uploaded', error = NULL, evaluation = NULL, score = NULL, reviewed = 0, submitted_at = CURRENT_TIMESTAMP WHERE id = ?",
-      JSON.stringify(out.map((o) => o.name)), att.id);
-    removeFiles(UPLOAD_DIR, json<string[]>(att.files, []));
-    students++; pages += out.length;
+    list.sort((x, y) => collator.compare(x.filename, y.filename));
+    await createDocument({ orgId: req.user!.org_id, userId: req.user!.id, purpose: "student_sheet", uploads: list, attemptId: byRoll.get(roll)!.id });
+    students++; files += list.length;
   }
-  res.json({ students, pages, unmatched, ambiguous, busy, warnings });
+  // Files that matched nobody are discarded.
+  for (const name of [...unmatched, ...ambiguous, ...busy]) {
+    const u = ups.find((x) => x.filename === name);
+    if (u) run("UPDATE upload_sessions SET status = 'aborted' WHERE id = ?", u.id);
+  }
+  res.json({ students, files, unmatched, ambiguous, busy, warnings: [] });
+}));
+
+// A whole class's scanned sheets: one PDF (or a ZIP of PDFs/photos). Pages are rendered in the background,
+// then the teacher assigns page ranges to students (or confirms the suggested split).
+testRoutes.post("/tests/:id/sheets", staff, wrap(async (req, res) => {
+  const { upload_id } = z.object({ upload_id: z.string().max(60) }).parse(req.body);
+  const t = one<any>("SELECT * FROM tests WHERE id = ? AND org_id = ?", req.params.id, req.user!.org_id);
+  if (!t) return res.status(404).json({ error: "Test not found" });
+  if (t.mode !== "offline") return res.status(400).json({ error: "Online tests don't take uploaded sheets" });
+  const [u] = takeUploads([upload_id], req.user!, "class_sheets");
+  const id = await createDocument({ orgId: req.user!.org_id, userId: req.user!.id, purpose: "class_sheets", uploads: [u], testId: t.id });
+  res.json({ document_id: id });
+}));
+
+const docInOrg = (id: string, orgId: string) => {
+  const d = getDocument(id);
+  return d && d.org_id === orgId ? d : null;
+};
+
+/** Status and pages of an uploaded document (polled by the browser while it is processed). */
+testRoutes.get("/documents/:id", staff, (req, res) => {
+  const d = docInOrg(req.params.id, req.user!.org_id);
+  if (!d) return res.status(404).json({ error: "Upload not found" });
+  const job = latestJob(`doc:${d.id}`);
+  const pages = documentPages(d.id);
+  const assigned = d.test_id ? all<{ files: string }>("SELECT files FROM attempts WHERE test_id = ?", d.test_id).flatMap((a) => json<string[]>(a.files, [])) : [];
+  res.json({ id: d.id, purpose: d.purpose, title: d.title, status: d.status, error: d.error, test_id: d.test_id, created_at: d.created_at,
+    job: job && { status: job.status, attempts: job.attempts, max_attempts: job.max_attempts, last_error: job.last_error, next_try_at: job.status === "queued" && job.attempts ? job.run_at : null },
+    pages: pages.map((p) => ({ n: p.page_no, width: p.width, height: p.height, source: p.source_name, assigned: assigned.includes(p.storage_key) })) });
+});
+
+testRoutes.get("/documents/:id/pages/:n", staff, (req, res) => {
+  const d = docInOrg(req.params.id, req.user!.org_id);
+  const page = d && documentPages(d.id).find((p) => p.page_no === Number(req.params.n));
+  if (!page?.storage_key) return res.status(404).end(); // removed (e.g. the student was deleted)
+  storage.send(res, page.storage_key);
+});
+
+// Assign pages of a class upload to students: [{attempt_id, pages: [1,2,3]}]. Each listed student gets exactly those pages.
+testRoutes.post("/documents/:id/assign", staff, wrap(async (req, res) => {
+  const b = z.object({ assignments: z.array(z.object({ attempt_id: z.string().max(60), pages: z.array(z.number().int().min(1)).min(1).max(40) })).min(1).max(500) }).parse(req.body);
+  const d = docInOrg(req.params.id, req.user!.org_id);
+  if (!d || d.purpose !== "class_sheets" || !d.test_id) return res.status(404).json({ error: "Upload not found" });
+  if (d.status !== "completed") return res.status(409).json({ error: "This upload is still being processed." });
+  const pages = documentPages(d.id);
+  const keyOf = new Map(pages.map((p) => [p.page_no, p.storage_key]));
+  const seen = new Set<number>();
+  for (const a of b.assignments) {
+    const att = one<{ status: string }>("SELECT status FROM attempts WHERE id = ? AND test_id = ?", a.attempt_id, d.test_id);
+    if (!att) return res.status(400).json({ error: "A student in the list is not in this test." });
+    if (att.status === "evaluating") return res.status(409).json({ error: "One of these sheets is being marked right now. Wait for it to finish." });
+    for (const n of a.pages) {
+      if (!keyOf.has(n)) return res.status(400).json({ error: `Page ${n} doesn't exist in this upload.` });
+      if (seen.has(n)) return res.status(400).json({ error: `Page ${n} is given to two students.` });
+      seen.add(n);
+    }
+  }
+  for (const a of b.assignments) await setAttemptPages(a.attempt_id, a.pages.map((n) => keyOf.get(n)!));
+  res.json({ students: b.assignments.length, pages: seen.size });
+}));
+
+testRoutes.delete("/documents/:id", staff, wrap(async (req, res) => {
+  const d = docInOrg(req.params.id, req.user!.org_id);
+  if (!d || !d.test_id) return res.status(404).json({ error: "Upload not found" });
+  const keys = new Set(documentPages(d.id).map((p) => p.storage_key));
+  const inUse = all<{ files: string }>("SELECT files FROM attempts WHERE test_id = ?", d.test_id).some((a) => json<string[]>(a.files, []).some((k) => keys.has(k)));
+  if (inUse) return res.status(409).json({ error: "Some pages of this upload are already given to students. Re-upload those students' sheets first." });
+  await deleteDocuments([d.id]);
+  res.json({ ok: true });
 }));
 
 // One page of an answer sheet: staff of the institute, or the student once results are published.
@@ -230,8 +300,7 @@ testRoutes.get("/attempts/:id/files/:n", (req, res) => {
   if (!a || a.org_id !== u.org_id || (u.role === "student" && (a.student_id !== u.id || !a.results_published))) return res.status(404).end();
   const name = json<string[]>(a.files, [])[Number(req.params.n)];
   if (!name) return res.status(404).end();
-  res.setHeader("Cache-Control", "private, max-age=3600");
-  res.sendFile(path.join(UPLOAD_DIR, name));
+  storage.send(res, name);
 });
 
 /** Kind of each stored page, so the viewer knows which pages it can draw marks on. */
@@ -317,10 +386,11 @@ async function runEvaluation(attemptId: string) {
   const t = one<{ org_id: string }>("SELECT org_id FROM tests WHERE id = ?", a.test_id);
   if (!t) return;
   const problem = paperProblem(paper);
-  if (problem) { run("UPDATE attempts SET status = 'failed', error = ? WHERE id = ?", problem, attemptId); return; }
-  run("UPDATE attempts SET status = 'evaluating', error = NULL WHERE id = ?", attemptId);
-  try {
-    const files = json<string[]>(a.files, []).map((f) => path.join(UPLOAD_DIR, f));
+  if (problem) throw new PermanentError(problem);
+  const files = json<string[]>(a.files, []);
+  if (!files.length) throw new PermanentError("No pages uploaded for this student.");
+  run("UPDATE attempts SET status = 'evaluating' WHERE id = ?", attemptId);
+  {
     const ev = await evaluateSheet(t.org_id, paper!, files, "marking");
     if (!Array.isArray(ev?.questions)) throw new AiError("Claude's answer couldn't be read. Please try again.");
     const questions = questionsOf(paper!.sections);
@@ -336,32 +406,30 @@ async function runEvaluation(attemptId: string) {
       mergeSecondCheck(ev, second, doubtful, questions);
     }
     const score = scoreEvaluation(ev, questions);
-    run("UPDATE attempts SET status = 'evaluated', evaluation = ?, score = ?, max_score = ?, reviewed = 0, evaluated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    run("UPDATE attempts SET status = 'evaluated', error = NULL, evaluation = ?, score = ?, max_score = ?, reviewed = 0, evaluated_at = CURRENT_TIMESTAMP WHERE id = ?",
       JSON.stringify(ev), score, paper!.total_marks, attemptId);
     // A re-marked sheet gets a fresh Fix-it plan (if results are already out).
     if (one("SELECT 1 FROM practice_sets WHERE attempt_id = ?", attemptId)) {
       run("DELETE FROM practice_sets WHERE attempt_id = ?", attemptId);
       if (one("SELECT 1 FROM tests WHERE id = ? AND results_published = 1", a.test_id)) queuePracticeForTest(a.test_id, [attemptId]);
     }
-  } catch (e) {
-    run("UPDATE attempts SET status = 'failed', error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), attemptId);
   }
 }
 
-// Small worker pool so a whole batch can be evaluated without flooding the API.
-const queue: string[] = [];
-let active = 0;
-const CONCURRENCY = Number(process.env.EVAL_CONCURRENCY ?? 3);
+// Marking runs as background jobs: up to EVAL_CONCURRENCY sheets at once, 3 tries with backoff.
+registerJob<{ attempt_id: string }>("mark_attempt", {
+  concurrency: Number(process.env.EVAL_CONCURRENCY ?? 3),
+  run: ({ attempt_id }) => runEvaluation(attempt_id),
+  onRetry: ({ attempt_id }, message, job, wait) =>
+    run("UPDATE attempts SET status = 'evaluating', error = ? WHERE id = ?", `Try ${job.attempts} of ${job.max_attempts} failed (${message}). Trying again in ${Math.round(wait)} s.`, attempt_id),
+  onFail: ({ attempt_id }, message) => run("UPDATE attempts SET status = 'failed', error = ? WHERE id = ?", message, attempt_id),
+});
 function enqueue(ids: string[]) {
-  for (const id of ids) if (!queue.includes(id)) { queue.push(id); run("UPDATE attempts SET status = 'evaluating', error = NULL WHERE id = ?", id); }
-  const pump = () => {
-    while (active < CONCURRENCY && queue.length) {
-      const id = queue.shift()!;
-      active++;
-      runEvaluation(id).finally(() => { active--; pump(); });
-    }
-  };
-  pump();
+  for (const id of ids) {
+    const org = one<{ org_id: string }>("SELECT t.org_id FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ?", id)?.org_id;
+    run("UPDATE attempts SET status = 'evaluating', error = NULL WHERE id = ?", id);
+    enqueueJob("mark_attempt", { attempt_id: id }, { orgId: org, dedupeKey: `mark:${id}` });
+  }
 }
 
 testRoutes.post("/tests/:id/evaluate", staff, (req, res) => {
@@ -511,11 +579,17 @@ testRoutes.post("/cbt/:testId/submit", student, (req, res) => {
 });
 
 // After a restart, sheets that were queued or mid-evaluation are queued again automatically.
+/** Sheets left "evaluating" without a job (e.g. queued by an older version) are queued again. Jobs themselves resume on their own. */
 export function recoverEvaluations() {
-  const ids = all<{ id: string }>("SELECT id FROM attempts WHERE status = 'evaluating'").map((a) => a.id);
-  if (ids.length) { console.log(`Resuming ${ids.length} interrupted evaluation(s)`); enqueue(ids); }
+  const ids = all<{ id: string }>(`SELECT id FROM attempts a WHERE status = 'evaluating'
+    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = 'mark:' || a.id AND j.status IN ('queued','processing'))`).map((a) => a.id);
+  if (ids.length) { console.log(`Queuing ${ids.length} sheet(s) left without a marking job`); enqueue(ids); }
 }
 
 /** Files to delete when a student is removed. */
+/** Every answer-sheet page of a student (their own uploads and their pages of class scans), to delete with them. */
 export const studentFiles = (studentId: string) =>
   all<{ files: string }>("SELECT files FROM attempts WHERE student_id = ?", studentId).flatMap((a) => json<string[]>(a.files, []));
+/** The student's own sheet uploads (documents), deleted with the student. */
+export const studentDocuments = (studentId: string) =>
+  all<{ id: string }>("SELECT d.id FROM documents d JOIN attempts a ON a.id = d.attempt_id WHERE a.student_id = ?", studentId).map((d) => d.id);

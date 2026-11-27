@@ -3,9 +3,10 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { z } from "zod";
-import { all, one, run, uid, UPLOAD_DIR, bumpTokenVersion } from "../db.js";
-import { removeFiles } from "../images.js";
-import { studentFiles } from "./tests.js";
+import { all, one, run, uid, bumpTokenVersion } from "../db.js";
+import { storage } from "../lib/storage.js";
+import { deleteDocuments } from "../lib/documents.js";
+import { studentDocuments, studentFiles } from "./tests.js";
 
 class ClientError extends Error { constructor(msg: string, public status = 400) { super(msg); } }
 const inOrg = (table: "batches" | "centres" | "users", id: string | null | undefined, org: string) =>
@@ -194,11 +195,17 @@ orgRoutes.post("/students/reset-logins", adminOnly, (req, res) => {
   res.json({ created: out });
 });
 
-orgRoutes.delete("/students/:id", adminOnly, (req, res) => {
-  if (!one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id)) return res.status(404).json({ error: "Not found" });
-  removeFiles(UPLOAD_DIR, studentFiles(req.params.id));
-  run("DELETE FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id);
-  res.json({ ok: true });
+orgRoutes.delete("/students/:id", adminOnly, async (req, res, next) => {
+  try {
+    if (!one("SELECT 1 FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id)) return res.status(404).json({ error: "Not found" });
+    const files = studentFiles(req.params.id);
+    await deleteDocuments(studentDocuments(req.params.id));
+    run("DELETE FROM users WHERE id = ? AND org_id = ? AND role = 'student'", req.params.id, req.user!.org_id);
+    // Their pages inside a class scan go too (the scan's other pages stay); the page entry is kept but emptied.
+    for (const k of files.filter((f) => f.startsWith("docs/"))) run("UPDATE document_pages SET storage_key = '' WHERE storage_key = ?", k);
+    await storage.remove(files.filter((f) => f));
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 });
 
 orgRoutes.get("/teachers", staff, (req, res) => {

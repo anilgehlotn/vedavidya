@@ -8,10 +8,10 @@ import { classReportPdf, loadTestReport, pdfName, studentReportPdf } from "../re
 export const reportRoutes = Router();
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { fn(req, res).catch(next); };
 
-/** Fills in missing sub-topics for the test's paper first (one short AI call per paper, at most 20 s). */
+/** Makes sure the test's paper gets sub-topics (in the background; never an AI call inside the request). */
 export async function withSubtopics(testId: string) {
   const pid = one<{ paper_id: string | null }>("SELECT paper_id FROM tests WHERE id = ?", testId)?.paper_id;
-  if (pid) await Promise.race([ensureSubtopics(pid), new Promise((r) => setTimeout(r, 20000))]);
+  if (pid) ensureSubtopics(pid); // runs as a job; this report uses whatever sub-topics exist now
 }
 
 export function sendPdf(res: Response, doc: PDFKit.PDFDocument, filename: string) {

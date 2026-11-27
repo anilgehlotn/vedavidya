@@ -63,12 +63,32 @@ encrypted (AES-256-GCM, derived from `JWT_SECRET`), and never sent back to the b
 and answer-sheet evaluation works without a key. The public demo institute can never use a key, and its scores are
 synthetic, not produced by the AI.
 
-### Uploading a whole class
+### Uploads and background processing
 
-On a test, **Bulk upload** accepts photos or PDFs named by roll number, for example `7.jpg`, `7-1.jpg`, `7-2.jpg` or
-`Roll 12.pdf`. Photos are shrunk in the browser and again on the server, so they always fit Claude's 5 MB image limit.
-Sheets are marked in the background, 3 at a time by default (`EVAL_CONCURRENCY`). Busy or rate-limit errors are retried
-automatically, and sheets that were being marked when the server restarted are resumed.
+- **Resumable uploads.** Files go to the server in 5 MB pieces (`/api/uploads`): each piece is retried with backoff,
+  an interrupted upload resumes from the last piece received, and uploads can be cancelled. The browser checks
+  type, size and page count first; the server checks again, including the real file type, page count,
+  password protection and damage (poppler's `pdfinfo`).
+- **Limits** (`server/src/lib/limits.ts`, shared with the browser via `/api/config`): question paper and answer key
+  50 MB / 50 pages; one student's sheet 50 MB / 40 pages; a class scan (PDF or ZIP) 250 MB / 600 pages; photos 25 MB.
+- **Documents and pages.** Every upload becomes a document; a background job turns PDFs, photos and ZIPs into page
+  images (`pdftoppm`, sharp) and stores each page with its number, width and height.
+- **Jobs.** Reading papers, generating papers, rendering pages, marking sheets and tagging sub-topics run as jobs in
+  the SQLite `jobs` table: queued → processing → completed / failed, 3 tries with exponential backoff
+  (10 s, 40 s…), errors stored and shown in the app. Jobs interrupted by a restart are picked up again.
+  PDF parsing and AI calls never run inside a web request.
+- **Storage.** All file access goes through `server/src/lib/storage.ts` (local disk today); a Cloudflare R2 / S3
+  implementation of the same interface can be dropped in without other changes.
+
+On a test, **Upload class answer sheets** takes one scanned PDF (or a ZIP) in roll-number order; once its pages are
+ready, the teacher sets pages per student, unticks absentees and assigns them. **Upload by file name** accepts files
+named by roll number (`7.jpg`, `7-1.jpg`, `Roll 12.pdf`), and each student's row has its own upload.
+
+### Backups
+
+A copy of the SQLite database is made daily with SQLite's online backup API into `BACKUP_DIR`
+(default `DATA_DIR/backups`); the newest 14 are kept. Super-admins (`SUPER_ADMIN_EMAILS`) can run
+`POST /api/admin/backup` and list copies with `GET /api/admin/backups`.
 
 ### Testing without an API key
 
@@ -142,6 +162,10 @@ Run `npm audit --omit=dev` before each release.
 | `PRACTICE_RETEST_DAYS` | `7` | Days before a student's Fix-it check-up unlocks |
 | `PORT` | `4000` | API port |
 | `DATA_DIR` | `server/data` | Database and uploaded sheets |
+| `SUPER_ADMIN_EMAILS` | empty | Comma-separated emails of platform owners (backups, job status) |
+| `BACKUP_DIR` / `BACKUP_KEEP` | `DATA_DIR/backups` / `14` | Where daily database backups go, and how many are kept |
+| `RENDER_CONCURRENCY` | `1` | Uploads turned into page images in parallel (CPU and memory heavy) |
+| `JOB_BACKOFF_SCALE` | `1` | Multiplies retry waits (tests use a small value) |
 
 ## Deploy (app.vedavidya.co)
 

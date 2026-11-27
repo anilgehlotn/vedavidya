@@ -3,6 +3,7 @@
 // Then every student signs in and must see exactly their own results - and nothing else.
 // Usage (API + mock Claude running): node scripts/e2e-institute.mjs
 import { createRequire } from "node:module";
+import { uploadAll, waitProcessed } from "./upload-helper.mjs";
 const require = createRequire(new URL("../server/package.json", import.meta.url));
 const sharp = require("sharp");
 const API = process.env.API ?? "http://localhost:4300/api";
@@ -23,7 +24,10 @@ const s = Date.now().toString(36);
 const CLASSES = [["Class 8", 20], ["Class 9", 25], ["Class 10", 30], ["Class 11", 22], ["Class 12", 28]];
 const SUBJECTS = ["Physics", "Chemistry", "Biology", "Maths"];
 const page = await sharp({ create: { width: 1240, height: 1754, channels: 3, noise: { type: "gaussian", mean: 225, sigma: 20 } } }).jpeg({ quality: 80 }).toBuffer();
-const keyPdf = Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
+// A real one-page PDF (the server now rejects broken PDFs, as it should).
+const keyDoc = await require("pdf-lib").PDFDocument.create();
+keyDoc.addPage([595, 842]);
+const keyPdf = Buffer.from(await keyDoc.save());
 
 const t0 = Date.now();
 log("▸ Admin creates the institute and adds the Claude key");
@@ -62,21 +66,19 @@ for (const c of classes) for (const subj of SUBJECTS) jobs.push({ c, subj, title
 jobs.push({ c: classes[2], subj: "Physics", title: "Class 10 Physics Unit Test 2" });
 for (const j of jobs) {
   const T = teachers[j.subj];
-  const form = new FormData();
-  form.append("paper", new Blob([page], { type: "image/jpeg" }), "paper-1.jpg");
-  form.append("paper", new Blob([page], { type: "image/jpeg" }), "paper-2.jpg");
-  form.append("key", new Blob([keyPdf], { type: "application/pdf" }), "answer-key.pdf");
-  form.append("subject", j.subj); form.append("class_level", j.c.name); form.append("duration_min", "60");
-  const imp = await call("POST", "/papers/import", { token: T, form });
+  const paperIds = await uploadAll(API, T, [["paper-1.jpg", page], ["paper-2.jpg", page]], "paper");
+  const keyIds = await uploadAll(API, T, [["answer-key.pdf", keyPdf]], "answer_key");
+  const imp = await call("POST", "/papers/import", { token: T, body: { paper_uploads: paperIds, key_uploads: keyIds, key_mode: "separate", subject: j.subj, class_level: j.c.name, duration_min: 60 } });
   const paper = await poll(() => call("GET", `/papers/${imp.data.id}`, { token: T }).then((r) => r.data), (p) => p.status !== "generating");
   if (paper.status !== "draft") { ok(false, `${j.title}: paper import ${paper.status} ${paper.error}`); continue; }
   const test = (await call("POST", "/tests", { token: T, body: { title: j.title, paper_id: paper.id, mode: "offline", batch_ids: [j.c.id] } })).data.id;
   // 1-2 students absent per test
   const absent = new Set([((j.title.length * 7) % j.c.size) + 1, ((j.title.length * 13) % j.c.size) + 1]);
-  const up = new FormData();
-  for (let r = 1; r <= j.c.size; r++) if (!absent.has(r)) { up.append("files", new Blob([page], { type: "image/jpeg" }), `${r}-1.jpg`); up.append("files", new Blob([page], { type: "image/jpeg" }), `${r}-2.jpg`); }
-  const u = await call("POST", `/tests/${test}/bulk-files`, { token: T, form: up });
+  const files = [];
+  for (let r = 1; r <= j.c.size; r++) if (!absent.has(r)) files.push([`${r}-1.jpg`, page], [`${r}-2.jpg`, page]);
+  const u = await call("POST", `/tests/${test}/bulk-files`, { token: T, body: { upload_ids: await uploadAll(API, T, files, "student_sheet") } });
   ok(u.data.students === j.c.size - absent.size, `${j.title}: sheets uploaded for ${j.c.size - absent.size} students (got ${u.data.students})`);
+  await waitProcessed(API, T, test);
   const ev = await call("POST", `/tests/${test}/evaluate`, { token: T, body: {} });
   sheets += ev.data.queued;
   expected.set(j.c.id, [...(expected.get(j.c.id) ?? []), { test, title: j.title, subj: j.subj, absent }]);

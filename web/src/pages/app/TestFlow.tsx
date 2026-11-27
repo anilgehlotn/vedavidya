@@ -1,11 +1,12 @@
 // The guided test flow: ① question paper → ② answer sheets → ③ AI marking → ④ publish.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { api, DEMO } from "../../lib/api";
+import { api, blobUrl, DEMO } from "../../lib/api";
 import type { Paper } from "../../lib/types";
 import { ErrorBox, Modal, useApi } from "../../components/ui";
-import { compressImage, isAllowedFile } from "../../lib/upload";
-import { listPages, suggestPerStudent, uploadSplit, type PageRef, type SplitResult } from "../../lib/split";
+import type { UploadedFile } from "../../lib/chunkUpload";
+import { FileUpload } from "../../components/FileUpload";
+import { ImportPaperForm } from "./PaperImport";
 
 export interface FlowAttempt { id: string; status: string; files: number; score: number | null; student_name: string; roll_no: string | null; batch_name: string }
 export interface FlowTest {
@@ -62,28 +63,12 @@ export function PaperStep({ t, state, onChange }: { t: FlowTest; state: "done" |
 
 function AddPaperModal({ t, onClose, onDone }: { t: FlowTest; onClose: () => void; onDone: () => void }) {
   const [tab, setTab] = useState<"upload" | "saved" | "ai">("upload");
-  const [paper, setPaper] = useState<File[]>([]);
-  const [key, setKey] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pick, setPick] = useState("");
   const papers = useApi<Paper[]>(tab === "saved" ? "/papers" : null, [tab]);
   const ready = (papers.data ?? []).filter((p) => (p.status === "draft" || p.status === "approved") && p.total_marks > 0);
   const attach = async (paperId: string) => { await api(`/tests/${t.id}/paper`, { method: "PUT", body: { paper_id: paperId } }); onDone(); };
-
-  const upload = async () => {
-    setBusy(true); setError(null);
-    try {
-      const form = new FormData();
-      for (const x of paper) { const c = await compressImage(x); form.append("paper", c, c.name); }
-      for (const x of key) { const c = await compressImage(x); form.append("key", c, c.name); }
-      if (t.subject) form.append("subject", t.subject);
-      if (t.batch_names) form.append("class_level", t.batch_names.slice(0, 60));
-      const r = await api<{ id: string }>("/papers/import", { form });
-      await attach(r.id);
-    } catch (e) { setError((e as Error).message); setBusy(false); }
-  };
-  const picker = (set: (f: File[]) => void) => (e: { target: HTMLInputElement }) => set([...(e.target.files ?? [])].filter(isAllowedFile));
 
   return (
     <Modal title="Add the question paper" onClose={busy ? () => {} : onClose}>
@@ -92,15 +77,7 @@ function AddPaperModal({ t, onClose, onDone }: { t: FlowTest; onClose: () => voi
         <button className={tab === "saved" ? "on" : ""} onClick={() => setTab("saved")}>Use a saved paper</button>
         <button className={tab === "ai" ? "on" : ""} onClick={() => setTab("ai")}>Create with AI</button>
       </div>
-      {tab === "upload" && (
-        <div className="stack">
-          <FilePick label="Question paper" required files={paper} onPick={picker(setPaper)} help="Photos of each page or one PDF" />
-          <FilePick label="Answer key / marking scheme" files={key} onPick={picker(setKey)} help="Optional. Without it, AI solves each question and you can check it." />
-          <ErrorBox error={error} />
-          <button className="btn btn-primary" disabled={busy || !paper.length} onClick={upload}>{busy ? "Uploading…" : "Add paper"}</button>
-          <p className="small muted" style={{ margin: 0 }}>AI reads the questions and marks in 1–2 minutes. You can check and edit them before marking.</p>
-        </div>
-      )}
+      {tab === "upload" && <ImportPaperForm defaults={{ subject: t.subject, class_level: t.batch_names?.slice(0, 60) }} onCancel={onClose} onCreated={attach} />}
       {tab === "saved" && (
         <div className="stack">
           {papers.loading ? <span className="spinner" /> : ready.length ? (
@@ -125,73 +102,96 @@ function AddPaperModal({ t, onClose, onDone }: { t: FlowTest; onClose: () => voi
   );
 }
 
-function FilePick({ label, files, onPick, help, required }: { label: string; files: File[]; onPick: (e: { target: HTMLInputElement }) => void; help: string; required?: boolean }) {
-  const ref = useRef<HTMLInputElement>(null);
-  return (
-    <div className="field">
-      <span>{label}{required ? "" : " (optional)"}</span>
-      <input ref={ref} type="file" multiple accept={ACCEPT} style={{ display: "none" }} onChange={onPick} />
-      <div className="drop" role="button" tabIndex={0} onClick={() => ref.current?.click()} onKeyDown={(e) => e.key === "Enter" && ref.current?.click()}>
-        {files.length ? <b>{plural(files.length, "file")} chosen ✓</b> : <>Tap to choose · <span className="small">{help}</span></>}
-      </div>
-    </div>
-  );
+// ---------- ② Answer sheets: the whole class in one go ----------
+// The teacher uploads one scanned PDF (or a ZIP) for the class. The server turns it into page images in the
+// background; then the pages are split between students in roll-number order (pages per student, absentees
+// unticked), with a preview, and assigned.
+export interface ClassUpload { id: string; title: string; status: string; error: string | null; pages: number; created_at: string }
+interface DocInfo { id: string; status: string; error: string | null; job: { status: string; attempts: number; max_attempts: number; last_error: string | null; next_try_at: string | null } | null; pages: { n: number; width: number; height: number; assigned: boolean }[] }
+
+/** Page thumbnail that loads only when scrolled into view. */
+function PageThumb({ docId, n, className }: { docId: string; n: number; className?: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let made = "";
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver((es) => {
+      if (!es.some((e) => e.isIntersecting)) return;
+      io.disconnect();
+      blobUrl(`/documents/${docId}/pages/${n}`).then((f) => { made = f.url; setUrl(f.url); }).catch(() => {});
+    }, { rootMargin: "200px" });
+    io.observe(el);
+    return () => { io.disconnect(); if (made) URL.revokeObjectURL(made); };
+  }, [docId, n]);
+  return <span ref={ref} className={className ?? "split-thumb"}>{url && <img src={url} alt={`Page ${n}`} />}</span>;
 }
 
-// ---------- ② Answer sheets: the whole class in one go ----------
-export function ClassUploadWizard({ t, onClose, onDone }: { t: FlowTest; onClose: () => void; onDone: (uploaded: number) => void }) {
+export function ClassUploadWizard({ t, uploads, onClose, onDone }: { t: FlowTest; uploads?: ClassUpload[]; onClose: () => void; onDone: (assigned: number) => void }) {
   const classes = [...new Set(t.attempts.map((a) => a.batch_name))];
   const [cls, setCls] = useState(classes.length === 1 ? classes[0] : "");
   const roster = useMemo(() => t.attempts.filter((a) => a.batch_name === cls)
     .sort((a, b) => (Number(a.roll_no) || 1e9) - (Number(b.roll_no) || 1e9) || (a.roll_no ?? "").localeCompare(b.roll_no ?? "") || a.student_name.localeCompare(b.student_name)), [cls, t.attempts]);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [pages, setPages] = useState<PageRef[] | null>(null);
-  const [reading, setReading] = useState(false);
-  const [problems, setProblems] = useState<string[]>([]);
+  const [docId, setDocId] = useState<string | null>(null);
+  const [doc, setDoc] = useState<DocInfo | null>(null);
+  const [upl, setUpl] = useState<UploadedFile[]>([]);
+  const [uplBusy, setUplBusy] = useState(false);
   const [absent, setAbsent] = useState<Set<string>>(new Set());
   const [perStudent, setPerStudent] = useState(0);
   const [touched, setTouched] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [result, setResult] = useState<SplitResult | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<{ students: number; pages: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Students who already have marked sheets start unticked, so re-uploading never overwrites them by accident.
+  // Start processing as soon as the scan has finished uploading.
+  useEffect(() => {
+    if (!upl.length || uplBusy || docId) return;
+    api<{ document_id: string }>(`/tests/${t.id}/sheets`, { body: { upload_id: upl[0].id } })
+      .then((r) => setDocId(r.document_id)).catch((e) => setError((e as Error).message));
+  }, [upl, uplBusy]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Follow the processing job until the pages are ready (or it fails).
+  useEffect(() => {
+    if (!docId) return;
+    let stop = false;
+    const poll = async () => {
+      try { const d = await api<DocInfo>(`/documents/${docId}`); if (!stop) setDoc(d); if (d.status === "completed" || d.status === "failed") return; }
+      catch (e) { if (!stop) setError((e as Error).message); }
+      if (!stop) setTimeout(poll, 1500);
+    };
+    void poll();
+    return () => { stop = true; };
+  }, [docId]);
+  // Students who already have marked sheets start unticked, so a re-upload never overwrites them by accident.
   useEffect(() => { setAbsent(new Set(roster.filter((a) => a.status === "evaluated" || a.status === "evaluating").map((a) => a.id))); }, [cls]); // eslint-disable-line react-hooks/exhaustive-deps
-  const present = roster.filter((a) => !absent.has(a.id));
-  useEffect(() => { if (pages && !touched) setPerStudent(suggestPerStudent(pages.length, present.length)); }, [pages, present.length, touched]);
 
-  const choose = async (list: File[]) => {
-    setReading(true); setError(null); setResult(null); setTouched(false);
-    const r = await listPages(list);
-    setPages(r.pages.length ? r.pages : null); setProblems(r.problems); setReading(false);
-    if (!r.pages.length) setError("No pages found. Choose a PDF or photos (JPG, PNG, WEBP).");
-  };
+  const pageCount = doc?.status === "completed" ? doc.pages.length : 0;
+  const present = roster.filter((a) => !absent.has(a.id));
+  useEffect(() => { if (pageCount && !touched) setPerStudent(present.length ? (pageCount % present.length === 0 ? pageCount / present.length : Math.max(1, Math.round(pageCount / present.length))) : 1); }, [pageCount, present.length, touched]);
   const k = Math.max(1, perStudent || 1);
-  const needed = present.length * k;
-  const plan = present.map((a, i) => ({ a, pages: (pages ?? []).slice(i * k, (i + 1) * k) }));
+  const plan = present.map((a, i) => ({ a, pages: Array.from({ length: k }, (_, j) => i * k + j + 1).filter((n) => n <= pageCount) }));
   const empty = plan.filter((p) => !p.pages.length).length;
-  const leftover = Math.max(0, (pages?.length ?? 0) - needed);
+  const leftover = Math.max(0, pageCount - present.length * k);
   const busyNow = present.filter((a) => a.status === "evaluating").length;
 
-  const thumbs = useMemo(() => new Map((pages ?? []).filter((p) => p.kind === "image").map((p) => [p, URL.createObjectURL(p.file)])), [pages]);
-  useEffect(() => () => thumbs.forEach((u) => URL.revokeObjectURL(u)), [thumbs]);
-
-  const start = async () => {
-    setError(null);
-    const jobs = plan.filter((p) => p.pages.length).map((p) => ({ attemptId: p.a.id, label: `Roll ${p.a.roll_no ?? "-"} ${p.a.student_name}`, pages: p.pages }));
-    try { const r = await uploadSplit(jobs, (done, total) => setProgress({ done, total })); setResult(r); onDone(r.done.length); }
-    catch (e) { setError((e as Error).message); }
-    finally { setProgress(null); }
+  const assign = async () => {
+    setSaving(true); setError(null);
+    try {
+      const r = await api<{ students: number; pages: number }>(`/documents/${docId}/assign`, { body: { assignments: plan.filter((p) => p.pages.length).map((p) => ({ attempt_id: p.a.id, pages: p.pages })) } });
+      setResult(r); onDone(r.students);
+    } catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
   };
+  const restart = () => { setDocId(null); setDoc(null); setUpl([]); setError(null); setTouched(false); };
+  const earlier = (uploads ?? []).filter((u) => u.status === "completed" && u.id !== docId);
 
   return (
-    <Modal title="Upload the class's answer sheets" onClose={progress ? () => {} : onClose} wide>
+    <Modal title="Upload the class's answer sheets" onClose={saving ? () => {} : onClose} wide>
       <div className="stack">
         {result ? (
           <div className="stack">
-            <div className="ok-box">Uploaded answer sheets for <b>{plural(result.done.length, "student")}</b>.</div>
-            {result.failed.length > 0 && <div className="error-box">Not uploaded: {result.failed.map((f) => `${f.label} (${f.error})`).join("; ")}. Upload these from the student's row.</div>}
-            <p className="small muted" style={{ margin: 0 }}>Someone wrote on extra sheets? Use “Upload” on their row in the list to replace just their pages.</p>
+            <div className="ok-box">Answer sheets given to <b>{plural(result.students, "student")}</b> ({plural(result.pages, "page")}).</div>
+            <p className="small muted" style={{ margin: 0 }}>Someone wrote on extra sheets? Use "Upload" on their row to replace just their pages.</p>
             <div className="row" style={{ justifyContent: "flex-end" }}><button className="btn btn-primary" onClick={onClose}>Done</button></div>
           </div>
         ) : (
@@ -203,65 +203,69 @@ export function ClassUploadWizard({ t, onClose, onDone }: { t: FlowTest; onClose
                 </select>
               </label>
             )}
-            {cls && (
+            {cls && !docId && (
               <>
-                <div className="tip-box small">
-                  <b>Easiest way:</b> put the answer sheets in <b>roll-number order</b> and scan them as one PDF (or take photos in that order).
-                  We split the pages between students for you.
-                </div>
-                <input ref={inputRef} type="file" multiple accept={ACCEPT} style={{ display: "none" }} onChange={(e) => choose([...(e.target.files ?? [])])} />
-                <div className="drop" role="button" tabIndex={0} onClick={() => !progress && inputRef.current?.click()} onKeyDown={(e) => e.key === "Enter" && inputRef.current?.click()}
-                  onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); choose([...e.dataTransfer.files]); }}>
-                  {reading ? <><span className="spinner" /> Counting pages…</> : pages ? <b>{plural(pages.length, "page")} found ✓ <span className="small muted">(tap to choose again)</span></b> : <>Tap to choose the scanned PDF or photos, or drop them here</>}
-                </div>
-                {problems.length > 0 && <div className="error-box">{problems.join(" ")}</div>}
-                {pages && (
-                  <>
-                    <div className="row wrap" style={{ gap: 18 }}>
-                      <label className="field" style={{ width: 170 }}><span>Pages per student</span>
-                        <input className="input" type="number" min={1} max={30} value={perStudent || ""} onChange={(e) => { setTouched(true); setPerStudent(Math.min(30, Math.max(0, Number(e.target.value) || 0))); }} />
-                      </label>
-                      <div className="small grow" style={{ alignSelf: "center" }}>
-                        {pages.length === needed ? <span style={{ color: "var(--green)" }}>✓ {pages.length} pages = {present.length} students × {k} pages</span>
-                          : empty > 0 ? <span style={{ color: "var(--red)" }}>{pages.length} pages isn't enough for {present.length} students × {k} pages. {plural(empty, "student")} would get nothing. Untick absent students or change pages per student.</span>
-                          : <span style={{ color: "var(--amber)" }}>{plural(leftover, "page")} left over at the end. Check for absent students or a different page count.</span>}
-                      </div>
-                    </div>
-                    <div className="small muted">Untick students who were absent. Each row shows the pages they will get.</div>
-                    <div className="split-list">
-                      {roster.map((a) => {
-                        const row = plan.find((p) => p.a.id === a.id);
-                        const first = row?.pages[0];
-                        const off = absent.has(a.id);
-                        return (
-                          <label key={a.id} className={`split-row ${off ? "off" : ""}`}>
-                            <input type="checkbox" checked={!off} onChange={() => { const s = new Set(absent); off ? s.delete(a.id) : s.add(a.id); setAbsent(s); }} />
-                            <span className="split-roll">{a.roll_no ?? "—"}</span>
-                            <span className="grow"><b>{a.student_name}</b>{a.status === "evaluated" && <span className="badge green" style={{ marginLeft: 6 }}>Marked</span>}{a.files > 0 && a.status !== "evaluated" && <span className="badge" style={{ marginLeft: 6 }}>Has sheet</span>}</span>
-                            <span className="small muted split-pages">{off ? "Absent" : row?.pages.length ? (row.pages.length === 1 ? `page ${pages.indexOf(row.pages[0]) + 1}` : `pages ${pages.indexOf(row.pages[0]) + 1}–${pages.indexOf(row.pages[row.pages.length - 1]) + 1}`) : <span style={{ color: "var(--red)" }}>no pages</span>}</span>
-                            {thumbs.size > 0 && (first?.kind === "image" ? <img className="split-thumb" src={thumbs.get(first)} alt="" /> : <span className="split-thumb" />)}
-                          </label>
-                        );
-                      })}
-                    </div>
-                    {busyNow > 0 && <div className="error-box">{plural(busyNow, "sheet")} in this class {busyNow === 1 ? "is" : "are"} being marked right now. Untick {busyNow === 1 ? "it" : "them"} or wait a minute.</div>}
-                  </>
+                <div className="tip-box small"><b>Easiest way:</b> put the sheets in <b>roll-number order</b> and scan them as one PDF (or a ZIP of PDFs/photos). Big files are fine: the upload resumes if the connection drops.</div>
+                <FileUpload purpose="class_sheets" label="Class scan (PDF or ZIP)" onChange={(u, b) => { setUpl(u); setUplBusy(b); }} />
+                {earlier.length > 0 && (
+                  <div className="small">Or use an earlier upload: {earlier.map((u) => <button key={u.id} type="button" className="btn-link" style={{ marginRight: 10 }} onClick={() => setDocId(u.id)}>{u.title} ({u.pages} pages)</button>)}</div>
                 )}
-                <ErrorBox error={error} />
-                {progress && (
-                  <div>
-                    <div className="row between small"><span>Uploading…</span><span>{progress.done} / {progress.total} students</span></div>
-                    <div className="bar" style={{ marginTop: 6 }}><i style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
-                  </div>
-                )}
-                <div className="row" style={{ justifyContent: "flex-end" }}>
-                  <button className="btn btn-ghost" disabled={!!progress} onClick={onClose}>Cancel</button>
-                  <button className="btn btn-primary" disabled={!pages || !!progress || empty > 0 || busyNow > 0 || !present.length} onClick={start}>
-                    {progress ? "Uploading…" : `Upload for ${plural(present.length, "student")}`}
-                  </button>
-                </div>
               </>
             )}
+            {docId && doc?.status !== "completed" && (
+              <div className="stack" style={{ gap: 8 }}>
+                {doc?.status === "failed" ? (
+                  <>
+                    <div className="error-box">{doc.error ?? "Processing failed."}</div>
+                    <div><button className="btn btn-ghost" onClick={restart}>Upload again</button></div>
+                  </>
+                ) : (
+                  <div className="row"><span className="spinner" />
+                    <span className="small"><b>{!doc || doc.status === "queued" ? "Queued" : "Processing pages"}…</b>
+                      {doc?.job?.attempts && doc.job.last_error ? ` Try ${doc.job.attempts} of ${doc.job.max_attempts} failed; trying again shortly.` : " Big scans take a minute or two. You can close this and come back."}</span></div>
+                )}
+              </div>
+            )}
+            {cls && doc?.status === "completed" && (
+              <>
+                <div className="row wrap" style={{ gap: 18 }}>
+                  <label className="field" style={{ width: 170 }}><span>Pages per student</span>
+                    <input className="input" type="number" min={1} max={40} value={perStudent || ""} onChange={(e) => { setTouched(true); setPerStudent(Math.min(40, Math.max(0, Number(e.target.value) || 0))); }} />
+                  </label>
+                  <div className="small grow" style={{ alignSelf: "center" }}>
+                    {pageCount === present.length * k ? <span style={{ color: "var(--green)" }}>✓ {pageCount} pages = {present.length} students × {k} pages</span>
+                      : empty > 0 ? <span style={{ color: "var(--red)" }}>{pageCount} pages isn't enough for {present.length} students × {k} pages. {plural(empty, "student")} would get nothing. Untick absent students or change pages per student.</span>
+                      : <span style={{ color: "var(--amber)" }}>{plural(leftover, "page")} left over at the end. Check for absent students or a different page count.</span>}
+                  </div>
+                </div>
+                <div className="small muted">Untick students who were absent. Each row shows the pages they will get.</div>
+                <div className="split-list">
+                  {roster.map((a) => {
+                    const row = plan.find((p) => p.a.id === a.id);
+                    const off = absent.has(a.id);
+                    return (
+                      <label key={a.id} className={`split-row ${off ? "off" : ""}`}>
+                        <input type="checkbox" checked={!off} onChange={() => { const s = new Set(absent); off ? s.delete(a.id) : s.add(a.id); setAbsent(s); }} />
+                        <span className="split-roll">{a.roll_no ?? "—"}</span>
+                        <span className="grow"><b>{a.student_name}</b>{a.status === "evaluated" && <span className="badge green" style={{ marginLeft: 6 }}>Marked</span>}{a.files > 0 && a.status !== "evaluated" && <span className="badge" style={{ marginLeft: 6 }}>Has sheet</span>}</span>
+                        <span className="small muted split-pages">{off ? "Absent" : row?.pages.length ? (row.pages.length === 1 ? `page ${row.pages[0]}` : `pages ${row.pages[0]}–${row.pages[row.pages.length - 1]}`) : <span style={{ color: "var(--red)" }}>no pages</span>}</span>
+                        {!off && row?.pages.length ? <PageThumb docId={docId!} n={row.pages[0]} /> : <span className="split-thumb" />}
+                      </label>
+                    );
+                  })}
+                </div>
+                {busyNow > 0 && <div className="error-box">{plural(busyNow, "sheet")} in this class {busyNow === 1 ? "is" : "are"} being marked right now. Untick {busyNow === 1 ? "it" : "them"} or wait a minute.</div>}
+              </>
+            )}
+            <ErrorBox error={error} />
+            <div className="row" style={{ justifyContent: "flex-end" }}>
+              <button className="btn btn-ghost" disabled={saving} onClick={onClose}>{doc?.status === "completed" ? "Cancel" : "Close"}</button>
+              {doc?.status === "completed" && (
+                <button className="btn btn-primary" disabled={saving || empty > 0 || busyNow > 0 || !present.length} onClick={assign}>
+                  {saving ? "Saving…" : `Give pages to ${plural(present.length, "student")}`}
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>

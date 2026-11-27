@@ -1,11 +1,12 @@
 import { loadTestReport, pdfName, studentReportPdf } from "../reports.js";
 import { sendPdf, withSubtopics } from "./reports.js";
 import { pageTypes, paperForViewer } from "./tests.js";
-import path from "node:path";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { one, run, uid, json, all, bumpTokenVersion, UPLOAD_DIR } from "../db.js";
+import { one, run, uid, json, all, bumpTokenVersion } from "../db.js";
+import { storage } from "../lib/storage.js";
+import { CHUNK_BYTES, LIMITS, MAX_IMAGE_BYTES } from "../lib/limits.js";
 import { requireAuth, signToken, type AuthUser } from "../auth.js";
 import { rateLimit } from "../ratelimit.js";
 
@@ -25,7 +26,7 @@ const contactLimit = rateLimit("contact", 5, 10 * 60 * 1000);
 
 publicRoutes.get("/config", (_req, res) => {
   const demo = Boolean(one("SELECT 1 FROM users WHERE email = 'admin@demo.school'"));
-  res.json({ signup: ALLOW_SIGNUP, demo });
+  res.json({ signup: ALLOW_SIGNUP, demo, upload: { limits: LIMITS, max_image_bytes: MAX_IMAGE_BYTES, chunk_bytes: CHUNK_BYTES } });
 });
 
 
@@ -121,8 +122,7 @@ publicRoutes.get("/public/report/:token/files/:n", (req, res) => {
   const row = one<any>(`SELECT a.files, t.results_published FROM share_tokens s JOIN attempts a ON a.id = s.attempt_id JOIN tests t ON t.id = a.test_id WHERE s.token = ?`, req.params.token);
   const name = row?.results_published ? json<string[]>(row.files, [])[Number(req.params.n)] : null;
   if (!name) return res.status(404).end();
-  res.setHeader("Cache-Control", "private, max-age=3600");
-  res.sendFile(path.join(UPLOAD_DIR, name));
+  storage.send(res, name);
 });
 
 // The same report as a PDF, for parents who open the shared link.

@@ -1,18 +1,17 @@
 import { Router } from "express";
 import { z } from "zod";
+import { wrap } from "../lib/http.js";
 import { all, json, one, run, uid } from "../db.js";
 import { staff } from "../auth.js";
 import { rateLimit } from "../ratelimit.js";
 
 // Each AI paper costs API credits; cap how many an institute can start in a short time.
 const aiPaperLimit = rateLimit("ai-paper", 30, 60 * 60 * 1000, (r) => r.user?.org_id ?? r.ip ?? "?");
-import { generatePaper, importPaper, tagSubtopics, AiError, aiProblem, type PaperSpec } from "../ai/claude.js";
-import multer from "multer";
-import crypto from "node:crypto";
-import path from "node:path";
-import fs from "node:fs";
-import { UPLOAD_DIR } from "../db.js";
-import { normalisePage, removeFiles, UploadError } from "../images.js";
+import { generatePaper, importPaper, tagSubtopics, aiProblem, type PaperSpec, type ImportMeta } from "../ai/claude.js";
+import { enqueueJob, registerJob } from "../lib/jobs.js";
+import { createDocument, processDocument } from "../lib/documents.js";
+import { FileProblem } from "../lib/files.js";
+import { takeUploads } from "./uploads.js";
 import { StoredSection as Section, type Section as SectionT } from "../ai/schemas.js";
 
 export const paperRoutes = Router();
@@ -44,7 +43,21 @@ const SpecBody = z.object({
   notes: z.string().max(1000).optional(),
 });
 
-// Generation runs in the background; the client polls the paper's status.
+// Generating and reading papers run as background jobs; the client polls the paper's status.
+const failPaper = (id: string, message: string) => run("UPDATE question_papers SET status = 'failed', error = ? WHERE id = ?", message, id);
+const savePaper = (id: string, paper: { title: string; instructions: string; sections: SectionT[] }) => {
+  run("UPDATE question_papers SET title = ?, instructions = ?, sections = ?, total_marks = ?, status = 'draft', error = NULL WHERE id = ?",
+    paper.title, paper.instructions, JSON.stringify(paper.sections), totalMarks(paper.sections), id);
+  syncTestMarks(id);
+};
+
+registerJob<{ paper_id: string; org_id: string; spec: PaperSpec }>("generate_paper", {
+  concurrency: 2,
+  run: async ({ paper_id, org_id, spec }) => savePaper(paper_id, await generatePaper(org_id, spec)),
+  onRetry: (p, msg) => run("UPDATE question_papers SET error = ? WHERE id = ?", `Retrying: ${msg}`, p.paper_id),
+  onFail: (p, msg) => failPaper(p.paper_id, msg),
+});
+
 paperRoutes.post("/papers/generate", staff, aiPaperLimit, (req, res) => {
   const spec = SpecBody.parse(req.body) as PaperSpec;
   const problem = aiProblem(req.user!.org_id);
@@ -53,67 +66,51 @@ paperRoutes.post("/papers/generate", staff, aiPaperLimit, (req, res) => {
   run(`INSERT INTO question_papers (id, org_id, title, subject, board, class_level, language, duration_min, status, created_by)
        VALUES (?,?,?,?,?,?,?,?, 'generating', ?)`,
     id, req.user!.org_id, `${spec.subject} - ${spec.class_level}`, spec.subject, spec.board, spec.class_level, spec.language, spec.duration_min, req.user!.id);
+  enqueueJob("generate_paper", { paper_id: id, org_id: req.user!.org_id, spec }, { orgId: req.user!.org_id, dedupeKey: `paper:${id}` });
   res.json({ id });
-  generatePaper(req.user!.org_id, spec)
-    .then((paper) => {
-      run("UPDATE question_papers SET title = ?, instructions = ?, sections = ?, total_marks = ?, status = 'draft' WHERE id = ?",
-        paper.title, paper.instructions, JSON.stringify(paper.sections), totalMarks(paper.sections), id);
-      syncTestMarks(id);
-    })
-    .catch((e) => {
-      run("UPDATE question_papers SET status = 'failed', error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), id);
-    });
 });
 
-// Import an existing paper: photos/PDF of the question paper, plus the answer key if available.
-const paperUpload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
-    filename: (_req, file, cb) => cb(null, `${crypto.randomBytes(10).toString("hex")}${path.extname(file.originalname).toLowerCase()}`),
-  }),
-  limits: { fileSize: 25 * 1024 * 1024, files: 40 },
-  fileFilter: (_req, file, cb) => cb(null, /\.(jpe?g|png|webp|pdf)$/i.test(file.originalname)),
-}).fields([{ name: "paper", maxCount: 20 }, { name: "key", maxCount: 20 }]);
-
-paperRoutes.post("/papers/import", staff, aiPaperLimit, paperUpload, async (req, res, next) => {
-  const got = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
-  const all_ = [...(got.paper ?? []), ...(got.key ?? [])];
-  try {
-    const meta = z.object({
-      subject: z.string().max(80).optional(), board: z.string().max(80).optional(), class_level: z.string().max(80).optional(),
-      language: z.string().max(60).optional(), duration_min: z.coerce.number().int().min(5).max(360).optional(), notes: z.string().max(1000).optional(),
-    }).parse(req.body ?? {});
-    const problem = aiProblem(req.user!.org_id);
-    if (problem) { all_.forEach((f) => fs.rmSync(f.path, { force: true })); return res.status(400).json({ error: problem }); }
-    if (!got.paper?.length) { all_.forEach((f) => fs.rmSync(f.path, { force: true })); return res.status(400).json({ error: "Add photos or a PDF of the question paper" }); }
-    const norm = async (list: Express.Multer.File[] = []) => {
-      const out: string[] = [];
-      for (const f of list) out.push(await normalisePage(UPLOAD_DIR, f.filename, f.originalname));
-      return out;
-    };
-    let paperFiles: string[] = [], keyFiles: string[] = [];
-    try { paperFiles = await norm(got.paper); keyFiles = await norm(got.key); }
-    catch (e) {
-      removeFiles(UPLOAD_DIR, [...paperFiles, ...keyFiles]);
-      all_.forEach((f) => fs.rmSync(f.path, { force: true }));
-      if (e instanceof UploadError) return res.status(400).json({ error: e.message });
-      throw e;
-    }
-    const id = uid("qp");
-    run(`INSERT INTO question_papers (id, org_id, title, subject, board, class_level, language, duration_min, status, created_by)
-         VALUES (?,?,?,?,?,?,?,?, 'generating', ?)`,
-      id, req.user!.org_id, "Imported paper", meta.subject ?? null, meta.board ?? null, meta.class_level ?? null, meta.language ?? "English", meta.duration_min ?? 60, req.user!.id);
-    res.json({ id });
-    importPaper(req.user!.org_id, paperFiles.map((f) => path.join(UPLOAD_DIR, f)), keyFiles.map((f) => path.join(UPLOAD_DIR, f)), meta)
-      .then((paper) => {
-        run("UPDATE question_papers SET title = ?, instructions = ?, sections = ?, total_marks = ?, status = 'draft' WHERE id = ?",
-          paper.title, paper.instructions, JSON.stringify(paper.sections), totalMarks(paper.sections), id);
-        syncTestMarks(id);
-      })
-      .catch((e) => run("UPDATE question_papers SET status = 'failed', error = ? WHERE id = ?", e instanceof AiError ? e.message : String(e), id))
-      .finally(() => removeFiles(UPLOAD_DIR, [...paperFiles, ...keyFiles]));
-  } catch (e) { next(e); }
+// Import an existing paper: uploaded PDF/photos of the question paper, plus the answer key if available.
+// The files are already uploaded (resumable /uploads); here they become documents and a reading job is queued.
+interface ImportJob { paper_id: string; org_id: string; paper_doc: string; key_doc: string | null; meta: ImportMeta }
+registerJob<ImportJob>("import_paper", {
+  concurrency: 2,
+  run: async ({ paper_id, org_id, paper_doc, key_doc, meta }) => {
+    const paperPages = (await processDocument(paper_doc)).map((p) => p.storage_key);
+    const keyPages = key_doc ? (await processDocument(key_doc)).map((p) => p.storage_key) : [];
+    if (paperPages.length + keyPages.length > 100) throw new FileProblem("The paper and answer key together have more than 100 pages. Upload fewer pages.");
+    savePaper(paper_id, await importPaper(org_id, paperPages, keyPages, meta));
+  },
+  onRetry: (p, msg) => run("UPDATE question_papers SET error = ? WHERE id = ?", `Retrying: ${msg}`, p.paper_id),
+  onFail: (p, msg) => failPaper(p.paper_id, msg),
 });
+
+paperRoutes.post("/papers/import", staff, aiPaperLimit, wrap(async (req, res) => {
+  const b = z.object({
+    paper_uploads: z.array(z.string().max(60)).min(1, "Add the question paper").max(50),
+    key_uploads: z.array(z.string().max(60)).max(50).default([]),
+    key_mode: z.enum(["auto", "in_paper", "separate"]).default("auto"),
+    subject: z.string().max(80).optional(), board: z.string().max(80).optional(), class_level: z.string().max(80).optional(),
+    language: z.string().max(60).optional(), duration_min: z.coerce.number().int().min(5).max(360).optional(), notes: z.string().max(1000).optional(),
+  }).parse(req.body ?? {});
+  if (b.key_mode === "separate" && !b.key_uploads.length) return res.status(400).json({ error: "Add the answer key file, or choose another answer key option" });
+  const problem = aiProblem(req.user!.org_id);
+  if (problem) return res.status(400).json({ error: problem });
+  const user = req.user!;
+  const paperUps = takeUploads(b.paper_uploads, user, "paper");
+  const keyUps = b.key_mode === "separate" ? takeUploads(b.key_uploads, user, ["answer_key", "paper"]) : [];
+  const pages = [...paperUps, ...keyUps].reduce((t, u) => t + (u.pages ?? 1), 0);
+  if (pages > 100) return res.status(400).json({ error: `The paper and answer key together have ${pages} pages. The limit is 100.` });
+  const id = uid("qp");
+  run(`INSERT INTO question_papers (id, org_id, title, subject, board, class_level, language, duration_min, status, created_by)
+       VALUES (?,?,?,?,?,?,?,?, 'generating', ?)`,
+    id, user.org_id, paperUps[0].filename.replace(/\.[^.]+$/, "").slice(0, 120) || "Imported paper", b.subject ?? null, b.board ?? null, b.class_level ?? null, b.language ?? "English", b.duration_min ?? 60, user.id);
+  const paperDoc = await createDocument({ orgId: user.org_id, userId: user.id, purpose: "paper", uploads: paperUps, paperId: id, process: false });
+  const keyDoc = keyUps.length ? await createDocument({ orgId: user.org_id, userId: user.id, purpose: "answer_key", uploads: keyUps, paperId: id, process: false }) : null;
+  enqueueJob("import_paper", { paper_id: id, org_id: user.org_id, paper_doc: paperDoc, key_doc: keyDoc, meta: { ...b, key_mode: b.key_mode } satisfies ImportMeta },
+    { orgId: user.org_id, dedupeKey: `paper:${id}` });
+  res.json({ id });
+}));
 
 // Manual creation / full save from the editor.
 const PaperBody = z.object({
@@ -168,7 +165,9 @@ paperRoutes.delete("/papers/:id", staff, (req, res) => {
 
 // Generation jobs live in memory; if the server restarted mid-generation, mark them failed so users can retry.
 export function recoverPaperJobs() {
-  run("UPDATE question_papers SET status = 'failed', error = 'Interrupted by a server restart. Please generate it again.' WHERE status = 'generating'");
+  // Papers left "generating" by an older version (before jobs existed) can't resume: mark them failed.
+  run(`UPDATE question_papers SET status = 'failed', error = 'Interrupted by a server restart. Please try again.'
+       WHERE status = 'generating' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = 'paper:' || question_papers.id AND j.status IN ('queued','processing'))`);
 }
 
 /** Tests using this paper show its current total for sheets that aren't marked yet. */
@@ -178,28 +177,30 @@ function syncTestMarks(paperId: string) {
 }
 
 // Papers made before sub-topics existed get them from AI once, so reports can name the exact concept to re-teach.
-const tagging = new Map<string, Promise<void>>();
+// This runs as a background job; reports simply show sub-topics once they are there.
 const missingSubtopics = (sections: SectionT[]) => sections.some((sec) => sec.questions.some((q) => !String((q as { subtopic?: string }).subtopic ?? "").trim()));
-export function ensureSubtopics(paperId: string): Promise<void> {
-  if (tagging.has(paperId)) return tagging.get(paperId)!;
-  const p = one<any>("SELECT id, org_id, subject, class_level, sections, status FROM question_papers WHERE id = ?", paperId);
-  if (!p || !["draft", "approved"].includes(p.status) || !missingSubtopics(json<SectionT[]>(p.sections, [])) || aiProblem(p.org_id)) return Promise.resolve();
-  const qs = json<SectionT[]>(p.sections, []).flatMap((sec) => sec.questions).map((q) => ({ id: q.id, text: q.text.slice(0, 600), topic: q.topic, solution: q.solution.slice(0, 300) }));
-  const job = tagSubtopics(p.org_id, { subject: p.subject, class_level: p.class_level, questions: qs })
-    .then((tags) => {
-      const byId = new Map((tags?.questions ?? []).map((t) => [t.id, t]));
-      // Re-read so edits made while AI was working are kept; only empty sub-topics (and empty chapters) are filled.
-      const cur = one<any>("SELECT sections FROM question_papers WHERE id = ?", paperId);
-      if (!cur) return;
-      const sections = json<SectionT[]>(cur.sections, []).map((sec) => ({ ...sec, questions: sec.questions.map((q) => {
-        const t = byId.get(q.id);
-        const sub = String((q as { subtopic?: string }).subtopic ?? "").trim();
-        return t ? { ...q, topic: q.topic?.trim() ? q.topic : t.topic.slice(0, 120), subtopic: sub || t.subtopic.slice(0, 160) } : q;
-      }) }));
-      run("UPDATE question_papers SET sections = ? WHERE id = ?", JSON.stringify(sections), paperId);
-    })
-    .catch((e) => console.error(`Sub-topic tagging failed for ${paperId}:`, e instanceof AiError ? e.message : e))
-    .finally(() => tagging.delete(paperId));
-  tagging.set(paperId, job);
-  return job;
+registerJob<{ paper_id: string }>("tag_subtopics", {
+  concurrency: 1,
+  run: async ({ paper_id }) => {
+    const p = one<any>("SELECT id, org_id, subject, class_level, sections, status FROM question_papers WHERE id = ?", paper_id);
+    if (!p || !["draft", "approved"].includes(p.status) || !missingSubtopics(json<SectionT[]>(p.sections, []))) return;
+    const qs = json<SectionT[]>(p.sections, []).flatMap((sec) => sec.questions).map((q) => ({ id: q.id, text: q.text.slice(0, 600), topic: q.topic, solution: q.solution.slice(0, 300) }));
+    const tags = await tagSubtopics(p.org_id, { subject: p.subject, class_level: p.class_level, questions: qs });
+    const byId = new Map((tags?.questions ?? []).map((t) => [t.id, t]));
+    // Re-read so edits made while AI was working are kept; only empty sub-topics (and empty chapters) are filled.
+    const cur = one<any>("SELECT sections FROM question_papers WHERE id = ?", paper_id);
+    if (!cur) return;
+    const sections = json<SectionT[]>(cur.sections, []).map((sec) => ({ ...sec, questions: sec.questions.map((q) => {
+      const t = byId.get(q.id);
+      const sub = String((q as { subtopic?: string }).subtopic ?? "").trim();
+      return t ? { ...q, topic: q.topic?.trim() ? q.topic : t.topic.slice(0, 120), subtopic: sub || t.subtopic.slice(0, 160) } : q;
+    }) }));
+    run("UPDATE question_papers SET sections = ? WHERE id = ?", JSON.stringify(sections), paper_id);
+  },
+});
+/** Queues sub-topic tagging for a paper that lacks it (no-op otherwise, or when AI isn't set up). */
+export function ensureSubtopics(paperId: string) {
+  const p = one<any>("SELECT org_id, sections, status FROM question_papers WHERE id = ?", paperId);
+  if (!p || !["draft", "approved"].includes(p.status) || !missingSubtopics(json<SectionT[]>(p.sections, [])) || aiProblem(p.org_id)) return;
+  enqueueJob("tag_subtopics", { paper_id: paperId }, { orgId: p.org_id, dedupeKey: `tag:${paperId}` });
 }

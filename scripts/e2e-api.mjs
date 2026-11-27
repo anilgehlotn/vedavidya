@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { upload, uploadAll, waitProcessed, waitDocument } from "./upload-helper.mjs";
 
 const require = createRequire(new URL("../server/package.json", import.meta.url));
 const sharp = require("sharp");
@@ -200,38 +201,34 @@ ok(detail.batch_names === "JEE 2027 A", "batch names included");
     else files.push([`${String(i).padStart(2, "0")}-1.jpg`, small, "image/jpeg"], [`${i}-2.jpg`, small, "image/jpeg"]);
   }
   files.push(["999.jpg", small, "image/jpeg"], ["notes.jpg", small, "image/jpeg"], [`${N}-9.jpg`, Buffer.from("not really an image"), "image/jpeg"]);
-  // Upload in chunks, keeping each student's pages together (like the browser does).
-  const byRoll = new Map();
-  for (const f of files) { const k = (f[0].match(/^\D{0,8}?(\d+)/)?.[1] ?? f[0]); byRoll.set(String(Number(k) || k), [...(byRoll.get(String(Number(k) || k)) ?? []), f]); }
-  const groups = [...byRoll.values()];
-  let students = 0, pages = 0; const unmatched = [], warnings = [];
-  for (let i = 0; i < groups.length; i += 8) {
-    const form = new FormData();
-    for (const g of groups.slice(i, i + 8)) for (const [name, buf, type] of g) form.append("files", new Blob([buf], { type }), name);
-    const r = await expect(`bulk upload chunk ${i / 8 + 1}`, 200, "POST", `/tests/${test}/bulk-files`, { token: teacher, form });
-    students += r.data.students; pages += r.data.pages; unmatched.push(...r.data.unmatched); warnings.push(...r.data.warnings);
-  }
-  ok(students === N, `all ${N} students received pages (got ${students})`);
-  ok(unmatched.includes("999.jpg") && unmatched.includes("notes.jpg"), "unknown roll numbers reported as unmatched");
-  ok(warnings.some((w) => w.includes(`${N}-9.jpg`)), "corrupt image rejected with a clear message");
-  detail = (await call("GET", `/tests/${test}`, { token: teacher })).data;
+  // Each file is uploaded in resumable pieces (like the browser), then matched to students by roll number.
+  const corrupt = files.pop();
+  const bad = await upload(API, teacher, corrupt[1], corrupt[0], "student_sheet");
+  ok(bad.status === 400 && /not a real photo|could not be read as an image/.test(bad.data?.error ?? ""), `corrupt image rejected at upload with a clear message (${bad.data?.error})`);
+  const ids = await uploadAll(API, teacher, files.map(([n, b]) => [n, b]), "student_sheet");
+  const r = await expect("match uploaded files to students", 200, "POST", `/tests/${test}/bulk-files`, { token: teacher, body: { upload_ids: ids } });
+  ok(r.data.students === N, `all ${N} students received pages (got ${r.data.students})`);
+  ok(r.data.unmatched.includes("999.jpg") && r.data.unmatched.includes("notes.jpg"), "unknown roll numbers reported as unmatched");
+  await expect("upload ids can't be reused", 400, "POST", `/tests/${test}/bulk-files`, { token: teacher, body: { upload_ids: ids.slice(0, 1) } });
+  detail = await waitProcessed(API, teacher, test);
   ok(detail.attempts.every((a) => a.status === "uploaded" && a.files >= 1), "every attempt is uploaded");
   if (DATA_DIR) {
     const db = new DatabaseSync(path.join(DATA_DIR, "vedavidya.db"));
     const names = db.prepare("SELECT files FROM attempts WHERE test_id = ?").all(test).flatMap((r) => JSON.parse(r.files));
     const sizes = names.filter((n) => n.endsWith(".jpg")).map((n) => fs.statSync(path.join(DATA_DIR, "uploads", n)).size);
     ok(sizes.every((s) => s < 4.6 * 1024 * 1024), `stored photos are under the 5 MB API limit (max ${(Math.max(...sizes) / 1048576).toFixed(2)} MB)`);
+    const dims = db.prepare("SELECT count(*) n, sum(width > 0 AND height > 0) d FROM document_pages WHERE document_id IN (SELECT id FROM documents WHERE attempt_id IN (SELECT id FROM attempts WHERE test_id = ?))").get(test);
+    ok(dims.n > 0 && dims.n === dims.d, `every page stored with its width and height (${dims.n} pages)`);
     db.close();
   }
   // Single-student re-upload (replace).
   const a0 = detail.attempts[0];
-  const f1 = new FormData(); f1.append("files", new Blob([small], { type: "image/jpeg" }), "page.jpg");
-  const up = await expect("single upload replace", 200, "POST", `/attempts/${a0.id}/files?replace=1`, { token: teacher, form: f1 });
-  ok(up.data.pages === 1, "replace leaves exactly 1 page");
-  const f2 = new FormData(); f2.append("files", new Blob([Buffer.from("hello")], { type: "image/png" }), "x.png");
-  await expect("upload junk image → 400", 400, "POST", `/attempts/${a0.id}/files`, { token: teacher, form: f2 });
-  const f3 = new FormData(); f3.append("files", new Blob([Buffer.from("text")], { type: "text/plain" }), "x.txt");
-  await expect("upload wrong type → 400", 400, "POST", `/attempts/${a0.id}/files`, { token: teacher, form: f3 });
+  const [one1] = await uploadAll(API, teacher, [["page.jpg", small]], "student_sheet");
+  await expect("single student re-upload", 200, "POST", `/attempts/${a0.id}/files`, { token: teacher, body: { upload_ids: [one1] } });
+  ok((await waitProcessed(API, teacher, test)).attempts.find((a) => a.id === a0.id).files === 1, "re-upload replaces the sheet with exactly 1 page");
+  ok((await upload(API, teacher, Buffer.from("hello"), "x.png", "student_sheet")).status === 400, "upload junk image → 400");
+  ok((await upload(API, teacher, Buffer.from("text"), "x.txt", "student_sheet")).status === 400, "upload wrong type → 400");
+  await expect("attach without uploads → 400", 400, "POST", `/attempts/${a0.id}/files`, { token: teacher, body: { upload_ids: [] } });
   ok((await fetch(`${API}/attempts/${a0.id}/files/0?token=${teacher}`)).status === 401, "tokens in URLs are not accepted");
   const fileRes = await fetch(`${API}/attempts/${a0.id}/files/0`, { headers: { Authorization: `Bearer ${teacher}` } });
   ok(fileRes.status === 200 && fileRes.headers.get("content-type")?.includes("image"), "staff can view uploaded page");
@@ -297,26 +294,23 @@ section("Teacher review, publish, reports");
 section("Upload an existing question paper (with answer key)");
 {
   const img = await jpeg(1600, 2200, "Printed paper");
-  const form = new FormData();
-  form.append("paper", new Blob([img], { type: "image/jpeg" }), "page1.jpg");
-  form.append("paper", new Blob([img], { type: "image/jpeg" }), "page2.jpg");
-  form.append("key", new Blob([pdf()], { type: "application/pdf" }), "answer-key.pdf");
-  form.append("subject", "Maths"); form.append("class_level", "10"); form.append("duration_min", "45");
-  const r = await expect("import paper", 200, "POST", "/papers/import", { token: teacher, form });
+  const paperIds = await uploadAll(API, teacher, [["page1.jpg", img], ["page2.jpg", img]], "paper");
+  const keyIds = await uploadAll(API, teacher, [["answer-key.pdf", pdf()]], "answer_key");
+  const r = await expect("import paper", 200, "POST", "/papers/import", { token: teacher, body: { paper_uploads: paperIds, key_uploads: keyIds, key_mode: "separate", subject: "Maths", class_level: "10", duration_min: 45 } });
   const done = await poll(() => call("GET", `/papers/${r.data.id}`, { token: teacher }).then((x) => x.data), (p) => p.status !== "generating");
   ok(done.status === "draft" && done.sections.flatMap((x) => x.questions).length === 4, `imported paper ready with 4 questions (got ${done.status} ${done.error ?? ""})`);
   ok(done.total_marks === 10 && done.duration_min === 45 && done.subject === "Maths", "imported paper keeps marks, duration, subject");
   const st = await fetch(API.replace("/api", "").replace(/:\d+$/, ":4999") + "/__stats").then((x) => x.json()).catch(() => null);
   if (st?.lastImport) ok(st.lastImport.pages === 3 && st.lastImport.hasKey, "Claude received 2 paper pages + 1 answer-key page");
-  const leftovers = DATA_DIR ? fs.readdirSync(path.join(DATA_DIR, "uploads")).length : 0;
-  const noKey = new FormData(); noKey.append("paper", new Blob([img], { type: "image/jpeg" }), "p.jpg");
-  const r2 = await expect("import without answer key", 200, "POST", "/papers/import", { token: teacher, form: noKey });
-  await poll(() => call("GET", `/papers/${r2.data.id}`, { token: teacher }).then((x) => x.data), (p) => p.status !== "generating");
-  if (DATA_DIR) ok(fs.readdirSync(path.join(DATA_DIR, "uploads")).length <= leftovers, "uploaded paper photos are deleted after reading");
-  await expect("import with no pages → 400", 400, "POST", "/papers/import", { token: teacher, form: new FormData() });
-  const bad = new FormData(); bad.append("paper", new Blob([Buffer.from("nope")], { type: "image/jpeg" }), "x.jpg");
-  await expect("import unreadable photo → 400", 400, "POST", "/papers/import", { token: teacher, form: bad });
-  await expect("student can't import", 403, "POST", "/papers/import", { token: studentTok, form: new FormData() });
+  const noKeyIds = await uploadAll(API, teacher, [["p.jpg", img]], "paper");
+  const r2 = await expect("import without answer key", 200, "POST", "/papers/import", { token: teacher, body: { paper_uploads: noKeyIds, key_mode: "auto" } });
+  const p2 = await poll(() => call("GET", `/papers/${r2.data.id}`, { token: teacher }).then((x) => x.data), (p) => p.status !== "generating");
+  ok(p2.status === "draft", "paper without a key is read (AI solves it)");
+  await expect("import with no pages → 400", 400, "POST", "/papers/import", { token: teacher, body: { paper_uploads: [] } });
+  await expect("separate key chosen but missing → 400", 400, "POST", "/papers/import", { token: teacher, body: { paper_uploads: await uploadAll(API, teacher, [["q.jpg", img]], "paper"), key_mode: "separate" } });
+  ok((await upload(API, teacher, Buffer.from("nope"), "x.jpg", "paper")).status === 400, "unreadable photo rejected at upload");
+  await expect("someone else's upload can't be used", 400, "POST", "/papers/import", { token: admin, body: { paper_uploads: await uploadAll(API, teacher, [["r.jpg", img]], "paper") } });
+  await expect("student can't import", 403, "POST", "/papers/import", { token: studentTok, body: { paper_uploads: [] } });
 }
 
 section(`All ${N} students log in at once and open their results`);
@@ -439,14 +433,16 @@ section("Online (CBT) test");
   await expect("can't start again", 400, "POST", `/cbt/${cbt}/start`, { token: studentTok, body: {} });
   const sc = (await call("GET", `/tests/${cbt}`, { token: teacher })).data.attempts.find((a) => a.student_name === "Student 1");
   ok(sc.score === 4 - 1 + 4, `CBT scoring +4/-1 (got ${sc.score})`);
-  const f = new FormData(); f.append("files", new Blob([Buffer.from("x")], { type: "image/jpeg" }), "1.jpg");
-  await expect("no uploads on CBT", 400, "POST", `/tests/${cbt}/bulk-files`, { token: teacher, form: f });
+  const cbtUp = await uploadAll(API, teacher, [["1.jpg", await jpeg(400, 500, "x")]], "student_sheet");
+  await expect("no uploads on CBT", 400, "POST", `/tests/${cbt}/bulk-files`, { token: teacher, body: { upload_ids: cbtUp } });
   await expect("teacher can't use student CBT", 403, "POST", `/cbt/${cbt}/start`, { token: teacher, body: {} });
   // This hand-made paper has no sub-topics: making a report fills them in once with AI.
   ok((await call("GET", `/papers/${p.data.id}`, { token: teacher })).data.sections[0].questions.every((q) => !q.subtopic), "hand-made paper starts without sub-topics");
   const rep = await fetch(`${API}/tests/${cbt}/class-report.pdf`, { headers: { Authorization: `Bearer ${teacher}` } });
   ok(rep.status === 200 && (await rep.arrayBuffer()).byteLength > 1000, "class report for the online test");
-  const tagged = (await call("GET", `/papers/${p.data.id}`, { token: teacher })).data.sections[0].questions;
+  // Tagging runs as a background job (never inside the report request): wait for it.
+  const tagged = (await poll(() => call("GET", `/papers/${p.data.id}`, { token: teacher }).then((x) => x.data), (x) => x.sections[0].questions.every((q) => q.subtopic))).sections[0].questions;
+  ok(rep.headers.get("content-type")?.includes("pdf"), "the report didn't wait for the AI");
   ok(tagged.every((q) => q.subtopic && q.topic === "T"), `missing sub-topics filled in, chapter kept (${tagged.map((q) => q.subtopic).join(" | ")})`);
   const edited = { title: "MCQ", duration_min: 30, sections: [{ name: "A", instructions: "", questions: tagged.map((q, i) => (i === 0 ? { ...q, subtopic: "Teacher's own name" } : q)) }] };
   await expect("teacher can rename a sub-topic", 200, "PUT", `/papers/${p.data.id}`, { token: teacher, body: edited });
@@ -464,14 +460,13 @@ section("Test first, paper later (guided flow)");
   ok(row && row.paper_id === null && row.subject === "Physics" && row.uploaded === 0, "list shows a test without a paper");
   ok((await call("GET", "/my/tests", { token: studentTok })).data.some((t) => t.id === tid && !t.paper_ready), "students see it before the paper is added");
   // Sheets can be uploaded before the paper (teachers often scan right after the exam).
-  const one = new FormData(); one.append("files", new Blob([await jpeg(1000, 1400, "S1")], { type: "image/jpeg" }), "s1.jpg");
   const a1 = d.attempts.find((a) => a.roll_no === "1");
-  await expect("upload a sheet before the paper", 200, "POST", `/attempts/${a1.id}/files?replace=1`, { token: teacher, form: one });
+  await expect("upload a sheet before the paper", 200, "POST", `/attempts/${a1.id}/files`, { token: teacher, body: { upload_ids: await uploadAll(API, teacher, [["s1.jpg", await jpeg(1000, 1400, "S1")]], "student_sheet") } });
+  await waitProcessed(API, teacher, tid);
   const ev = await expect("marking without a paper → 400", 400, "POST", `/tests/${tid}/evaluate`, { token: teacher, body: {} });
   ok(/question paper/i.test(ev.data.error), "explains the paper is needed first");
   // Upload the printed paper from the test page: it is read in the background and attached at once.
-  const form = new FormData(); form.append("paper", new Blob([await jpeg(1200, 1600, "Paper")], { type: "image/jpeg" }), "paper.jpg"); form.append("subject", "Physics");
-  const imp = await expect("import paper", 200, "POST", "/papers/import", { token: teacher, form });
+  const imp = await expect("import paper", 200, "POST", "/papers/import", { token: teacher, body: { paper_uploads: await uploadAll(API, teacher, [["paper.jpg", await jpeg(1200, 1600, "Paper")]], "paper"), subject: "Physics" } });
   await expect("attach paper while it's being read", 200, "PUT", `/tests/${tid}/paper`, { token: teacher, body: { paper_id: imp.data.id } });
   d = (await call("GET", `/tests/${tid}`, { token: teacher })).data;
   if (d.paper?.status === "generating") {
@@ -484,9 +479,23 @@ section("Test first, paper later (guided flow)");
   await expect("other institute can't attach", 404, "PUT", `/tests/${tid}/paper`, { token: otherAdmin, body: { paper_id: imp.data.id } });
   const foreign = (await call("POST", "/papers", { token: otherAdmin, body: { title: "Theirs", duration_min: 30, sections: [{ name: "A", instructions: "", questions: [{ id: "q1", type: "short", text: "?", options: [], correct_option: null, numeric_answer: null, marks: 2, negative_marks: 0, difficulty: "easy", topic: "T", solution: "", rubric: [{ step: "a", marks: 2 }] }] }] } })).data.id;
   await expect("can't attach another institute's paper", 400, "PUT", `/tests/${tid}/paper`, { token: teacher, body: { paper_id: foreign } });
-  // Whole class split in the browser arrives as per-student uploads.
+  // One scanned PDF for the class: processed on the server, then pages are given to students.
   const roster = d.attempts.filter((a) => a.batch_name === "JEE 2027 A").slice(0, 6);
-  for (const a of roster) { const f = new FormData(); f.append("files", new Blob([pdf()], { type: "application/pdf" }), `Roll_${a.roll_no}.pdf`); await call("POST", `/attempts/${a.id}/files?replace=1`, { token: teacher, form: f }); }
+  const { PDFDocument } = require("pdf-lib");
+  const scan = await PDFDocument.create();
+  for (let i = 0; i < 6; i++) scan.addPage([595, 842]);
+  const classUp = await upload(API, teacher, Buffer.from(await scan.save()), "class-scan.pdf", "class_sheets", { chunk: 700 });
+  ok(classUp.status === 200 && classUp.data.pages === 6, `class scan uploaded in small pieces (${classUp.data?.pages} pages)`);
+  const sheet = await expect("send the class scan for processing", 200, "POST", `/tests/${tid}/sheets`, { token: teacher, body: { upload_id: classUp.data.id } });
+  const doc = await waitDocument(API, teacher, sheet.data.document_id);
+  ok(doc.status === "completed" && doc.pages.length === 6 && doc.pages.every((p) => p.width > 0 && p.height > 0), "class scan turned into 6 page images with sizes");
+  ok((await call("GET", `/documents/${sheet.data.document_id}`, { token: otherAdmin })).status === 404, "other institute can't see the upload");
+  ok((await fetch(`${API}/documents/${sheet.data.document_id}/pages/1`, { headers: { Authorization: `Bearer ${teacher}` } })).headers.get("content-type")?.includes("image"), "page thumbnail served");
+  await expect("same page to two students → 400", 400, "POST", `/documents/${sheet.data.document_id}/assign`, { token: teacher, body: { assignments: [{ attempt_id: roster[0].id, pages: [1] }, { attempt_id: roster[1].id, pages: [1] }] } });
+  await expect("page that doesn't exist → 400", 400, "POST", `/documents/${sheet.data.document_id}/assign`, { token: teacher, body: { assignments: [{ attempt_id: roster[0].id, pages: [9] }] } });
+  const asg = await expect("give one page to each student", 200, "POST", `/documents/${sheet.data.document_id}/assign`, { token: teacher, body: { assignments: roster.map((a, i) => ({ attempt_id: a.id, pages: [i + 1] })) } });
+  ok(asg.data.students === 6 && asg.data.pages === 6, "6 students got their pages");
+  await expect("can't delete an upload whose pages are in use", 409, "DELETE", `/documents/${sheet.data.document_id}`, { token: teacher });
   const q = await expect("mark the class", 200, "POST", `/tests/${tid}/evaluate`, { token: teacher, body: {} });
   ok(q.data.queued === 6, `6 sheets queued (roll 1 replaced by split upload) (got ${q.data.queued})`);
   for (let i = 0; i < 80; i++) { d = (await call("GET", `/tests/${tid}`, { token: teacher })).data; if (!d.attempts.some((a) => a.status === "evaluating")) break; await sleep(400); }
@@ -588,9 +597,9 @@ section("Corrected answer sheet: pages, positions, access");
   const three = Buffer.from(await doc.save());
   const det = (await call("GET", `/tests/${test}`, { token: teacher })).data;
   const target = det.attempts.find((a) => a.status === "evaluated");
-  const f = new FormData(); f.append("files", new Blob([three], { type: "application/pdf" }), "sheet.pdf");
-  const up = await expect("upload a 3-page PDF sheet", 200, "POST", `/attempts/${target.id}/files?replace=1`, { token: teacher, form: f });
-  ok(up.data.pages === 3, `PDF turned into 3 page images (got ${up.data.pages})`);
+  const up = await expect("upload a 3-page PDF sheet", 200, "POST", `/attempts/${target.id}/files`, { token: teacher, body: { upload_ids: await uploadAll(API, teacher, [["sheet.pdf", three]], "student_sheet") } });
+  ok(up.data.pages === 3, `PDF has 3 pages (got ${up.data.pages})`);
+  await waitProcessed(API, teacher, test);
   const at = (await call("GET", `/attempts/${target.id}`, { token: teacher })).data;
   ok(at.page_types.length === 3 && at.page_types.every((t) => t === "image"), "every page is an image the marks can be drawn on");
   await expect("re-mark it", 200, "POST", `/tests/${test}/evaluate`, { token: teacher, body: { attempt_ids: [target.id] } });
@@ -616,6 +625,126 @@ section("Corrected answer sheet: pages, positions, access");
   if (mine) ok((await call("GET", `/attempts/${mine.id}`, { token: studentTok })).data.paper.answers_hidden === true, "same rule for the student");
   ok((await call("GET", `/attempts/${target.id}`, { token: teacher })).data.paper.sections[0].questions[0].solution, "teachers always see solutions");
   await expect("remove the reuse test", 200, "DELETE", `/tests/${reuse}`, { token: teacher });
+}
+
+section("Uploads: checks in the server, resume, cancel");
+{
+  const big = await upload(API, teacher, Buffer.alloc(10), "big.pdf", "paper");
+  ok(big.status === 400, "too-small fake PDF rejected");
+  const r1 = await call("POST", "/uploads", { token: teacher, body: { filename: "huge.pdf", size: 51 * 1048576, purpose: "paper" } });
+  ok(r1.status === 400 && /50 MB/.test(r1.data.error), `question paper over 50 MB rejected (${r1.data.error})`);
+  const r2 = await call("POST", "/uploads", { token: teacher, body: { filename: "scan.zip", size: 1000, purpose: "paper" } });
+  ok(r2.status === 400, "ZIP not accepted for a question paper");
+  const r3 = await call("POST", "/uploads", { token: teacher, body: { filename: "notes.docx", size: 1000, purpose: "student_sheet" } });
+  ok(r3.status === 400 && /isn't a supported file/.test(r3.data.error), "wrong file type rejected with a clear message");
+  ok((await call("POST", "/uploads", { token: studentTok, body: { filename: "a.pdf", size: 10, purpose: "paper" } })).status === 403, "students can't upload");
+  // Page limit: 51 pages for a question paper.
+  const { PDFDocument } = require("pdf-lib");
+  const many = await PDFDocument.create(); for (let i = 0; i < 51; i++) many.addPage([200, 200]);
+  const tooMany = await upload(API, teacher, Buffer.from(await many.save()), "long.pdf", "paper");
+  ok(tooMany.status === 400 && /51 pages/.test(tooMany.data?.error ?? ""), `51-page paper rejected (${tooMany.data?.error})`);
+  // Password-protected, edit-restricted (readable), damaged and disguised files.
+  const fx = (n) => fs.readFileSync(new URL(`./fixtures/${n}`, import.meta.url));
+  const locked = await upload(API, teacher, fx("password-protected.pdf"), "locked.pdf", "paper");
+  ok(locked.status === 400 && /password-protected/.test(locked.data?.error ?? ""), `password-protected PDF rejected (${locked.data?.error})`);
+  const restricted = await upload(API, teacher, fx("edit-restricted.pdf"), "restricted.pdf", "paper");
+  ok(restricted.status === 200 && restricted.data.pages === 1, "PDF with only edit restrictions is accepted (it can be read)");
+  const damaged = await upload(API, teacher, Buffer.from("%PDF-1.4\\n garbage\\n%%EOF"), "broken.pdf", "paper");
+  ok(damaged.status === 400 && /damaged/.test(damaged.data?.error ?? ""), "damaged PDF rejected with a clear message");
+  const fake = await upload(API, teacher, await jpeg(300, 300, "x"), "photo.pdf", "paper");
+  ok(fake.status === 400 && /not really a PDF/.test(fake.data?.error ?? ""), "a photo renamed to .pdf is caught");
+  // Resume: a piece sent at the wrong offset is told where to continue; the finished file is intact.
+  const body = Buffer.from(await many.save());
+  const st = (await call("POST", "/uploads", { token: teacher, body: { filename: "resume.pdf", size: body.length, purpose: "class_sheets" } })).data;
+  const put = (o, b) => fetch(`${API}/uploads/${st.id}?offset=${o}`, { method: "PUT", headers: { Authorization: `Bearer ${teacher}`, "Content-Type": "application/octet-stream" }, body: b });
+  await put(0, body.subarray(0, 1000));
+  const again = await put(0, body.subarray(0, 1000));
+  ok(again.status === 409 && (await again.json()).received === 1000, "repeated piece → 409 with the position to resume from");
+  ok((await call("GET", `/uploads/${st.id}`, { token: teacher })).data.received === 1000, "server reports how much arrived");
+  ok((await call("POST", `/uploads/${st.id}/complete`, { token: teacher })).status === 400, "can't finish a half-sent file");
+  await put(1000, body.subarray(1000));
+  const fin = await call("POST", `/uploads/${st.id}/complete`, { token: teacher });
+  ok(fin.status === 200 && fin.data.pages === 51, "resumed upload completes with all 51 pages");
+  ok((await call("GET", `/uploads/${st.id}`, { token: admin })).status === 404, "uploads are private to the person who started them");
+  // Cancel
+  const c = (await call("POST", "/uploads", { token: teacher, body: { filename: "c.pdf", size: 5000, purpose: "paper" } })).data;
+  await expect("cancel an upload", 200, "DELETE", `/uploads/${c.id}`, { token: teacher });
+  const afterCancel = await fetch(`${API}/uploads/${c.id}?offset=0`, { method: "PUT", headers: { Authorization: `Bearer ${teacher}`, "Content-Type": "application/octet-stream" }, body: Buffer.alloc(10) });
+  ok(afterCancel.status === 404, "a cancelled upload takes no more data");
+  // ZIP of sheets for a class
+  if (DATA_DIR) {
+    const tmp = fs.mkdtempSync(path.join(DATA_DIR, "zt"));
+    for (const n of [1, 2]) fs.writeFileSync(path.join(tmp, `${n}.jpg`), await jpeg(600, 800, `Z${n}`));
+    fs.writeFileSync(path.join(tmp, "readme.txt"), "ignore me");
+    require("node:child_process").execFileSync("zip", ["-q", "-j", path.join(tmp, "class.zip"), path.join(tmp, "1.jpg"), path.join(tmp, "2.jpg"), path.join(tmp, "readme.txt")]);
+    const z = await upload(API, teacher, fs.readFileSync(path.join(tmp, "class.zip")), "class.zip", "class_sheets");
+    ok(z.status === 200 && z.data.kind === "zip", "ZIP of sheets accepted");
+    const zd = await call("POST", `/tests/${test}/sheets`, { token: teacher, body: { upload_id: z.data.id } });
+    const zdoc = await waitDocument(API, teacher, zd.data.document_id);
+    ok(zdoc.status === "completed" && zdoc.pages.length === 2, `ZIP turned into 2 pages, other files skipped (${zdoc.status} ${zdoc.pages.length})`);
+    await expect("unused class upload can be deleted", 200, "DELETE", `/documents/${zd.data.document_id}`, { token: teacher });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+section("Background jobs: retries with backoff, stored errors");
+{
+  const MOCK = process.env.MOCK_URL ?? "http://localhost:4999";
+  const det = (await call("GET", `/tests/${test}`, { token: teacher })).data;
+  const [a, b] = det.attempts.filter((x) => x.status === "evaluated" && x.files > 0);
+  // Two unreadable AI answers, then a good one: the job retries and succeeds.
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ garbage: 2 }) });
+  await expect("re-mark (AI answers unreadable twice)", 200, "POST", `/tests/${test}/evaluate`, { token: teacher, body: { attempt_ids: [a.id] } });
+  let sawRetry = false, A;
+  for (let i = 0; i < 120; i++) {
+    A = (await call("GET", `/tests/${test}`, { token: teacher })).data.attempts.find((x) => x.id === a.id);
+    if (A.status === "evaluating" && /Try \d of 3 failed/.test(A.error ?? "")) sawRetry = true;
+    if (A.status !== "evaluating") break;
+    await sleep(200);
+  }
+  ok(A.status === "evaluated" && !A.error, `job succeeded on a later try (${A.status} ${A.error ?? ""})`);
+  ok(sawRetry, "the sheet showed the retry while waiting");
+  // Unreadable every time: fails after 3 tries with the error stored.
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ garbage: 99 }) });
+  await expect("re-mark (AI answer always unreadable)", 200, "POST", `/tests/${test}/evaluate`, { token: teacher, body: { attempt_ids: [b.id] } });
+  let B;
+  for (let i = 0; i < 150; i++) { B = (await call("GET", `/tests/${test}`, { token: teacher })).data.attempts.find((x) => x.id === b.id); if (B.status !== "evaluating") break; await sleep(200); }
+  await fetch(`${MOCK}/__mode`, { method: "POST", body: JSON.stringify({ garbage: 0 }) });
+  ok(B.status === "failed" && /couldn't be read/.test(B.error ?? ""), `failed after 3 tries with the reason stored (${B.status}: ${B.error})`);
+  if (DATA_DIR) {
+    const db = new DatabaseSync(path.join(DATA_DIR, "vedavidya.db"));
+    const j = db.prepare("SELECT status, attempts, last_error FROM jobs WHERE dedupe_key = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(`mark:${b.id}`);
+    ok(j.status === "failed" && j.attempts === 3 && j.last_error, `job record: ${j.status}, ${j.attempts} tries, error kept`);
+    db.close();
+  }
+  // Retrying the failed sheet works once the AI is fine again.
+  await expect("retry the failed sheet", 200, "POST", `/tests/${test}/evaluate`, { token: teacher, body: { attempt_ids: [b.id] } });
+  for (let i = 0; i < 80; i++) { B = (await call("GET", `/tests/${test}`, { token: teacher })).data.attempts.find((x) => x.id === b.id); if (B.status !== "evaluating") break; await sleep(200); }
+  ok(B.status === "evaluated", "the failed sheet is marked after a manual retry");
+  // A permanent problem (no paper) fails at once, without retries.
+  const t2 = (await call("POST", "/tests", { token: teacher, body: { title: "No paper", mode: "offline", batch_ids: [batch] } })).data.id;
+  const at2 = (await call("GET", `/tests/${t2}`, { token: teacher })).data.attempts[0];
+  await call("POST", `/attempts/${at2.id}/files`, { token: teacher, body: { upload_ids: await uploadAll(API, teacher, [["s.jpg", await jpeg(500, 700, "s")]], "student_sheet") } });
+  await waitProcessed(API, teacher, t2);
+  ok((await call("POST", `/tests/${t2}/evaluate`, { token: teacher, body: {} })).status === 400, "marking without a paper is refused up front");
+  await call("DELETE", `/tests/${t2}`, { token: teacher });
+}
+
+section("Backups (super-admin)");
+{
+  const rootEmail = process.env.SUPER_ADMIN_EMAIL ?? "root-admin@example.com";
+  const root = (await call("POST", "/auth/register", { body: { institute: "Platform", name: "Platform Owner", email: rootEmail, password: "root-pass-123" } })).data.token ?? await login(rootEmail, "root-pass-123");
+  ok((await call("POST", "/admin/backup", { token: admin })).status === 403, "an institute admin can't run backups");
+  const b1 = await expect("super-admin backs up now", 200, "POST", "/admin/backup", { token: root });
+  ok(/^vedavidya-\d{8}-\d{6}-\d{3}-manual\.db$/.test(b1.data.file) && b1.data.size > 0, `backup file ${b1.data.file}`);
+  if (DATA_DIR) {
+    const copy = new DatabaseSync(path.join(DATA_DIR, "backups", b1.data.file), { readOnly: true });
+    ok(copy.prepare("SELECT count(*) n FROM users").get().n > 10, "the backup is a complete, readable database");
+    copy.close();
+  }
+  for (let i = 0; i < 15; i++) await call("POST", "/admin/backup", { token: root });
+  const list = (await expect("list backups", 200, "GET", "/admin/backups", { token: root })).data.backups;
+  ok(list.length === 14, `only the newest 14 backups are kept (found ${list.length})`);
 }
 
 section("Security: roles");
