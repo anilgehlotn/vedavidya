@@ -12,6 +12,7 @@ import { FileUpload } from "../../components/FileUpload";
 import { FixitCell, MistakeBars, MISTAKES, TestInsights, TopTip, useInsights } from "./Insights";
 import { CreditLine } from "./Credits";
 import { ClassUploadWizard, PaperStep, Step, type ClassUpload } from "./TestFlow";
+import { SendReportsModal } from "./SendReports";
 // The corrected-sheet viewer (with maths rendering) loads only when a marked sheet is opened.
 const SheetView = lazy(() => import("./SheetView").then((m) => ({ default: m.SheetView })));
 
@@ -333,6 +334,8 @@ export function TestDetail() {
   const [wizard, setWizard] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [markedBusy, setMarkedBusy] = useState<string | null>(null);
+  const [showSteps, setShowSteps] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
 
   const busy = t.data?.attempts.some((a) => a.status === "evaluating");
   // Keep the page live while sheets are being processed in the background.
@@ -357,10 +360,13 @@ export function TestDetail() {
   const toEvaluate = d.attempts.filter((a) => a.files > 0 && (a.status === "uploaded" || a.status === "failed")).length;
   const marking = d.attempts.filter((a) => a.status === "evaluating").length;
   const submitted = d.attempts.filter((a) => a.status !== "pending" && a.status !== "in_progress").length;
-  const list = d.attempts.filter((a) => filter === "all" || (filter === "check" ? a.checks > 0 : a.status === filter));
+  const ranked = [...scored].sort((a, b) => b.score! - a.score!).map((a) => a.id);
+  const rankOf = (id: string) => { const i = ranked.indexOf(id); return i < 0 ? Infinity : i; };
+  // Rank list: best score first; students without a score after them, by roll number.
+  const list = d.attempts.filter((a) => filter === "all" || (filter === "check" ? a.checks > 0 : a.status === filter))
+    .sort((a, b) => rankOf(a.id) - rankOf(b.id) || String(a.roll_no ?? "").localeCompare(String(b.roll_no ?? ""), undefined, { numeric: true }));
   const toCheck = d.attempts.reduce((t, a) => t + (a.checks || 0), 0);
   const sheetsToCheck = d.attempts.filter((a) => a.checks > 0).length;
-  const ranked = [...scored].sort((a, b) => b.score! - a.score!).map((a) => a.id);
   const total = d.paper?.total_marks;
   const offline = d.mode === "offline";
 
@@ -431,19 +437,60 @@ export function TestDetail() {
   const s3 = st(markedAll, sheetsDone);
   const s4 = st(Boolean(d.results_published), markedAll || scored.length > 0);
 
+  // The single next thing to do, for the banner.
+  const next: { text: string; action?: { label: string; run: () => void; primary?: boolean }; busy?: boolean } =
+    d.results_published ? { text: "Results are out. Students can see them, and each parent can get their report." }
+    : !d.paper ? { text: "Add the question paper for this test.", action: { label: "Add paper", run: () => setShowSteps(true), primary: true } }
+    : reading ? { text: "The AI is reading the question paper…", busy: true }
+    : d.paper_problem ? { text: d.paper_problem, action: { label: "Open the steps", run: () => setShowSteps(true) } }
+    : offline && withSheets === 0 && !scored.length ? { text: "After the exam, upload the class's answer sheets.", action: DEMO ? undefined : { label: "⇪ Upload answer sheets", run: () => setWizard(true), primary: true } }
+    : !offline && submitted === 0 ? { text: "Waiting for students to take the test online." }
+    : marking > 0 ? { text: `Marking ${marking} sheet${marking > 1 ? "s" : ""}… ${scored.length} done. You can leave this page.`, busy: true }
+    : toEvaluate > 0 ? { text: `${toEvaluate} answer sheet${toEvaluate === 1 ? " is" : "s are"} ready to mark.`, action: DEMO ? undefined : { label: `✦ Mark ${toEvaluate} sheet${toEvaluate === 1 ? "" : "s"}`, run: () => evaluate(), primary: true } }
+    : !d.results_published && toCheck > 0 ? { text: `${toCheck} answer${toCheck > 1 ? "s" : ""} on ${sheetsToCheck} sheet${sheetsToCheck > 1 ? "s" : ""} need your check before publishing.`, action: { label: "Show them", run: () => setFilter("check"), primary: true } }
+    : !d.results_published && scored.length ? { text: "All marked. Check any sheet, then publish the results.", action: DEMO ? undefined : { label: "Publish results", run: () => publish(true), primary: true } }
+    : d.results_published ? { text: "Results are out. Students can see them, and each parent can get their report." }
+    : { text: "Nothing to do yet." };
+  const stepN = !paperDone ? 1 : !sheetsDone ? 2 : !markedAll ? 3 : 4;
+  const absent = offline ? d.attempts.filter((a) => a.files === 0 && a.score == null).length : d.attempts.filter((a) => a.status === "pending" || a.status === "in_progress").length;
+  const present = d.attempts.length - absent;
+  const low = scored.length ? Math.min(...scored.map((a) => pct(a.score, a.max_score)!)) : null;
+  const statusCount = (s: string) => d.attempts.filter((a) => a.status === s).length;
+  const downloads = [
+    scored.length > 0 && { label: "Results (CSV)", run: () => download(`/tests/${d.id}/results.csv`, `${d.title.replace(/\W+/g, "_")}_results.csv`).catch((e) => setErr(e.message)) },
+    scored.length > 0 && { label: "Class report (PDF)", run: () => pdf(`/tests/${d.id}/class-report.pdf`, "class_report") },
+    scored.length > 0 && { label: "All student reports (PDF)", run: () => pdf(`/tests/${d.id}/reports.pdf`, "student_reports") },
+    offline && scored.some((a) => a.files > 0) && { label: markedBusy ?? "Marked answer sheets (PDF)", run: downloadMarked },
+    d.results_published && { label: "Parent report links (CSV)", run: downloadLinks },
+  ].filter(Boolean) as { label: string; run: () => void }[];
+
   return (
     <>
-      <PageTitle title={d.title} sub={<>{[d.subject, d.batch_names, offline ? "On paper" : "Online test", total ? `${total} marks` : null, fmtDate(d.scheduled_at)].filter(Boolean).join(" · ")}</>}>
-        {!DEMO && scored.length > 0 && <button className="btn btn-ghost" onClick={() => download(`/tests/${d.id}/results.csv`, `${d.title.replace(/\W+/g, "_")}_results.csv`).catch((e) => setErr(e.message))}>Export CSV</button>}
-        {!DEMO && scored.length > 0 && <button className="btn btn-primary" onClick={() => pdf(`/tests/${d.id}/class-report.pdf`, "class_report")}>⤓ Class report PDF</button>}
-        {!DEMO && scored.length > 0 && <button className="btn btn-ghost" onClick={() => pdf(`/tests/${d.id}/reports.pdf`, "student_reports")}>⤓ All student reports PDF</button>}
-        {!DEMO && offline && scored.some((a) => a.files > 0) && <button className="btn btn-ghost" disabled={!!markedBusy} onClick={downloadMarked}>{markedBusy ?? "⤓ Marked answer sheets"}</button>}
-        {d.results_published && !DEMO ? <button className="btn btn-ghost" onClick={downloadLinks}>⤓ Report links</button> : null}
+      <PageTitle title={d.title} sub={[d.subject, d.batch_names].filter(Boolean).join(" · ")}>
+        {!DEMO && downloads.length > 0 && <MenuButton label="⤓ Downloads" items={downloads} disabled={!!markedBusy || pdfBusy} />}
+        {d.results_published && !DEMO && <button className="btn btn-primary" onClick={() => setSendOpen(true)}>✉ Send reports</button>}
       </PageTitle>
       {pdfBusy && <div className="ok-box" style={{ marginBottom: 14 }}><span className="spinner" /> Making the PDF…</div>}
       {err && <div className="error-box" role="alert" style={{ marginBottom: 14 }}><div className="row between" style={{ alignItems: "flex-start" }}><span>{err}</span><button className="btn-link" style={{ color: "inherit" }} onClick={() => setErrText(null)} aria-label="Dismiss">×</button></div></div>}
 
-      <div className="card card-pad steps" style={{ marginBottom: 16 }}>
+      <dl className="info-strip card">
+        <div><dt>Date</dt><dd>{d.scheduled_at ? fmtDateTime(d.scheduled_at) : fmtDate(d.created_at)}</dd></div>
+        <div><dt>Mode</dt><dd>{offline ? "On paper" : "Online"}</dd></div>
+        <div><dt>Class</dt><dd>{d.batch_names ?? "—"}</dd></div>
+        <div><dt>Paper</dt><dd>{d.paper ? <Link to={`/app/papers/${d.paper.id}`} className="btn-link">{d.paper.title}</Link> : "Not added"}</dd></div>
+        <div><dt>Marks · time</dt><dd>{total ? `${total} marks` : "—"} · {d.duration_min} min</dd></div>
+        <div><dt>Status</dt><dd><span className={`badge ${d.results_published ? "green" : STATE[d.state][1]}`}>{d.results_published ? "Published" : STATE[d.state][0]}</span></dd></div>
+      </dl>
+
+      <div className={`next-banner ${d.results_published ? "done" : ""}`} role="status">
+        <span className="step-dots" aria-label={`Step ${stepN} of 4`}>{[1, 2, 3, 4].map((i) => <i key={i} className={i < stepN || d.results_published ? "done" : i === stepN ? "now" : ""} />)}</span>
+        {next.busy && <span className="spinner" />}
+        <span className="grow"><b>{d.results_published ? "Done" : `Step ${stepN} of 4`}:</b> {next.text}</span>
+        {next.action && <button className={`btn btn-sm ${next.action.primary ? "btn-primary" : "btn-ghost"}`} onClick={next.action.run}>{next.action.label}</button>}
+        {next.action?.label.startsWith("✦ Mark") && !d.paper_problem && <CreditLine action="mark_sheet" units={toEvaluate} />}
+        <button className="btn-link small" onClick={() => setShowSteps(!showSteps)} aria-expanded={showSteps}>{showSteps ? "Hide steps" : "All steps"}</button>
+      </div>
+      {showSteps && <div className="card card-pad steps" style={{ marginBottom: 16 }}>
         <PaperStep t={d} state={s1} onChange={() => { setMsg("Question paper added."); t.reload(true); }} />
         {offline ? (
           <Step n={2} title="Answer sheets" state={s2} hint="After the exam">
@@ -482,21 +529,55 @@ export function TestDetail() {
             </>}
           </div>
         </Step>
-      </div>
-
+      </div>}
       {bulk && <BulkUploadModal testId={d.id} batches={(d.batch_names ?? "").split(", ").filter(Boolean)} onClose={() => setBulk(false)} onDone={() => t.reload(true)} />}
       {wizard && <ClassUploadWizard t={d} uploads={d.uploads} onClose={() => setWizard(false)} onDone={(n) => { t.reload(true); if (n) setMsg(`Answer sheets uploaded for ${n} student${n === 1 ? "" : "s"}.${d.paper_problem ? "" : " Next: click “Mark answer sheets”."}`); }} />}
 
-      {scored.length > 0 && (
-        <div className="grid g4" style={{ marginBottom: 16 }}>
-          <div className="card stat"><div className="label">Students</div><div className="value">{d.attempts.length}</div></div>
-          <div className="card stat"><div className="label">Marked</div><div className="value">{scored.length}</div></div>
-          <div className="card stat"><div className="label">Average</div><div className="value">{avg ?? "—"}{avg != null && "%"}</div></div>
-          <div className="card stat"><div className="label">Highest</div><div className="value">{high ?? "—"}{high != null && "%"}</div></div>
+
+      <div className="grid g3" style={{ marginBottom: 16 }}>
+        <div className="card card-pad">
+          <div className="row between"><b>Attendance</b><span className="small muted">{offline ? "sheets received" : "submitted online"}</span></div>
+          <div className="attend">
+            <Donut value={present} total={d.attempts.length} />
+            <div className="stack" style={{ gap: 6 }}>
+              <span><b>{present}</b> <span className="muted small">present</span></span>
+              <span><b>{absent}</b> <span className="muted small">{offline ? "no sheet yet" : "not taken"}</span></span>
+              {absent > 0 && <button className="btn-link small" style={{ alignSelf: "flex-start" }} onClick={() => setFilter(offline ? "pending" : "pending")}>Show who</button>}
+            </div>
+          </div>
         </div>
-      )}
-      {ins.data && scored.length > 0 && <TestInsights testId={d.id} ins={ins.data} published={Boolean(d.results_published)} onReload={() => ins.reload(true)} />}
-      <div className="tabs">
+        <div className="card card-pad">
+          <div className="row between"><b>Evaluation progress</b><span className="small muted">{scored.length}/{present || d.attempts.length} marked</span></div>
+          <div className="bar" style={{ margin: "12px 0" }}><i style={{ width: `${(present || d.attempts.length) ? (scored.length / (present || d.attempts.length)) * 100 : 0}%` }} /></div>
+          <div className="row wrap" style={{ gap: 6 }}>
+            {statusCount("evaluated") > 0 && <span className="badge green">{statusCount("evaluated")} marked</span>}
+            {marking > 0 && <span className="badge amber"><span className="dot pulse" />{marking} marking</span>}
+            {statusCount("uploaded") > 0 && <span className="badge violet">{statusCount("uploaded")} waiting</span>}
+            {statusCount("failed") > 0 && <button className="badge red badge-btn" onClick={() => setFilter("failed")}>{statusCount("failed")} problem{statusCount("failed") > 1 ? "s" : ""}</button>}
+            {toCheck > 0 && <button className="badge amber badge-btn" onClick={() => setFilter("check")}>⚠ {toCheck} to check</button>}
+          </div>
+          {offline && d.uploads.length > 0 && (
+            <ul className="upload-list">{d.uploads.map((u) => (
+              <li key={u.id}><Icon name="paper" size={15} /><span className="grow ellipsis" title={u.title}>{u.title}</span><span className="small muted">{u.pages} p</span>
+                <span className={`badge ${u.status === "completed" ? "green" : u.status === "failed" ? "red" : "amber"}`}>{u.status === "completed" ? "Ready" : u.status === "failed" ? "Problem" : "Processing"}</span></li>
+            ))}</ul>
+          )}
+        </div>
+        <div className="card card-pad">
+          <b>Scores</b>
+          {!scored.length ? <p className="small muted" style={{ marginTop: 10 }}>Scores appear here once sheets are marked.</p> : (
+            <div className="score-grid">
+              <div><span className="small muted">Average</span><b>{avg}%</b></div>
+              <div><span className="small muted">Highest</span><b>{high}%</b></div>
+              <div><span className="small muted">Lowest</span><b>{low}%</b></div>
+              <div><span className="small muted">Marked</span><b>{scored.length}</b></div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <h2 className="h-sec" style={{ margin: "8px 0 10px" }}>Rank list</h2>
+      <div className="tabs" role="tablist" aria-label="Filter students">
         {(["all", "check", "pending", "uploaded", "evaluating", "evaluated", "failed"] as const).map((s) => {
           const n = s === "all" ? d.attempts.length : s === "check" ? sheetsToCheck : d.attempts.filter((a) => a.status === s).length;
           const label = { all: "All", check: "⚠ Needs checking", pending: "No sheet yet", uploaded: "Uploaded", evaluating: "Marking", evaluated: "Marked", failed: "Problem" }[s];
@@ -508,7 +589,7 @@ export function TestDetail() {
           <thead><tr><th>Rank</th><th>Student</th><th>Class</th><th>Status</th><th>Score</th>{d.results_published ? <th>Fix-it</th> : null}<th></th></tr></thead>
           <tbody>{list.map((a) => (
             <tr key={a.id}>
-              <td className="muted">{ranked.indexOf(a.id) >= 0 ? `#${ranked.indexOf(a.id) + 1}` : "—"}</td>
+              <td><Rank n={ranked.indexOf(a.id)} /></td>
               <td><b>{a.student_name}</b><div className="small muted">Roll {a.roll_no ?? "—"}{a.files ? ` · ${a.files} page${a.files > 1 ? "s" : ""}` : ""}</div></td>
               <td className="small">{a.batch_name}</td>
               <td><StatusBadge status={a.status} />{a.reviewed ? <span className="badge blue" style={{ marginLeft: 4 }}>Reviewed</span> : null}
@@ -532,6 +613,10 @@ export function TestDetail() {
         </table></div>
         {!list.length && <Empty title={filter === "all" ? "No students in this test" : "No sheets match this filter"} icon="student">{filter === "all" ? "Add students to the test's batch, then they appear here." : "Pick another filter above."}</Empty>}
       </div>
+
+      {ins.data && scored.length > 0 && <QuestionPerformance qs={ins.data.questions} />}
+      {ins.data && scored.length > 0 && <TestInsights testId={d.id} ins={ins.data} published={Boolean(d.results_published)} onReload={() => ins.reload(true)} />}
+      {sendOpen && <SendReportsModal test={d} onClose={() => setSendOpen(false)} />}
       {(!d.results_published || user?.role === "admin") && !DEMO && (
         <div style={{ marginTop: 20 }}><button className="btn btn-danger btn-sm" onClick={async () => {
           if (!confirm("Delete this test and all its results? This can't be undone.")) return;
@@ -539,6 +624,68 @@ export function TestDetail() {
         }}>Delete test</button></div>
       )}
     </>
+  );
+}
+
+/** Rank with medals for the top three. */
+function Rank({ n }: { n: number }) {
+  if (n < 0) return <span className="muted">—</span>;
+  if (n < 3) return <span className={`medal m${n + 1}`} aria-label={`Rank ${n + 1}`}>{n + 1}</span>;
+  return <span className="muted">#{n + 1}</span>;
+}
+
+/** Ring showing present out of total. */
+function Donut({ value, total }: { value: number; total: number }) {
+  const r = 30, c = 2 * Math.PI * r, f = total ? value / total : 0;
+  return (
+    <svg width="78" height="78" viewBox="0 0 78 78" role="img" aria-label={`${value} of ${total}`}>
+      <circle cx="39" cy="39" r={r} fill="none" stroke="var(--bg-2)" strokeWidth="9" />
+      <circle cx="39" cy="39" r={r} fill="none" stroke="var(--accent-2)" strokeWidth="9" strokeDasharray={`${c * f} ${c}`} strokeLinecap="round" transform="rotate(-90 39 39)" />
+      <text x="39" y="44" textAnchor="middle" fontSize="15" fontWeight="600" fill="var(--ink)">{total ? Math.round(f * 100) : 0}%</text>
+    </svg>
+  );
+}
+
+/** Every question: class average, how many attempted it, and the most common mistake. */
+function QuestionPerformance({ qs }: { qs: { id: string; n: number; topic: string; text: string; marks: number; avg_pct: number | null; attempted_pct: number | null; top_mistake: string | null }[] }) {
+  const [sort, setSort] = useState<"n" | "avg">("n");
+  const list = [...qs].sort((a, b) => (sort === "n" ? a.n - b.n : (a.avg_pct ?? 101) - (b.avg_pct ?? 101)));
+  return (
+    <div className="card card-pad" style={{ margin: "16px 0" }}>
+      <div className="row between wrap"><div><b>Question-wise performance</b><p className="small muted" style={{ margin: "2px 0 0" }}>Class average on each question. Low bars show what to re-teach.</p></div>
+        <div className="seg" role="group" aria-label="Sort"><button className={sort === "n" ? "on" : ""} aria-pressed={sort === "n"} onClick={() => setSort("n")}>By number</button><button className={sort === "avg" ? "on" : ""} aria-pressed={sort === "avg"} onClick={() => setSort("avg")}>Weakest first</button></div></div>
+      <div className="qperf">
+        {list.map((q) => (
+          <div key={q.id} className="qperf-row" title={q.text}>
+            <b className="qperf-n">Q{q.n}</b>
+            <span className="qperf-topic ellipsis">{q.topic || "—"}<span className="small muted"> · {q.marks} mark{q.marks === 1 ? "" : "s"}</span></span>
+            <span className="qperf-bar"><span className="bar"><i style={{ width: `${q.avg_pct ?? 0}%`, background: (q.avg_pct ?? 0) >= 75 ? "var(--green)" : (q.avg_pct ?? 0) >= 50 ? "var(--amber)" : "var(--red)" }} /></span></span>
+            <b className="qperf-pct">{q.avg_pct == null ? "—" : `${q.avg_pct}%`}</b>
+            <span className="small muted qperf-att">{q.attempted_pct == null ? "" : `${q.attempted_pct}% tried`}</span>
+            <span className="qperf-mis">{q.top_mistake && q.top_mistake !== "none" ? <span className="badge">{MISTAKES[q.top_mistake as keyof typeof MISTAKES]?.label ?? q.top_mistake}</span> : null}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** A button that opens a small menu of actions. */
+function MenuButton({ label, items, disabled }: { label: string; items: { label: string; run: () => void }[]; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const c = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const k = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", c); document.addEventListener("keydown", k);
+    return () => { document.removeEventListener("mousedown", c); document.removeEventListener("keydown", k); };
+  }, [open]);
+  return (
+    <div className="menu-wrap" ref={ref}>
+      <button className="btn btn-ghost" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>{label} ▾</button>
+      {open && <div className="pop-menu" role="menu">{items.map((i) => <button key={i.label} role="menuitem" onClick={() => { setOpen(false); i.run(); }}>{i.label}</button>)}</div>}
+    </div>
   );
 }
 

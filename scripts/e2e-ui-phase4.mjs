@@ -383,6 +383,36 @@ try {
   const dlr = await Promise.race([fdl, sleep(4000).then(() => null)]);
   ok(dlr && dlr.suggestedFilename() === "test_results_summary.csv", "results summary downloads");
 
+  // ------------------------------------------------------------------ Test details
+  log("▸ Test details");
+  const pubOff = dTests.find((t) => t.mode === "offline" && t.results_published);
+  await p.goto(BASE + `/app/tests/${pubOff.id}`);
+  ok(await visible(p.locator(".info-strip dt", { hasText: "Paper" })), "info strip");
+  ok(/Published/.test(await p.locator(".info-strip").innerText()), "status in the strip");
+  ok(await visible(p.locator(".next-banner.done", { hasText: "Results are out" })), "next-step banner (done)");
+  await p.getByRole("button", { name: "All steps" }).click();
+  ok(await visible(p.locator(".steps")), "all steps open from the banner");
+  await p.getByRole("button", { name: "Hide steps" }).click();
+  ok(/present/.test(await p.locator(".card", { hasText: "Attendance" }).innerText()), "attendance card");
+  ok(await visible(p.locator(".card", { hasText: "Evaluation progress" }).locator(".badge", { hasText: "marked" })), "evaluation progress");
+  ok(await visible(p.locator(".medal.m1")) && await p.locator(".medal").count() === 3, "medals for the top three");
+  const scores = await p.locator("tbody tr td:nth-child(5) b").allInnerTexts();
+  ok(scores.map(Number).every((v, i, a) => i === 0 || a[i - 1] >= v), "rank list in rank order");
+  const qrows = p.locator(".qperf-row");
+  ok(await qrows.count() > 0, "question-wise performance");
+  await p.getByRole("button", { name: "Weakest first" }).click();
+  const pcts = (await p.locator(".qperf-pct").allInnerTexts()).map((x) => parseInt(x));
+  ok(pcts.every((v, i, a) => i === 0 || a[i - 1] <= v), "weakest first sorting");
+  await p.getByRole("button", { name: /Downloads/ }).click();
+  ok(await visible(p.getByRole("menuitem", { name: "Results (CSV)" })) && await visible(p.getByRole("menuitem", { name: "Class report (PDF)" })), "downloads menu");
+  const dl2 = p.waitForEvent("download");
+  await p.getByRole("menuitem", { name: "Results (CSV)" }).click();
+  ok(/_results\.csv$/.test((await dl2).suggestedFilename()), "results CSV from the menu");
+  await shot(p, "p4-test-details");
+  const draftT = dTests.find((t) => !t.results_published);
+  await p.goto(BASE + `/app/tests/${draftT.id}`);
+  ok(await visible(p.locator(".next-banner:not(.done)")), `banner for an unfinished test (${await p.locator(".next-banner").innerText().catch(() => "")})`);
+
   ok(!errors.length, `no browser errors (${errors.slice(0, 3).join(" | ")})`);
 } finally {
   await browser.close();
